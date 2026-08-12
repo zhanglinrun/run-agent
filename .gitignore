@@ -1,0 +1,33 @@
+# 虚拟环境
+.venv/
+venv/
+
+# 密钥（保留 .env.example）
+.env
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 运行时数据（会话 / 记忆等）
+.run/
+
+# IDE / 系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# 日志与本地杂项
+*.log
+dist/
+build/
+
+
+/study/
+
