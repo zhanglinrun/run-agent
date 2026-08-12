@@ -8,12 +8,14 @@ from pathlib import Path
 
 from .memory import build_memory_prompt_section
 from .skills import build_skill_descriptions
+from .subagent import build_agent_descriptions
 
 
 def build_system_prompt() -> str:
     cwd = str(Path.cwd())
     memory_section = build_memory_prompt_section()
     skills_section = build_skill_descriptions()
+    agents_section = build_agent_descriptions()
     return f"""You are Run Agent, a local coding agent CLI.
 
 Help the user with software engineering tasks in the current project.
@@ -28,6 +30,7 @@ Rules:
 - When the user asks you to remember a preference or stable fact, save it via write_file into the Memory System directory.
 - When a retrieved or listed skill matches the user intent, call the `skill` tool before continuing.
 - The system may automatically compress prior messages as context fills up. You can also call `compact_context` when the conversation is long, tools are repeating, or failures are accumulating.
+- Use the `agent` tool with specialized sub-agents when the task matches: `explore` (read-only codebase search), `plan` (read-only structured planning), or `general` (independent full-tool tasks). Sub-agents protect the main context from noisy search results. Do not duplicate work a sub-agent already did — if you delegated research, do not re-run the same searches yourself.
 
 # Environment
 Working directory: {cwd}
@@ -37,4 +40,5 @@ Platform: {platform.system()} {platform.release()}
 {memory_section}
 
 {skills_section}
+{agents_section}
 """

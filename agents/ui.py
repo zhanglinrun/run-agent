@@ -15,7 +15,7 @@ def print_welcome() -> None:
     console.print()
     console.print("[bold cyan]Run Agent[/bold cyan] — Coding Agent CLI")
     console.print(
-        "[dim]命令: /help  /clear  /cost  /sessions  /resume  /plan  /memory  /skills  /compact  /exit[/dim]"
+        "[dim]命令: /help  /clear  /cost  /sessions  /resume  /plan  /memory  /skills  /compact  /mcp  /exit[/dim]"
     )
     console.print()
 
@@ -116,4 +116,28 @@ def print_skills(skills: list[object]) -> None:
         )
     console.print(
         Panel(table, title="[bold cyan]Skills[/bold cyan]", border_style="cyan", box=ROUNDED)
+    )
+
+
+def print_sub_agent_start(agent_type: str, description: str) -> None:
+    console.print(
+        Panel(
+            description or "(no description)",
+            title=f"[bold magenta]Sub-agent started: {agent_type}[/bold magenta]",
+            border_style="magenta",
+            box=ROUNDED,
+            padding=(0, 1),
+        )
+    )
+
+
+def print_sub_agent_end(agent_type: str, _description: str = "") -> None:
+    console.print(
+        Panel(
+            "completed",
+            title=f"[bold magenta]Sub-agent finished: {agent_type}[/bold magenta]",
+            border_style="magenta",
+            box=ROUNDED,
+            padding=(0, 1),
+        )
     )

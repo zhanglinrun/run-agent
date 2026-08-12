@@ -89,6 +89,9 @@ REPL:
   /compact            Compact conversation into structured session memory
   /mcp                List connected MCP servers and tools
   /exit               Quit
+
+Notes:
+  Sub-agents: the model may call the `agent` tool (explore/plan/general).
 """.strip()
     )
 

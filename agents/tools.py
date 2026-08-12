@@ -1,4 +1,4 @@
-"""Built-in coding tools + permission gate for Run Agent (C01–C07)."""
+"""Built-in coding tools + permission gate for Run Agent (C01–C08)."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ SHELL_TOOLS = {"bash"}
 PLAN_TOOLS = {"enter_plan_mode", "exit_plan_mode"}
 SKILL_TOOLS = {"skill"}
 COMPACT_TOOLS = {"compact_context"}
+AGENT_TOOLS = {"agent"}
 
 MAX_RESULT_CHARS = 50_000
 
@@ -160,6 +161,33 @@ TOOL_DEFINITIONS: list[ToolDef] = [
             "required": [],
         },
     },
+    {
+        "name": "agent",
+        "description": (
+            "Launch a sub-agent to handle a task autonomously. Sub-agents have isolated context "
+            "and return only a summary. Types: 'explore' (read-only search), 'plan' (read-only "
+            "structured planning), 'general' (full tools except nested agent)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string",
+                    "description": "Short (3-5 word) description of the sub-agent's task",
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "Detailed task instructions for the sub-agent",
+                },
+                "type": {
+                    "type": "string",
+                    "enum": ["explore", "plan", "general"],
+                    "description": "Agent type. Default: general",
+                },
+            },
+            "required": ["description", "prompt"],
+        },
+    },
 ]
 
 
@@ -209,7 +237,12 @@ def check_permission(
             return {"action": "deny", "message": f"Blocked in plan mode: {name}"}
         return {"action": "allow", "message": ""}
 
-    if name in PLAN_TOOLS or name in SKILL_TOOLS or name in COMPACT_TOOLS:
+    if (
+        name in PLAN_TOOLS
+        or name in SKILL_TOOLS
+        or name in COMPACT_TOOLS
+        or name in AGENT_TOOLS
+    ):
         return {"action": "allow", "message": ""}
 
     if name in READ_TOOLS:

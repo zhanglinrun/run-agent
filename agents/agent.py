@@ -1,4 +1,4 @@
-"""Run Agent runtime: OpenAI-compatible chat + tool loop (C01–C07)."""
+"""Run Agent runtime: OpenAI-compatible chat + tool loop (C01–C08)."""
 
 from __future__ import annotations
 
@@ -29,11 +29,14 @@ from .session_memory import (
     parse_folded_memory,
 )
 from .skills import execute_skill, format_retrieved_skill_context
-from .tools import TOOL_DEFINITIONS, check_permission, execute_tool, to_openai_tools
+from .subagent import get_sub_agent_config
+from .tools import TOOL_DEFINITIONS, ToolDef, check_permission, execute_tool, to_openai_tools
 from .ui import (
     print_assistant_text,
     print_error,
     print_info,
+    print_sub_agent_end,
+    print_sub_agent_start,
     print_tool_call,
     print_tool_result,
     print_warning,
@@ -75,12 +78,17 @@ class Agent:
         api_base: str | None = None,
         max_turns: int = 20,
         reasoning_effort: str | None = None,
+        custom_system_prompt: str | None = None,
+        custom_tools: list[ToolDef] | None = None,
+        is_sub_agent: bool = False,
     ) -> None:
         load_dotenv(override=False)
 
         self.permission_mode = permission_mode
         self.model = model or os.environ.get("MODEL") or "deepseek-v4-flash"
         self.max_turns = max_turns
+        self.is_sub_agent = is_sub_agent
+        self._custom_system_prompt = custom_system_prompt
         self.reasoning_effort = (
             reasoning_effort
             if reasoning_effort is not None
@@ -92,21 +100,24 @@ class Agent:
         if not key:
             raise RuntimeError("OPENAI_API_KEY (or APIKEY) is required in .env")
 
+        self._api_key = key
+        self._api_base = base
         client_kwargs: dict[str, Any] = {"api_key": key}
         if base:
             client_kwargs["base_url"] = base
         self.client = AsyncOpenAI(**client_kwargs)
 
         self.session_id = uuid.uuid4().hex[:8]
-        self._base_system_prompt = build_system_prompt()
+        self._base_system_prompt = custom_system_prompt or build_system_prompt()
         self._pre_plan_mode: str | None = None
         self._plan_file_path: str | None = None
         self._plan_approval_fn: PlanApprovalFn | None = None
 
+        self._tool_defs: list[ToolDef] = list(custom_tools or TOOL_DEFINITIONS)
         self.messages: list[dict[str, Any]] = [
             {"role": "system", "content": self._base_system_prompt},
         ]
-        self.openai_tools = to_openai_tools(TOOL_DEFINITIONS)
+        self.openai_tools = to_openai_tools(self._tool_defs)
 
         self.total_input_tokens = 0
         self.total_output_tokens = 0
@@ -118,6 +129,7 @@ class Agent:
         self._aborted = False
         self._already_surfaced_memories: set[str] = set()
         self._session_memory_bytes = 0
+        self._output_buffer: list[str] | None = None
 
         self._folded_session_memories: list[dict[str, Any]] = []
         self._fold_last_time: float = 0.0
@@ -236,6 +248,8 @@ class Agent:
         )
 
     def _build_fold_guidance_section(self) -> str:
+        if self._custom_system_prompt is not None:
+            return ""
         utilization = (
             self.last_input_token_count / self.effective_window if self.effective_window else 0.0
         )
@@ -255,6 +269,67 @@ class Agent:
             "- If you folded very recently and the next step is clear, prefer continuing rather "
             "than folding again.\n"
         )
+
+    def _emit_text(self, text: str) -> None:
+        if self._output_buffer is not None:
+            self._output_buffer.append(text)
+        else:
+            print_assistant_text(text)
+
+    def _spawn_sub_agent(
+        self,
+        *,
+        system_prompt: str,
+        tools: list[ToolDef],
+    ) -> Agent:
+        return Agent(
+            model=self.model,
+            api_key=self._api_key,
+            api_base=self._api_base,
+            custom_system_prompt=system_prompt,
+            custom_tools=tools,
+            is_sub_agent=True,
+            permission_mode="plan" if self.permission_mode == "plan" else "bypassPermissions",
+            max_turns=self.max_turns,
+            reasoning_effort=self.reasoning_effort,
+        )
+
+    async def run_once(self, prompt: str) -> dict[str, Any]:
+        """Run one chat turn-loop and return collected assistant text + token deltas."""
+        self._output_buffer = []
+        prev_in = self.total_input_tokens
+        prev_out = self.total_output_tokens
+        await self.chat(prompt)
+        text = "".join(self._output_buffer)
+        self._output_buffer = None
+        return {
+            "text": text,
+            "tokens": {
+                "input": self.total_input_tokens - prev_in,
+                "output": self.total_output_tokens - prev_out,
+            },
+        }
+
+    async def _execute_agent_tool(self, inp: dict) -> str:
+        agent_type = str(inp.get("type") or "general").strip() or "general"
+        description = str(inp.get("description") or "sub-agent task")
+        prompt = str(inp.get("prompt") or "")
+        print_sub_agent_start(agent_type, description)
+
+        config = get_sub_agent_config(agent_type)
+        sub = self._spawn_sub_agent(
+            system_prompt=config["system_prompt"],
+            tools=config["tools"],
+        )
+        try:
+            result = await sub.run_once(prompt)
+            self.total_input_tokens += result["tokens"]["input"]
+            self.total_output_tokens += result["tokens"]["output"]
+            print_sub_agent_end(agent_type, description)
+            return result["text"] or "(Sub-agent produced no output)"
+        except Exception as e:
+            print_sub_agent_end(agent_type, description)
+            return f"Sub-agent error: {e}"
 
     def _enter_plan_mode(self, *, announce: bool) -> None:
         self.permission_mode = "plan"
@@ -412,10 +487,27 @@ class Agent:
         if not result:
             return f"Unknown skill: {skill_name}"
         if result.get("context") == "fork":
-            return (
-                f'Skill "{skill_name}" requests fork context, which is not enabled yet (C08). '
-                "Use an inline skill or wait for sub-agent support."
+            allowed = result.get("allowed_tools")
+            if allowed:
+                tools = [t for t in TOOL_DEFINITIONS if t["name"] in allowed]
+            else:
+                tools = [t for t in TOOL_DEFINITIONS if t["name"] != "agent"]
+            print_sub_agent_start("skill-fork", skill_name)
+            sub = self._spawn_sub_agent(
+                system_prompt=result["prompt"],
+                tools=tools,
             )
+            try:
+                sub_result = await sub.run_once(
+                    str(inp.get("args") or "Execute this skill task.")
+                )
+                self.total_input_tokens += sub_result["tokens"]["input"]
+                self.total_output_tokens += sub_result["tokens"]["output"]
+                print_sub_agent_end("skill-fork", skill_name)
+                return sub_result["text"] or "(Skill produced no output)"
+            except Exception as e:
+                print_sub_agent_end("skill-fork", skill_name)
+                return f"Skill fork error: {e}"
         return f'[Skill "{skill_name}" activated]\n\n{result["prompt"]}'
 
     def _record_tool_outcome(self, tool_name: str, success: bool) -> None:
@@ -624,20 +716,26 @@ class Agent:
 
     async def chat(self, user_message: str) -> None:
         self._aborted = False
-        await self.ensure_mcp()
+        if not self.is_sub_agent:
+            await self.ensure_mcp()
+
         original_user_message = user_message
-        augmented, _ = self._augment_user_message_with_skill_context(original_user_message)
+        if self.is_sub_agent:
+            augmented = user_message
+        else:
+            augmented, _ = self._augment_user_message_with_skill_context(original_user_message)
         self.messages.append({"role": "user", "content": augmented})
 
         memory_prefetch: MemoryPrefetch | None = None
-        sq = self._build_side_query()
-        if sq:
-            memory_prefetch = start_memory_prefetch(
-                original_user_message,
-                sq,
-                self._already_surfaced_memories,
-                self._session_memory_bytes,
-            )
+        if not self.is_sub_agent:
+            sq = self._build_side_query()
+            if sq:
+                memory_prefetch = start_memory_prefetch(
+                    original_user_message,
+                    sq,
+                    self._already_surfaced_memories,
+                    self._session_memory_bytes,
+                )
 
         turns = 0
         while True:
@@ -676,7 +774,7 @@ class Agent:
             if not tool_calls:
                 text = (message.get("content") or "").strip()
                 if text:
-                    print_assistant_text(text + "\n")
+                    self._emit_text(text + "\n")
                 break
 
             turns += 1
@@ -689,10 +787,12 @@ class Agent:
                     break
 
             self._sync_system_prompt()
-            await self._check_and_compact()
-            self._auto_save()
+            if not self.is_sub_agent:
+                await self._check_and_compact()
+                self._auto_save()
 
-        self._auto_save()
+        if not self.is_sub_agent:
+            self._auto_save()
 
     async def _call_model(self) -> tuple[dict[str, Any], dict[str, Any] | None]:
         kwargs: dict[str, Any] = {
@@ -741,6 +841,15 @@ class Agent:
 
         if name == "skill":
             result = await self._execute_skill_tool(inp)
+            print_tool_result(name, result)
+            self._record_tool_outcome(name, not self._looks_like_tool_failure(result))
+            self.messages.append(
+                {"role": "tool", "tool_call_id": tc_id, "content": result}
+            )
+            return
+
+        if name == "agent":
+            result = await self._execute_agent_tool(inp)
             print_tool_result(name, result)
             self._record_tool_outcome(name, not self._looks_like_tool_failure(result))
             self.messages.append(
