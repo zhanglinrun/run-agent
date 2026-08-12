@@ -1,15 +1,15 @@
-"""CLI entry: REPL and one-shot prompts."""
+"""CLI entry: REPL and one-shot prompts (C02: flags + resume)."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import os
 import sys
 
 from dotenv import load_dotenv
 
 from .agent import Agent
+from .session import get_latest_session_id, list_sessions, load_session
 from .ui import (
     print_error,
     print_goodbye,
@@ -34,6 +34,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dont-ask", action="store_true", help="Auto-deny confirmations")
     parser.add_argument("--model", "-m", default=None, help="Model name")
     parser.add_argument("--api-base", default=None, help="OpenAI-compatible base URL")
+    parser.add_argument("--resume", action="store_true", help="Resume last session")
+    parser.add_argument("--session", default=None, help="Resume a specific session id")
     parser.add_argument("--max-turns", type=int, default=20, help="Max tool loop turns")
     parser.add_argument("--help", "-h", action="store_true", help="Show help")
     return parser.parse_args()
@@ -63,6 +65,8 @@ Options:
   --dont-ask          Auto-deny confirmations
   --model, -m         Model name (or MODEL in .env)
   --api-base URL      OpenAI-compatible base URL
+  --resume            Resume the last session under .run/sessions
+  --session ID        Resume a specific session id
   --max-turns N       Max agentic turns (default 20)
   --help, -h          Show help
 
@@ -70,9 +74,91 @@ REPL:
   /help               Show help
   /clear              Clear history
   /cost               Show token usage
+  /sessions           List recent sessions
+  /resume             Pick a session interactively (or load latest if only one)
+  /resume <id|n>      Resume by session id or list number
   /exit               Quit
 """.strip()
     )
+
+
+def _print_sessions(items: list[dict]) -> None:
+    if not items:
+        print_info("No previous sessions found.")
+        return
+    print_info(f"{len(items)} session(s) under .run/sessions:")
+    for i, item in enumerate(items, start=1):
+        model = item.get("model") or "-"
+        print(
+            f"  {i:2d}. {item['id']}  "
+            f"msgs={item['message_count']:<3}  "
+            f"{item['updated_at_str']}  "
+            f"[{model}]  "
+            f"{item['preview']}"
+        )
+
+
+def _resolve_session_id(selector: str | None) -> str | None:
+    """Resolve 'latest' / id / 1-based index to a session id."""
+    items = list_sessions()
+    if not items:
+        return None
+    if selector is None or selector in {"", "__latest__", "latest"}:
+        return items[0]["id"]
+    if selector.isdigit():
+        idx = int(selector)
+        if 1 <= idx <= len(items):
+            return items[idx - 1]["id"]
+        print_warning(f"Invalid index {selector}; use /sessions and pick 1..{len(items)}")
+        return None
+    # exact id or unique prefix
+    exact = [x for x in items if x["id"] == selector]
+    if exact:
+        return exact[0]["id"]
+    prefixed = [x for x in items if x["id"].startswith(selector)]
+    if len(prefixed) == 1:
+        return prefixed[0]["id"]
+    if len(prefixed) > 1:
+        print_warning(f"Ambiguous id prefix {selector!r}; matches: " + ", ".join(x["id"] for x in prefixed))
+        return None
+    print_warning(f"Session not found: {selector}")
+    return None
+
+
+def _resume_session(agent: Agent, selector: str | None = "__latest__") -> None:
+    session_id = _resolve_session_id(selector)
+    if not session_id:
+        if selector in {None, "", "__latest__", "latest"}:
+            print_info("No previous sessions found.")
+        return
+    data = load_session(session_id)
+    if not data:
+        print_info("No session found to resume.")
+        return
+    agent.restore_session(data)
+
+
+def _resume_interactive(agent: Agent) -> None:
+    items = list_sessions()
+    if not items:
+        print_info("No previous sessions found.")
+        return
+    if len(items) == 1:
+        _resume_session(agent, items[0]["id"])
+        return
+
+    _print_sessions(items)
+    print_info("Enter number or session id (empty = latest / cancel with Ctrl+C):")
+    print_user_prompt()
+    try:
+        choice = input().strip()
+    except (EOFError, KeyboardInterrupt):
+        print_interrupted()
+        return
+    if not choice:
+        _resume_session(agent, items[0]["id"])
+        return
+    _resume_session(agent, choice)
 
 
 async def _confirm_interactive(message: str) -> bool:
@@ -111,6 +197,15 @@ async def run_repl(agent: Agent) -> None:
         if line == "/cost":
             agent.show_cost()
             continue
+        if line == "/sessions":
+            _print_sessions(list_sessions())
+            continue
+        if line == "/resume":
+            _resume_interactive(agent)
+            continue
+        if line.startswith("/resume "):
+            _resume_session(agent, line[len("/resume ") :].strip())
+            continue
 
         try:
             await agent.chat(line)
@@ -143,6 +238,10 @@ def main() -> None:
         sys.exit(1)
 
     agent.set_confirm_fn(_confirm_interactive)
+    if args.session:
+        _resume_session(agent, args.session)
+    elif args.resume:
+        _resume_session(agent, "__latest__")
 
     prompt = " ".join(args.prompt).strip()
     try:

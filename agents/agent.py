@@ -1,4 +1,4 @@
-"""Run Agent runtime: OpenAI-compatible chat + tool loop (C01)."""
+"""Run Agent runtime: OpenAI-compatible chat + tool loop (C01/C02)."""
 
 from __future__ import annotations
 
@@ -79,12 +79,33 @@ class Agent:
     def clear_history(self) -> None:
         self.messages = [{"role": "system", "content": build_system_prompt()}]
         self._confirmed.clear()
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        self._auto_save()
 
     def show_cost(self) -> None:
         print_info(
             f"tokens in={self.total_input_tokens} out={self.total_output_tokens} "
             f"(session {self.session_id})"
         )
+
+    def restore_session(self, data: dict[str, Any]) -> None:
+        """Load messages/tokens from a saved session.
+
+        Does NOT override permission_mode so CLI flags like --plan --resume still apply.
+        """
+        if data.get("id"):
+            self.session_id = str(data["id"])
+        msgs = data.get("messages")
+        if isinstance(msgs, list) and msgs:
+            self.messages = list(msgs)
+        if data.get("model"):
+            self.model = str(data["model"])
+        tokens = data.get("tokens") or {}
+        self.total_input_tokens = int(tokens.get("input") or 0)
+        self.total_output_tokens = int(tokens.get("output") or 0)
+        self._confirmed.clear()
+        print_info(f"Session restored ({len(self.messages)} messages, id={self.session_id}).")
 
     async def chat(self, user_message: str) -> None:
         self._aborted = False

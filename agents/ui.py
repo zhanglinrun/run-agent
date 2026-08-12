@@ -10,7 +10,7 @@ console = Console(highlight=False)
 def print_welcome() -> None:
     console.print()
     console.print("[bold cyan]Run Agent[/bold cyan] — Coding Agent CLI")
-    console.print("[dim]命令: /help   /exit[/dim]")
+    console.print("[dim]命令: /help  /clear  /cost  /sessions  /resume  /exit[/dim]")
     console.print()
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -35,7 +36,42 @@ def load_session(session_id: str) -> dict[str, Any] | None:
 
 
 def get_latest_session_id() -> str | None:
-    """找最近改过的那个会话 id（以后 --resume 会用到）。"""
+    """找最近改过的那个会话 id（供 --resume 使用）。"""
+    items = list_sessions(limit=1)
+    return items[0]["id"] if items else None
+
+
+def list_sessions(*, limit: int = 20) -> list[dict[str, Any]]:
+    """按修改时间倒序列出会话摘要，供 /sessions 与交互式 /resume 使用。"""
     d = get_project_session_dir()
     files = sorted(d.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-    return files[0].stem if files else None
+    out: list[dict[str, Any]] = []
+    for path in files[: max(0, limit)]:
+        data = load_session(path.stem) or {}
+        messages = data.get("messages") if isinstance(data.get("messages"), list) else []
+        preview = _preview_user_message(messages)
+        mtime = path.stat().st_mtime
+        out.append(
+            {
+                "id": path.stem,
+                "model": data.get("model") or "",
+                "message_count": len(messages),
+                "preview": preview,
+                "updated_at": mtime,
+                "updated_at_str": datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M"),
+            }
+        )
+    return out
+
+
+def _preview_user_message(messages: list[Any]) -> str:
+    for msg in reversed(messages):
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str) and content.strip():
+            text = " ".join(content.strip().split())
+            return text if len(text) <= 60 else text[:57] + "..."
+    return "(no user message)"
