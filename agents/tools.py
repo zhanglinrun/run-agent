@@ -12,11 +12,12 @@ from .memory import _update_memory_index, get_memory_dir
 
 ToolDef = dict[str, Any]
 
-READ_TOOLS = {"read_file", "list_files", "grep"}
+READ_TOOLS = {"read_file", "list_files", "grep", "compact_context"}
 WRITE_TOOLS = {"write_file", "edit_file"}
 SHELL_TOOLS = {"bash"}
 PLAN_TOOLS = {"enter_plan_mode", "exit_plan_mode"}
 SKILL_TOOLS = {"skill"}
+COMPACT_TOOLS = {"compact_context"}
 
 MAX_RESULT_CHARS = 50_000
 
@@ -140,6 +141,25 @@ TOOL_DEFINITIONS: list[ToolDef] = [
             "required": ["skill_name"],
         },
     },
+    {
+        "name": "compact_context",
+        "description": (
+            "Compact the current conversation context into structured session memory when the "
+            "context is long, tool results are noisy, or a strategy reset is useful. This preserves "
+            "task progress, current next steps, and tool-use experience, then continues from the "
+            "folded memory."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": "Why compaction is needed (optional)",
+                },
+            },
+            "required": [],
+        },
+    },
 ]
 
 
@@ -183,7 +203,7 @@ def check_permission(
     if mode == "bypassPermissions":
         return {"action": "allow", "message": ""}
 
-    if name in PLAN_TOOLS or name in SKILL_TOOLS:
+    if name in PLAN_TOOLS or name in SKILL_TOOLS or name in COMPACT_TOOLS:
         return {"action": "allow", "message": ""}
 
     if name in READ_TOOLS:

@@ -24,6 +24,18 @@ def save_session(session_id: str, data: dict[str, Any]) -> None:
     )
 
 
+def save_folded_session_memory(session_id: str, record: dict[str, Any]) -> None:
+    """追加折叠审计行，并写入最新快照到 .run/sessions/。"""
+    d = get_project_session_dir()
+    line = json.dumps(record, ensure_ascii=False, default=str)
+    with (d / f"{session_id}.folded-memory.jsonl").open("a", encoding="utf-8") as f:
+        f.write(line + "\n")
+    (d / f"{session_id}.folded-memory.latest.json").write_text(
+        json.dumps(record, indent=2, ensure_ascii=False, default=str),
+        encoding="utf-8",
+    )
+
+
 def load_session(session_id: str) -> dict[str, Any] | None:
     """按 id 读回会话；没有文件或坏了就返回 None。"""
     path = get_project_session_dir() / f"{session_id}.json"
@@ -44,7 +56,11 @@ def get_latest_session_id() -> str | None:
 def list_sessions(*, limit: int = 20) -> list[dict[str, Any]]:
     """按修改时间倒序列出会话摘要，供 /sessions 与交互式 /resume 使用。"""
     d = get_project_session_dir()
-    files = sorted(d.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    files = sorted(
+        (p for p in d.glob("*.json") if ".folded-memory" not in p.name),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
     out: list[dict[str, Any]] = []
     for path in files[: max(0, limit)]:
         data = load_session(path.stem) or {}

@@ -86,6 +86,7 @@ REPL:
   /plan               Toggle plan mode (read-only planning)
   /memory             List long-term memories for this project
   /skills             List discovered skills
+  /compact            Compact conversation into structured session memory
   /exit               Quit
 """.strip()
     )
@@ -259,6 +260,9 @@ async def run_repl(agent: Agent) -> None:
                 print_info("No skills registered. Add .run/skills/<name>/SKILL.md")
             else:
                 print_skills(skills)
+            continue
+        if line == "/compact":
+            await agent.compact()
             continue
 
         try:

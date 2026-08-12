@@ -27,6 +27,7 @@ Rules:
 - If a tool fails, read the error and adjust; do not blindly retry the same call.
 - When the user asks you to remember a preference or stable fact, save it via write_file into the Memory System directory.
 - When a retrieved or listed skill matches the user intent, call the `skill` tool before continuing.
+- The system may automatically compress prior messages as context fills up. You can also call `compact_context` when the conversation is long, tools are repeating, or failures are accumulating.
 
 # Environment
 Working directory: {cwd}

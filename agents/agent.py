@@ -1,4 +1,4 @@
-"""Run Agent runtime: OpenAI-compatible chat + tool loop (C01–C05)."""
+"""Run Agent runtime: OpenAI-compatible chat + tool loop (C01–C06)."""
 
 from __future__ import annotations
 
@@ -18,7 +18,15 @@ from .memory import (
     start_memory_prefetch,
 )
 from .prompt import build_system_prompt
-from .session import save_session
+from .session import save_folded_session_memory, save_session
+from .session_memory import (
+    FOLD_SESSION_MEMORY_SYSTEM,
+    build_folding_user_prompt,
+    build_openai_transcript,
+    fallback_folded_memory,
+    format_folded_memory,
+    parse_folded_memory,
+)
 from .skills import execute_skill, format_retrieved_skill_context
 from .tools import TOOL_DEFINITIONS, check_permission, execute_tool, to_openai_tools
 from .ui import (
@@ -32,6 +40,29 @@ from .ui import (
 
 ConfirmFn = Callable[[str], Awaitable[bool]]
 PlanApprovalFn = Callable[[str], Awaitable[dict[str, Any]]]
+
+MODEL_CONTEXT: dict[str, int] = {
+    "gpt-4o": 128_000,
+    "gpt-4o-mini": 128_000,
+    "deepseek-chat": 200_000,
+    "deepseek-v4-flash": 128_000,
+}
+
+SNIP_THRESHOLD = 0.60
+AUTO_COMPACT_THRESHOLD = 0.70
+SNIP_PLACEHOLDER = "[Content snipped - re-read if needed]"
+SNIPPABLE_TOOLS = {"read_file", "grep", "list_files", "bash"}
+MICROCOMPACT_IDLE_S = 5 * 60
+KEEP_RECENT_RESULTS = 3
+LARGE_RESULT_THRESHOLD = 30 * 1024
+
+
+def _get_context_window(model: str) -> int:
+    env = (os.environ.get("CONTEXT_WINDOW") or "").strip()
+    if env.isdigit():
+        return int(env)
+    return MODEL_CONTEXT.get(model, 128_000)
+
 
 class Agent:
     def __init__(
@@ -78,14 +109,28 @@ class Agent:
 
         self.total_input_tokens = 0
         self.total_output_tokens = 0
+        self.last_input_token_count = 0
+        self.effective_window = _get_context_window(self.model)
+        self.last_api_call_time: float = 0.0
         self._confirm_fn: ConfirmFn | None = None
         self._confirmed: set[str] = set()
         self._aborted = False
         self._already_surfaced_memories: set[str] = set()
         self._session_memory_bytes = 0
 
+        self._folded_session_memories: list[dict[str, Any]] = []
+        self._fold_last_time: float = 0.0
+        self._fold_count: int = 0
+        self._context_cleared = False
+        self._context_break = False
+        self._tool_error_streak = 0
+        self._same_tool_repeat_count = 0
+        self._last_tool_name = ""
+
         if self.permission_mode == "plan":
             self._enter_plan_mode(announce=False)
+        else:
+            self._sync_system_prompt()
 
     def set_confirm_fn(self, fn: ConfirmFn) -> None:
         self._confirm_fn = fn
@@ -106,12 +151,22 @@ class Agent:
         self._session_memory_bytes = 0
         self.total_input_tokens = 0
         self.total_output_tokens = 0
+        self.last_input_token_count = 0
+        self._fold_last_time = 0.0
+        self._fold_count = 0
+        self._tool_error_streak = 0
+        self._same_tool_repeat_count = 0
+        self._last_tool_name = ""
+        self._sync_system_prompt()
         self._auto_save()
 
     def show_cost(self) -> None:
+        util = (
+            self.last_input_token_count / self.effective_window if self.effective_window else 0.0
+        )
         print_info(
             f"tokens in={self.total_input_tokens} out={self.total_output_tokens} "
-            f"(session {self.session_id})"
+            f"ctx={util:.0%} folds={self._fold_count} (session {self.session_id})"
         )
 
     def restore_session(self, data: dict[str, Any]) -> None:
@@ -126,14 +181,17 @@ class Agent:
             self.messages = list(msgs)
         if data.get("model"):
             self.model = str(data["model"])
+            self.effective_window = _get_context_window(self.model)
         tokens = data.get("tokens") or {}
         self.total_input_tokens = int(tokens.get("input") or 0)
         self.total_output_tokens = int(tokens.get("output") or 0)
+        if isinstance(data.get("foldedSessionMemories"), list):
+            self._folded_session_memories = list(data["foldedSessionMemories"])
+            self._fold_count = len(self._folded_session_memories)
         self._confirmed.clear()
-        # If started with --plan, keep plan machinery even after restore.
         if self.permission_mode == "plan" and not self._plan_file_path:
             self._enter_plan_mode(announce=False)
-            self._sync_system_prompt()
+        self._sync_system_prompt()
         print_info(f"Session restored ({len(self.messages)} messages, id={self.session_id}).")
 
     def toggle_plan_mode(self) -> str:
@@ -173,10 +231,30 @@ class Agent:
             "Do NOT ask the user to approve in plain text — exit_plan_mode handles approval.\n"
         )
 
+    def _build_fold_guidance_section(self) -> str:
+        utilization = (
+            self.last_input_token_count / self.effective_window if self.effective_window else 0.0
+        )
+        last_fold = (
+            "never"
+            if not self._fold_last_time
+            else f"{int((time.time() - self._fold_last_time) / 60)}m ago"
+        )
+        return (
+            "\n\n# Runtime Fold Guidance\n"
+            f"- Current context utilization: {utilization:.0%}\n"
+            f"- Recent tool error streak: {self._tool_error_streak}\n"
+            f"- Same tool repeat count: {self._same_tool_repeat_count}\n"
+            f"- Last fold: {last_fold}\n"
+            "- If the context is getting long, the same tool is being retried without progress, "
+            "or tool failures are accumulating, call `compact_context` before trying more tools.\n"
+            "- If you folded very recently and the next step is clear, prefer continuing rather "
+            "than folding again.\n"
+        )
+
     def _enter_plan_mode(self, *, announce: bool) -> None:
         self.permission_mode = "plan"
         if self._pre_plan_mode is None:
-            # Keep previous mode if already set by toggle; else default.
             self._pre_plan_mode = "default"
         self._plan_file_path = self._generate_plan_file_path()
         self._sync_system_prompt()
@@ -187,6 +265,7 @@ class Agent:
         content = self._base_system_prompt
         if self.permission_mode == "plan" and self._plan_file_path:
             content = self._base_system_prompt + self._build_plan_mode_prompt(self._plan_file_path)
+        content += self._build_fold_guidance_section()
         if self.messages and self.messages[0].get("role") == "system":
             self.messages[0]["content"] = content
         else:
@@ -273,7 +352,7 @@ class Agent:
         return f"Unknown plan mode tool: {name}"
 
     def _build_side_query(self, *, max_tokens: int = 256):
-        """Lightweight no-tools completion for memory recall selection."""
+        """Lightweight no-tools completion for memory recall / folding."""
         client = self.client
         model = self.model
 
@@ -335,6 +414,182 @@ class Agent:
             )
         return f'[Skill "{skill_name}" activated]\n\n{result["prompt"]}'
 
+    def _record_tool_outcome(self, tool_name: str, success: bool) -> None:
+        if tool_name == self._last_tool_name:
+            self._same_tool_repeat_count += 1
+        else:
+            self._same_tool_repeat_count = 1
+        self._last_tool_name = tool_name
+        if success:
+            self._tool_error_streak = 0
+        else:
+            self._tool_error_streak += 1
+
+    def _record_fold_event(self) -> None:
+        self._fold_last_time = time.time()
+        self._fold_count += 1
+        self._tool_error_streak = 0
+        self._same_tool_repeat_count = 0
+        self._last_tool_name = ""
+
+    def _looks_like_tool_failure(self, result: str) -> bool:
+        low = (result or "").lower()
+        return low.startswith("error") or "action denied" in low or "user denied" in low
+
+    async def compact(self) -> None:
+        compacted = await self._compact_conversation(trigger="manual")
+        if not compacted:
+            print_info("Nothing to compact yet.")
+
+    async def _check_and_compact(self) -> None:
+        if self.last_input_token_count > self.effective_window * AUTO_COMPACT_THRESHOLD:
+            print_info("Context window filling up, compacting conversation...")
+            await self._compact_conversation(trigger="auto")
+
+    async def _compact_conversation(self, *, trigger: str = "manual") -> bool:
+        compacted = await self._compact_openai(trigger=trigger)
+        if compacted:
+            print_info("Conversation compacted.")
+        return compacted
+
+    async def _compact_openai(self, *, trigger: str) -> bool:
+        if len(self.messages) < 4:
+            return False
+        system_msg = self.messages[0]
+        transcript = build_openai_transcript(self.messages)
+        if not transcript.strip():
+            return False
+        memory = await self._generate_folded_session_memory(transcript)
+        self._record_folded_session_memory(trigger, memory)
+        self._record_fold_event()
+        self.messages = [
+            system_msg,
+            {"role": "user", "content": format_folded_memory(memory)},
+        ]
+        self.last_input_token_count = 0
+        self._sync_system_prompt()
+        self._auto_save()
+        return True
+
+    async def _generate_folded_session_memory(self, transcript: str) -> dict[str, Any]:
+        side_query = self._build_side_query(max_tokens=6000)
+        if side_query is None:
+            return fallback_folded_memory(transcript)
+        try:
+            raw = await side_query(FOLD_SESSION_MEMORY_SYSTEM, build_folding_user_prompt(transcript))
+            return parse_folded_memory(raw)
+        except Exception:
+            return fallback_folded_memory(transcript)
+
+    def _record_folded_session_memory(self, trigger: str, memory: dict[str, Any]) -> None:
+        record = {
+            "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "trigger": trigger,
+            "session_id": self.session_id,
+            **memory,
+        }
+        self._folded_session_memories.append(record)
+        try:
+            save_folded_session_memory(self.session_id, record)
+        except Exception:
+            pass
+
+    def _run_compression_pipeline(self) -> None:
+        self._budget_tool_results_openai()
+        self._snip_stale_results_openai()
+        self._microcompact_openai()
+
+    def _budget_tool_results_openai(self) -> None:
+        utilization = (
+            self.last_input_token_count / self.effective_window if self.effective_window else 0
+        )
+        if utilization < 0.5:
+            return
+        budget = 15_000 if utilization > 0.7 else 30_000
+        for msg in self.messages:
+            if msg.get("role") == "tool" and isinstance(msg.get("content"), str):
+                content = msg["content"]
+                if len(content) > budget:
+                    keep = (budget - 80) // 2
+                    msg["content"] = (
+                        content[:keep]
+                        + f"\n\n[... budgeted: {len(content) - keep * 2} chars truncated ...]\n\n"
+                        + content[-keep:]
+                    )
+
+    def _snip_stale_results_openai(self) -> None:
+        utilization = (
+            self.last_input_token_count / self.effective_window if self.effective_window else 0
+        )
+        if utilization < SNIP_THRESHOLD:
+            return
+        tool_msgs: list[int] = []
+        for i, msg in enumerate(self.messages):
+            if (
+                msg.get("role") == "tool"
+                and isinstance(msg.get("content"), str)
+                and msg["content"] != SNIP_PLACEHOLDER
+            ):
+                tool_msgs.append(i)
+        if len(tool_msgs) <= KEEP_RECENT_RESULTS:
+            return
+        snip_count = len(tool_msgs) - KEEP_RECENT_RESULTS
+        for i in range(snip_count):
+            self.messages[tool_msgs[i]]["content"] = SNIP_PLACEHOLDER
+
+    def _microcompact_openai(self) -> None:
+        if not self.last_api_call_time or (time.time() - self.last_api_call_time) < MICROCOMPACT_IDLE_S:
+            return
+        tool_msgs: list[int] = []
+        for i, msg in enumerate(self.messages):
+            if (
+                msg.get("role") == "tool"
+                and isinstance(msg.get("content"), str)
+                and msg["content"] not in (SNIP_PLACEHOLDER, "[Old result cleared]")
+            ):
+                tool_msgs.append(i)
+        clear_count = len(tool_msgs) - KEEP_RECENT_RESULTS
+        for i in range(max(0, clear_count)):
+            self.messages[tool_msgs[i]]["content"] = "[Old result cleared]"
+
+    def _persist_large_result(self, tool_name: str, result: str) -> str:
+        raw = result.encode("utf-8", errors="replace")
+        if len(raw) <= LARGE_RESULT_THRESHOLD:
+            return result
+        d = Path.home() / ".run" / "tool-results"
+        d.mkdir(parents=True, exist_ok=True)
+        filename = f"{int(time.time() * 1000)}-{tool_name}.txt"
+        filepath = d / filename
+        filepath.write_text(result, encoding="utf-8")
+        lines = result.split("\n")
+        preview = "\n".join(lines[:200])
+        size_kb = len(raw) / 1024
+        return (
+            f"[Result too large ({size_kb:.1f} KB, {len(lines)} lines). "
+            f"Full output saved to {filepath}. "
+            f"You can use read_file to see the full result.]\n\n"
+            f"Preview (first 200 lines):\n{preview}"
+        )
+
+    async def _execute_compact_context_tool(self, inp: dict) -> str:
+        reason = str(inp.get("reason") or "").strip()
+        compacted = await self._compact_conversation(trigger="tool")
+        if not compacted:
+            self._record_tool_outcome("compact_context", False)
+            return (
+                "No context compaction was performed because there is not enough "
+                "conversation history yet."
+            )
+        self._record_tool_outcome("compact_context", True)
+        self._context_cleared = True
+        self._context_break = True
+        suffix = f"\nReason: {reason}" if reason else ""
+        return (
+            "Context compacted into structured session memory. "
+            "Continue from the folded memory now present in the conversation context."
+            f"{suffix}"
+        )
+
     async def chat(self, user_message: str) -> None:
         self._aborted = False
         original_user_message = user_message
@@ -359,7 +614,9 @@ class Agent:
                 print_warning(f"Stopped: reached max_turns={self.max_turns}")
                 break
 
+            self._run_compression_pipeline()
             self._consume_memory_prefetch(memory_prefetch)
+            self._sync_system_prompt()
 
             try:
                 message, usage = await self._call_model()
@@ -367,9 +624,12 @@ class Agent:
                 print_error(f"model call failed: {e}")
                 break
 
+            self.last_api_call_time = time.time()
             if usage:
-                self.total_input_tokens += int(usage.get("prompt_tokens") or 0)
+                prompt_tokens = int(usage.get("prompt_tokens") or 0)
+                self.total_input_tokens += prompt_tokens
                 self.total_output_tokens += int(usage.get("completion_tokens") or 0)
+                self.last_input_token_count = prompt_tokens
 
             assistant_msg: dict[str, Any] = {
                 "role": "assistant",
@@ -391,10 +651,16 @@ class Agent:
                 if self._aborted:
                     break
                 await self._handle_tool_call(tc)
+                if self._context_break:
+                    self._context_break = False
+                    break
 
+            self._sync_system_prompt()
+            await self._check_and_compact()
             self._auto_save()
 
         self._auto_save()
+
     async def _call_model(self) -> tuple[dict[str, Any], dict[str, Any] | None]:
         kwargs: dict[str, Any] = {
             "model": self.model,
@@ -434,6 +700,7 @@ class Agent:
         if name in {"enter_plan_mode", "exit_plan_mode"}:
             result = await self._execute_plan_mode_tool(name)
             print_tool_result(name, result)
+            self._record_tool_outcome(name, not self._looks_like_tool_failure(result))
             self.messages.append(
                 {"role": "tool", "tool_call_id": tc_id, "content": result}
             )
@@ -442,9 +709,23 @@ class Agent:
         if name == "skill":
             result = await self._execute_skill_tool(inp)
             print_tool_result(name, result)
+            self._record_tool_outcome(name, not self._looks_like_tool_failure(result))
             self.messages.append(
                 {"role": "tool", "tool_call_id": tc_id, "content": result}
             )
+            return
+
+        if name == "compact_context":
+            result = await self._execute_compact_context_tool(inp)
+            print_tool_result(name, result)
+            if self._context_cleared:
+                self._context_cleared = False
+                # History was replaced; tool_call pairing is gone — append as user note.
+                self.messages.append({"role": "user", "content": result})
+            else:
+                self.messages.append(
+                    {"role": "tool", "tool_call_id": tc_id, "content": result}
+                )
             return
 
         perm = check_permission(
@@ -457,16 +738,22 @@ class Agent:
         if perm["action"] == "deny":
             print_info(f"Denied: {perm.get('message', '')}")
             result = f"Action denied: {perm.get('message', '')}"
+            self._record_tool_outcome(name, False)
         elif perm["action"] == "confirm":
             ok = await self._confirm(perm.get("message") or name)
             if not ok:
                 result = "User denied this action."
+                self._record_tool_outcome(name, False)
             else:
                 result = await execute_tool(name, inp)
+                result = self._persist_large_result(name, result)
                 print_tool_result(name, result)
+                self._record_tool_outcome(name, not self._looks_like_tool_failure(result))
         else:
             result = await execute_tool(name, inp)
+            result = self._persist_large_result(name, result)
             print_tool_result(name, result)
+            self._record_tool_outcome(name, not self._looks_like_tool_failure(result))
 
         self.messages.append(
             {
@@ -497,6 +784,7 @@ class Agent:
                     "permission_mode": self.permission_mode,
                     "plan_file_path": self._plan_file_path,
                     "messages": self.messages,
+                    "foldedSessionMemories": self._folded_session_memories,
                     "updated_at": time.time(),
                     "tokens": {
                         "input": self.total_input_tokens,
