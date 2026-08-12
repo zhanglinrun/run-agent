@@ -13,6 +13,7 @@ ToolDef = dict[str, Any]
 READ_TOOLS = {"read_file", "list_files", "grep"}
 WRITE_TOOLS = {"write_file", "edit_file"}
 SHELL_TOOLS = {"bash"}
+PLAN_TOOLS = {"enter_plan_mode", "exit_plan_mode"}
 
 MAX_RESULT_CHARS = 50_000
 
@@ -105,6 +106,22 @@ TOOL_DEFINITIONS: list[ToolDef] = [
             "required": ["command"],
         },
     },
+    {
+        "name": "enter_plan_mode",
+        "description": (
+            "Enter plan mode (read-only planning). In plan mode you may only read files "
+            "and write to the designated plan file."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "exit_plan_mode",
+        "description": (
+            "Exit plan mode after writing your plan to the plan file. "
+            "Triggers user approval before implementation."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
 ]
 
 
@@ -129,16 +146,38 @@ def is_dangerous(command: str) -> bool:
     return any(p.search(command) for p in DANGEROUS_PATTERNS)
 
 
-def check_permission(mode: str, name: str, inp: dict) -> dict[str, str]:
+def _same_path(a: str | None, b: str | None) -> bool:
+    if not a or not b:
+        return False
+    try:
+        return Path(a).resolve() == Path(b).resolve()
+    except Exception:
+        return str(a).replace("\\", "/") == str(b).replace("\\", "/")
+
+
+def check_permission(
+    mode: str,
+    name: str,
+    inp: dict,
+    plan_file_path: str | None = None,
+) -> dict[str, str]:
     """Return {"action": "allow"|"deny"|"confirm", "message": ...}."""
     if mode == "bypassPermissions":
+        return {"action": "allow", "message": ""}
+
+    if name in PLAN_TOOLS:
         return {"action": "allow", "message": ""}
 
     if name in READ_TOOLS:
         return {"action": "allow", "message": ""}
 
     if mode == "plan":
-        if name in WRITE_TOOLS or name in SHELL_TOOLS:
+        if name in WRITE_TOOLS:
+            target = inp.get("file_path") or inp.get("path")
+            if plan_file_path and _same_path(str(target) if target is not None else None, plan_file_path):
+                return {"action": "allow", "message": ""}
+            return {"action": "deny", "message": f"Blocked in plan mode: {name}"}
+        if name in SHELL_TOOLS:
             return {"action": "deny", "message": f"Blocked in plan mode: {name}"}
         return {"action": "allow", "message": ""}
 

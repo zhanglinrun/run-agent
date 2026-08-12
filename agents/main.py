@@ -9,12 +9,14 @@ import sys
 from dotenv import load_dotenv
 
 from .agent import Agent
-from .session import get_latest_session_id, list_sessions, load_session
+from .session import list_sessions, load_session
 from .ui import (
     print_error,
     print_goodbye,
     print_info,
     print_interrupted,
+    print_plan_approval_options,
+    print_plan_for_approval,
     print_user_prompt,
     print_welcome,
     print_warning,
@@ -60,7 +62,7 @@ Usage: python -m agents.main [options] [prompt]
 
 Options:
   --yolo, -y          Skip all confirmation prompts
-  --plan              Read-only plan mode
+  --plan              Read-only plan mode (explore + write plan file only)
   --accept-edits      Auto-approve file edits
   --dont-ask          Auto-deny confirmations
   --model, -m         Model name (or MODEL in .env)
@@ -77,6 +79,7 @@ REPL:
   /sessions           List recent sessions
   /resume             Pick a session interactively (or load latest if only one)
   /resume <id|n>      Resume by session id or list number
+  /plan               Toggle plan mode (read-only planning)
   /exit               Quit
 """.strip()
     )
@@ -171,6 +174,33 @@ async def _confirm_interactive(message: str) -> bool:
     return ans in {"y", "yes"}
 
 
+async def _plan_approval_fn(plan_content: str) -> dict:
+    print_plan_for_approval(plan_content)
+    print_plan_approval_options()
+    while True:
+        print_user_prompt()
+        try:
+            choice = input("Enter choice (1-4): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print_interrupted()
+            return {"choice": "manual-execute"}
+        if choice == "1":
+            return {"choice": "clear-and-execute"}
+        if choice == "2":
+            return {"choice": "execute"}
+        if choice == "3":
+            return {"choice": "manual-execute"}
+        if choice == "4":
+            print_user_prompt()
+            try:
+                feedback = input("Feedback (what to change): ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print_interrupted()
+                return {"choice": "keep-planning", "feedback": None}
+            return {"choice": "keep-planning", "feedback": feedback or None}
+        print_warning("Invalid choice. Enter 1, 2, 3, or 4.")
+
+
 async def run_repl(agent: Agent) -> None:
     print_welcome()
     while True:
@@ -206,6 +236,9 @@ async def run_repl(agent: Agent) -> None:
         if line.startswith("/resume "):
             _resume_session(agent, line[len("/resume ") :].strip())
             continue
+        if line == "/plan":
+            agent.toggle_plan_mode()
+            continue
 
         try:
             await agent.chat(line)
@@ -238,6 +271,7 @@ def main() -> None:
         sys.exit(1)
 
     agent.set_confirm_fn(_confirm_interactive)
+    agent.set_plan_approval_fn(_plan_approval_fn)
     if args.session:
         _resume_session(agent, args.session)
     elif args.resume:

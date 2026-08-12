@@ -1,4 +1,4 @@
-"""Run Agent runtime: OpenAI-compatible chat + tool loop (C01/C02)."""
+"""Run Agent runtime: OpenAI-compatible chat + tool loop (C01–C03)."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import json
 import os
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from dotenv import load_dotenv
@@ -24,6 +25,7 @@ from .ui import (
 )
 
 ConfirmFn = Callable[[str], Awaitable[bool]]
+PlanApprovalFn = Callable[[str], Awaitable[dict[str, Any]]]
 
 
 class Agent:
@@ -59,8 +61,13 @@ class Agent:
         self.client = AsyncOpenAI(**client_kwargs)
 
         self.session_id = uuid.uuid4().hex[:8]
+        self._base_system_prompt = build_system_prompt()
+        self._pre_plan_mode: str | None = None
+        self._plan_file_path: str | None = None
+        self._plan_approval_fn: PlanApprovalFn | None = None
+
         self.messages: list[dict[str, Any]] = [
-            {"role": "system", "content": build_system_prompt()},
+            {"role": "system", "content": self._base_system_prompt},
         ]
         self.openai_tools = to_openai_tools(TOOL_DEFINITIONS)
 
@@ -70,14 +77,23 @@ class Agent:
         self._confirmed: set[str] = set()
         self._aborted = False
 
+        if self.permission_mode == "plan":
+            self._enter_plan_mode(announce=False)
+
     def set_confirm_fn(self, fn: ConfirmFn) -> None:
         self._confirm_fn = fn
+
+    def set_plan_approval_fn(self, fn: PlanApprovalFn) -> None:
+        self._plan_approval_fn = fn
 
     def abort(self) -> None:
         self._aborted = True
 
     def clear_history(self) -> None:
-        self.messages = [{"role": "system", "content": build_system_prompt()}]
+        system = self.messages[0]["content"] if self.messages else self._base_system_prompt
+        if self.permission_mode == "plan" and self._plan_file_path:
+            system = self._base_system_prompt + self._build_plan_mode_prompt(self._plan_file_path)
+        self.messages = [{"role": "system", "content": system}]
         self._confirmed.clear()
         self.total_input_tokens = 0
         self.total_output_tokens = 0
@@ -105,7 +121,147 @@ class Agent:
         self.total_input_tokens = int(tokens.get("input") or 0)
         self.total_output_tokens = int(tokens.get("output") or 0)
         self._confirmed.clear()
+        # If started with --plan, keep plan machinery even after restore.
+        if self.permission_mode == "plan" and not self._plan_file_path:
+            self._enter_plan_mode(announce=False)
+            self._sync_system_prompt()
         print_info(f"Session restored ({len(self.messages)} messages, id={self.session_id}).")
+
+    def toggle_plan_mode(self) -> str:
+        if self.permission_mode == "plan":
+            restored = self._pre_plan_mode or "default"
+            self.permission_mode = restored
+            self._pre_plan_mode = None
+            self._plan_file_path = None
+            self._sync_system_prompt()
+            msg = f"Exited plan mode -> {self.permission_mode}"
+            print_info(msg)
+            return msg
+
+        self._pre_plan_mode = self.permission_mode
+        self._enter_plan_mode(announce=True)
+        return f"Entered plan mode. Plan file: {self._plan_file_path}"
+
+    def _generate_plan_file_path(self) -> str:
+        d = Path.cwd() / ".run" / "plans"
+        d.mkdir(parents=True, exist_ok=True)
+        return str((d / f"plan-{self.session_id}.md").resolve())
+
+    def _build_plan_mode_prompt(self, plan_file_path: str) -> str:
+        return (
+            "\n\n# Plan Mode Active\n\n"
+            "Plan mode is active. You MUST NOT edit project files (except the plan file below),\n"
+            "run non-readonly tools, or change the system.\n\n"
+            f"## Plan File: {plan_file_path}\n"
+            "Write your plan incrementally to this file using write_file or edit_file.\n"
+            "This is the ONLY file you are allowed to edit.\n\n"
+            "## Workflow\n"
+            "1. Explore: use read_file / list_files / grep to understand the codebase.\n"
+            "2. Design: outline steps, risks, and files you will touch.\n"
+            "3. Write Plan: structured markdown in the plan file (goal / steps / files / risks).\n"
+            "4. Exit: call exit_plan_mode when ready for user review.\n\n"
+            "IMPORTANT: When the plan is complete, you MUST call exit_plan_mode.\n"
+            "Do NOT ask the user to approve in plain text — exit_plan_mode handles approval.\n"
+        )
+
+    def _enter_plan_mode(self, *, announce: bool) -> None:
+        self.permission_mode = "plan"
+        if self._pre_plan_mode is None:
+            # Keep previous mode if already set by toggle; else default.
+            self._pre_plan_mode = "default"
+        self._plan_file_path = self._generate_plan_file_path()
+        self._sync_system_prompt()
+        if announce:
+            print_info(f"Entered plan mode. Plan file: {self._plan_file_path}")
+
+    def _sync_system_prompt(self) -> None:
+        content = self._base_system_prompt
+        if self.permission_mode == "plan" and self._plan_file_path:
+            content = self._base_system_prompt + self._build_plan_mode_prompt(self._plan_file_path)
+        if self.messages and self.messages[0].get("role") == "system":
+            self.messages[0]["content"] = content
+        else:
+            self.messages.insert(0, {"role": "system", "content": content})
+
+    def _read_plan_content(self) -> str:
+        if not self._plan_file_path:
+            return "(No plan file path)"
+        path = Path(self._plan_file_path)
+        if not path.exists():
+            return "(No plan file found)"
+        try:
+            return path.read_text(encoding="utf-8", errors="replace")
+        except Exception as e:
+            return f"(Failed to read plan file: {e})"
+
+    async def _execute_plan_mode_tool(self, name: str) -> str:
+        if name == "enter_plan_mode":
+            if self.permission_mode == "plan":
+                return f"Already in plan mode.\nPlan file: {self._plan_file_path}"
+            self._pre_plan_mode = self.permission_mode
+            self._enter_plan_mode(announce=True)
+            return (
+                "Entered plan mode. You are now in read-only mode.\n\n"
+                f"Your plan file: {self._plan_file_path}\n"
+                "Write your plan to this file. This is the only file you can edit.\n\n"
+                "When your plan is complete, call exit_plan_mode."
+            )
+
+        if name == "exit_plan_mode":
+            if self.permission_mode != "plan":
+                return "Not in plan mode."
+
+            plan_content = self._read_plan_content()
+
+            if self._plan_approval_fn is None:
+                self.permission_mode = self._pre_plan_mode or "default"
+                self._pre_plan_mode = None
+                saved = self._plan_file_path
+                self._plan_file_path = None
+                self._sync_system_prompt()
+                print_info(f"Exited plan mode -> {self.permission_mode}")
+                return (
+                    f"Exited plan mode. Permission mode restored to: {self.permission_mode}\n\n"
+                    f"Plan file: {saved}\n\n## Your Plan:\n{plan_content}"
+                )
+
+            result = await self._plan_approval_fn(plan_content)
+            choice = result.get("choice", "manual-execute")
+
+            if choice == "keep-planning":
+                feedback = result.get("feedback") or "Please revise the plan."
+                return (
+                    "User rejected the plan and wants to keep planning.\n\n"
+                    f"User feedback: {feedback}\n\n"
+                    "Please revise your plan based on this feedback. "
+                    "When done, call exit_plan_mode again."
+                )
+
+            if choice in {"clear-and-execute", "execute"}:
+                target = "acceptEdits"
+            else:
+                target = self._pre_plan_mode or "default"
+
+            saved = self._plan_file_path
+            self.permission_mode = target
+            self._pre_plan_mode = None
+            self._plan_file_path = None
+            self._sync_system_prompt()
+
+            cleared = ""
+            if choice == "clear-and-execute":
+                self.messages = [{"role": "system", "content": self.messages[0]["content"]}]
+                self._confirmed.clear()
+                cleared = " Context was cleared."
+
+            print_info(f"Plan approved. Executing in {target} mode.")
+            return (
+                f"User approved the plan. Permission mode: {target}.{cleared}\n\n"
+                f"Plan file: {saved}\n\n## Approved Plan:\n{plan_content}\n\n"
+                "Proceed with implementation."
+            )
+
+        return f"Unknown plan mode tool: {name}"
 
     async def chat(self, user_message: str) -> None:
         self._aborted = False
@@ -129,7 +285,6 @@ class Agent:
                 self.total_input_tokens += int(usage.get("prompt_tokens") or 0)
                 self.total_output_tokens += int(usage.get("completion_tokens") or 0)
 
-            # 规范化 assistant message 再入历史
             assistant_msg: dict[str, Any] = {
                 "role": "assistant",
                 "content": message.get("content"),
@@ -162,13 +317,11 @@ class Agent:
             "tools": self.openai_tools,
         }
         if self.reasoning_effort:
-            # 多数 OpenAI-compatible 网关用 extra_body；也尝试顶层字段
             kwargs["extra_body"] = {"reasoning_effort": self.reasoning_effort}
 
         try:
             resp = await self.client.chat.completions.create(**kwargs)
         except Exception as first_err:
-            # 若网关不认 extra_body 里的字段，去掉再试一次（无思考强度）
             if self.reasoning_effort and "extra_body" in kwargs:
                 kwargs.pop("extra_body", None)
                 print_warning(f"retry without reasoning_effort: {first_err}")
@@ -192,7 +345,21 @@ class Agent:
             inp = {}
 
         print_tool_call(name, inp)
-        perm = check_permission(self.permission_mode, name, inp)
+
+        if name in {"enter_plan_mode", "exit_plan_mode"}:
+            result = await self._execute_plan_mode_tool(name)
+            print_tool_result(name, result)
+            self.messages.append(
+                {"role": "tool", "tool_call_id": tc_id, "content": result}
+            )
+            return
+
+        perm = check_permission(
+            self.permission_mode,
+            name,
+            inp,
+            plan_file_path=self._plan_file_path,
+        )
 
         if perm["action"] == "deny":
             print_info(f"Denied: {perm.get('message', '')}")
@@ -235,6 +402,7 @@ class Agent:
                     "id": self.session_id,
                     "model": self.model,
                     "permission_mode": self.permission_mode,
+                    "plan_file_path": self._plan_file_path,
                     "messages": self.messages,
                     "updated_at": time.time(),
                     "tokens": {
