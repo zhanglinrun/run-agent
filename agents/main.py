@@ -9,12 +9,14 @@ import sys
 from dotenv import load_dotenv
 
 from .agent import Agent
+from .memory import list_memories
 from .session import list_sessions, load_session
 from .ui import (
     print_error,
     print_goodbye,
     print_info,
     print_interrupted,
+    print_memory_entries,
     print_plan_approval_options,
     print_plan_for_approval,
     print_user_prompt,
@@ -80,6 +82,7 @@ REPL:
   /resume             Pick a session interactively (or load latest if only one)
   /resume <id|n>      Resume by session id or list number
   /plan               Toggle plan mode (read-only planning)
+  /memory             List long-term memories for this project
   /exit               Quit
 """.strip()
     )
@@ -238,6 +241,13 @@ async def run_repl(agent: Agent) -> None:
             continue
         if line == "/plan":
             agent.toggle_plan_mode()
+            continue
+        if line == "/memory":
+            memories = list_memories()
+            if not memories:
+                print_info("No memories saved yet.")
+            else:
+                print_memory_entries(memories)
             continue
 
         try:

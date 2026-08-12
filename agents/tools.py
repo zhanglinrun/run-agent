@@ -1,4 +1,4 @@
-"""Built-in coding tools + permission gate for Run Agent (C01)."""
+"""Built-in coding tools + permission gate for Run Agent (C01–C04)."""
 
 from __future__ import annotations
 
@@ -7,6 +7,8 @@ import re
 import subprocess
 from pathlib import Path
 from typing import Any
+
+from .memory import _update_memory_index, get_memory_dir
 
 ToolDef = dict[str, Any]
 
@@ -223,11 +225,25 @@ def _read_file(inp: dict) -> str:
         return f"Error reading file: {e}"
 
 
+def _auto_update_memory_index(file_path: str) -> None:
+    """Refresh MEMORY.md when a memory markdown file is written/edited."""
+    try:
+        mem_dir = get_memory_dir().resolve()
+        path = Path(file_path).resolve()
+        if path.parent != mem_dir:
+            return
+        if path.suffix != ".md" or path.name == "MEMORY.md":
+            return
+        _update_memory_index()
+    except Exception:
+        pass
+
 def _write_file(inp: dict) -> str:
     try:
         path = _resolve_path(inp["file_path"], must_exist=False)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(inp["content"], encoding="utf-8")
+        _auto_update_memory_index(str(path))
         n = len(inp["content"].split("\n"))
         return f"Successfully wrote to {inp['file_path']} ({n} lines)"
     except Exception as e:
@@ -246,10 +262,10 @@ def _edit_file(inp: dict) -> str:
         if count > 1:
             return f"Error: old_string found {count} times; must be unique."
         path.write_text(content.replace(old, new, 1), encoding="utf-8")
+        _auto_update_memory_index(str(path))
         return f"Successfully edited {inp['file_path']}"
     except Exception as e:
         return f"Error editing file: {e}"
-
 
 def _list_files(inp: dict) -> str:
     try:

@@ -6,9 +6,12 @@ import platform
 from datetime import date
 from pathlib import Path
 
+from .memory import build_memory_prompt_section
+
 
 def build_system_prompt() -> str:
     cwd = str(Path.cwd())
+    memory_section = build_memory_prompt_section()
     return f"""You are Run Agent, a local coding agent CLI.
 
 Help the user with software engineering tasks in the current project.
@@ -20,9 +23,12 @@ Rules:
 - Keep replies short and direct. Lead with the answer or action.
 - Do not invent file contents; use tools to inspect the real workspace.
 - If a tool fails, read the error and adjust; do not blindly retry the same call.
+- When the user asks you to remember a preference or stable fact, save it via write_file into the Memory System directory.
 
 # Environment
 Working directory: {cwd}
 Date: {date.today().isoformat()}
 Platform: {platform.system()} {platform.release()}
+
+{memory_section}
 """

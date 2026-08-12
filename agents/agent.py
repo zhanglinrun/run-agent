@@ -1,4 +1,4 @@
-"""Run Agent runtime: OpenAI-compatible chat + tool loop (C01–C03)."""
+"""Run Agent runtime: OpenAI-compatible chat + tool loop (C01–C04)."""
 
 from __future__ import annotations
 
@@ -12,6 +12,11 @@ from typing import Any, Awaitable, Callable
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
+from .memory import (
+    MemoryPrefetch,
+    format_memories_for_injection,
+    start_memory_prefetch,
+)
 from .prompt import build_system_prompt
 from .session import save_session
 from .tools import TOOL_DEFINITIONS, check_permission, execute_tool, to_openai_tools
@@ -26,7 +31,6 @@ from .ui import (
 
 ConfirmFn = Callable[[str], Awaitable[bool]]
 PlanApprovalFn = Callable[[str], Awaitable[dict[str, Any]]]
-
 
 class Agent:
     def __init__(
@@ -76,6 +80,8 @@ class Agent:
         self._confirm_fn: ConfirmFn | None = None
         self._confirmed: set[str] = set()
         self._aborted = False
+        self._already_surfaced_memories: set[str] = set()
+        self._session_memory_bytes = 0
 
         if self.permission_mode == "plan":
             self._enter_plan_mode(announce=False)
@@ -95,6 +101,8 @@ class Agent:
             system = self._base_system_prompt + self._build_plan_mode_prompt(self._plan_file_path)
         self.messages = [{"role": "system", "content": system}]
         self._confirmed.clear()
+        self._already_surfaced_memories.clear()
+        self._session_memory_bytes = 0
         self.total_input_tokens = 0
         self.total_output_tokens = 0
         self._auto_save()
@@ -263,9 +271,59 @@ class Agent:
 
         return f"Unknown plan mode tool: {name}"
 
+    def _build_side_query(self, *, max_tokens: int = 256):
+        """Lightweight no-tools completion for memory recall selection."""
+        client = self.client
+        model = self.model
+
+        async def _sq(system: str, user_message: str) -> str:
+            resp = await client.chat.completions.create(
+                model=model,
+                max_tokens=max(1, int(max_tokens)),
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_message},
+                ],
+            )
+            if not resp.choices:
+                return ""
+            return resp.choices[0].message.content or ""
+
+        return _sq
+
+    def _consume_memory_prefetch(self, memory_prefetch: MemoryPrefetch | None) -> None:
+        if not memory_prefetch or not memory_prefetch.settled or memory_prefetch.consumed:
+            return
+        memory_prefetch.consumed = True
+        try:
+            memories = memory_prefetch.task.result()
+            if not memories:
+                return
+            injection_text = format_memories_for_injection(memories)
+            last = self.messages[-1] if self.messages else None
+            if last and last.get("role") == "user":
+                last["content"] = (last.get("content") or "") + "\n\n" + injection_text
+            else:
+                self.messages.append({"role": "user", "content": injection_text})
+            for m in memories:
+                self._already_surfaced_memories.add(m.path)
+                self._session_memory_bytes += m.size
+        except Exception:
+            pass
+
     async def chat(self, user_message: str) -> None:
         self._aborted = False
         self.messages.append({"role": "user", "content": user_message})
+
+        memory_prefetch: MemoryPrefetch | None = None
+        sq = self._build_side_query()
+        if sq:
+            memory_prefetch = start_memory_prefetch(
+                user_message,
+                sq,
+                self._already_surfaced_memories,
+                self._session_memory_bytes,
+            )
 
         turns = 0
         while True:
@@ -274,6 +332,8 @@ class Agent:
             if turns >= self.max_turns:
                 print_warning(f"Stopped: reached max_turns={self.max_turns}")
                 break
+
+            self._consume_memory_prefetch(memory_prefetch)
 
             try:
                 message, usage = await self._call_model()
@@ -309,7 +369,6 @@ class Agent:
             self._auto_save()
 
         self._auto_save()
-
     async def _call_model(self) -> tuple[dict[str, Any], dict[str, Any] | None]:
         kwargs: dict[str, Any] = {
             "model": self.model,
