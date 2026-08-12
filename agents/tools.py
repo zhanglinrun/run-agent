@@ -1,4 +1,4 @@
-"""Built-in coding tools + permission gate for Run Agent (C01–C05)."""
+"""Built-in coding tools + permission gate for Run Agent (C01–C07)."""
 
 from __future__ import annotations
 
@@ -201,6 +201,12 @@ def check_permission(
 ) -> dict[str, str]:
     """Return {"action": "allow"|"deny"|"confirm", "message": ...}."""
     if mode == "bypassPermissions":
+        return {"action": "allow", "message": ""}
+
+    # External MCP tools: same Loop, but opaque side effects → deny in plan mode.
+    if name.startswith("mcp__"):
+        if mode == "plan":
+            return {"action": "deny", "message": f"Blocked in plan mode: {name}"}
         return {"action": "allow", "message": ""}
 
     if name in PLAN_TOOLS or name in SKILL_TOOLS or name in COMPACT_TOOLS:

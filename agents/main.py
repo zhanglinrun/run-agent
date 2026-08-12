@@ -1,4 +1,4 @@
-"""CLI entry: REPL and one-shot prompts (C02: flags + resume)."""
+"""CLI entry: REPL and one-shot prompts (C02: flags + resume; C07: MCP)."""
 
 from __future__ import annotations
 
@@ -87,6 +87,7 @@ REPL:
   /memory             List long-term memories for this project
   /skills             List discovered skills
   /compact            Compact conversation into structured session memory
+  /mcp                List connected MCP servers and tools
   /exit               Quit
 """.strip()
     )
@@ -208,72 +209,82 @@ async def _plan_approval_fn(plan_content: str) -> dict:
         print_warning("Invalid choice. Enter 1, 2, 3, or 4.")
 
 
+async def run_one_shot(agent: Agent, prompt: str) -> None:
+    try:
+        await agent.chat(prompt)
+    finally:
+        await agent.disconnect_mcp()
+
+
 async def run_repl(agent: Agent) -> None:
     print_welcome()
-    while True:
-        try:
-            print_user_prompt()
-            line = input().strip()
-        except (EOFError, KeyboardInterrupt):
-            print_interrupted()
-            print_goodbye()
-            break
+    try:
+        while True:
+            try:
+                print_user_prompt()
+                line = input().strip()
+            except (EOFError, KeyboardInterrupt):
+                print_interrupted()
+                print_goodbye()
+                break
 
-        if not line:
-            continue
-        if line in {"/exit", "exit", "quit"}:
-            print_goodbye()
-            break
-        if line in {"/help", "help"}:
-            _print_help()
-            continue
-        if line == "/clear":
-            agent.clear_history()
-            print_info("history cleared")
-            continue
-        if line == "/cost":
-            agent.show_cost()
-            continue
-        if line == "/sessions":
-            _print_sessions(list_sessions())
-            continue
-        if line == "/resume":
-            _resume_interactive(agent)
-            continue
-        if line.startswith("/resume "):
-            _resume_session(agent, line[len("/resume ") :].strip())
-            continue
-        if line == "/plan":
-            agent.toggle_plan_mode()
-            continue
-        if line == "/memory":
-            memories = list_memories()
-            if not memories:
-                print_info("No memories saved yet.")
-            else:
-                print_memory_entries(memories)
-            continue
-        if line == "/skills":
-            reset_skill_cache()
-            skills = discover_skills()
-            if not skills:
-                print_info("No skills registered. Add .run/skills/<name>/SKILL.md")
-            else:
-                print_skills(skills)
-            continue
-        if line == "/compact":
-            await agent.compact()
-            continue
+            if not line:
+                continue
+            if line in {"/exit", "exit", "quit"}:
+                print_goodbye()
+                break
+            if line in {"/help", "help"}:
+                _print_help()
+                continue
+            if line == "/clear":
+                agent.clear_history()
+                print_info("history cleared")
+                continue
+            if line == "/cost":
+                agent.show_cost()
+                continue
+            if line == "/sessions":
+                _print_sessions(list_sessions())
+                continue
+            if line == "/resume":
+                _resume_interactive(agent)
+                continue
+            if line.startswith("/resume "):
+                _resume_session(agent, line[len("/resume ") :].strip())
+                continue
+            if line == "/plan":
+                agent.toggle_plan_mode()
+                continue
+            if line == "/memory":
+                memories = list_memories()
+                if not memories:
+                    print_info("No memories saved yet.")
+                else:
+                    print_memory_entries(memories)
+                continue
+            if line == "/skills":
+                reset_skill_cache()
+                skills = discover_skills()
+                if not skills:
+                    print_info("No skills registered. Add .run/skills/<name>/SKILL.md")
+                else:
+                    print_skills(skills)
+                continue
+            if line == "/compact":
+                await agent.compact()
+                continue
+            if line == "/mcp":
+                await agent.ensure_mcp()
+                print_info(agent.mcp_status())
+                continue
 
-        try:
-            await agent.chat(line)
-        except KeyboardInterrupt:
-            agent.abort()
-            print_interrupted()
-
-
-async def run_one_shot(agent: Agent, prompt: str) -> None:
-    await agent.chat(prompt)
+            try:
+                await agent.chat(line)
+            except KeyboardInterrupt:
+                agent.abort()
+                print_interrupted()
+    finally:
+        await agent.disconnect_mcp()
 
 
 def main() -> None:

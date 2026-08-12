@@ -1,4 +1,4 @@
-"""Run Agent runtime: OpenAI-compatible chat + tool loop (C01–C06)."""
+"""Run Agent runtime: OpenAI-compatible chat + tool loop (C01–C07)."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from typing import Any, Awaitable, Callable
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
+from .mcp_client import McpManager
 from .memory import (
     MemoryPrefetch,
     format_memories_for_injection,
@@ -126,6 +127,9 @@ class Agent:
         self._tool_error_streak = 0
         self._same_tool_repeat_count = 0
         self._last_tool_name = ""
+
+        self._mcp_manager = McpManager()
+        self._mcp_initialized = False
 
         if self.permission_mode == "plan":
             self._enter_plan_mode(announce=False)
@@ -590,8 +594,37 @@ class Agent:
             f"{suffix}"
         )
 
+    async def ensure_mcp(self) -> None:
+        """Lazy-connect MCP servers once; append discovered tools to openai_tools."""
+        if self._mcp_initialized:
+            return
+        self._mcp_initialized = True
+        try:
+            await self._mcp_manager.load_and_connect()
+            mcp_defs = self._mcp_manager.get_tool_definitions()
+            if mcp_defs:
+                self.openai_tools = self.openai_tools + to_openai_tools(mcp_defs)
+        except Exception as e:
+            print_error(f"MCP init failed: {e}")
+
+    def mcp_status(self) -> str:
+        return self._mcp_manager.format_status()
+
+    async def disconnect_mcp(self) -> None:
+        await self._mcp_manager.disconnect_all()
+        self._mcp_initialized = False
+
+    async def _execute_tool(self, name: str, inp: dict) -> str:
+        if self._mcp_manager.is_mcp_tool(name):
+            try:
+                return await self._mcp_manager.call_tool(name, inp)
+            except Exception as e:
+                return f"Error: {e}"
+        return await execute_tool(name, inp)
+
     async def chat(self, user_message: str) -> None:
         self._aborted = False
+        await self.ensure_mcp()
         original_user_message = user_message
         augmented, _ = self._augment_user_message_with_skill_context(original_user_message)
         self.messages.append({"role": "user", "content": augmented})
@@ -745,12 +778,12 @@ class Agent:
                 result = "User denied this action."
                 self._record_tool_outcome(name, False)
             else:
-                result = await execute_tool(name, inp)
+                result = await self._execute_tool(name, inp)
                 result = self._persist_large_result(name, result)
                 print_tool_result(name, result)
                 self._record_tool_outcome(name, not self._looks_like_tool_failure(result))
         else:
-            result = await execute_tool(name, inp)
+            result = await self._execute_tool(name, inp)
             result = self._persist_large_result(name, result)
             print_tool_result(name, result)
             self._record_tool_outcome(name, not self._looks_like_tool_failure(result))
