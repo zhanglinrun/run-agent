@@ -1,4 +1,4 @@
-"""Run Agent runtime: OpenAI-compatible chat + tool loop (C01–C04)."""
+"""Run Agent runtime: OpenAI-compatible chat + tool loop (C01–C05)."""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from .memory import (
 )
 from .prompt import build_system_prompt
 from .session import save_session
+from .skills import execute_skill, format_retrieved_skill_context
 from .tools import TOOL_DEFINITIONS, check_permission, execute_tool, to_openai_tools
 from .ui import (
     print_assistant_text,
@@ -311,15 +312,40 @@ class Agent:
         except Exception:
             pass
 
+    def _augment_user_message_with_skill_context(
+        self, user_message: str
+    ) -> tuple[str, dict[str, Any] | None]:
+        try:
+            context, top_ref = format_retrieved_skill_context(user_message, limit=3)
+        except Exception:
+            return user_message, None
+        if not context.strip():
+            return user_message, top_ref
+        return f"{user_message}\n\n{context}", top_ref
+
+    async def _execute_skill_tool(self, inp: dict) -> str:
+        skill_name = str(inp.get("skill_name") or "").strip()
+        result = execute_skill(skill_name, inp.get("args", ""))
+        if not result:
+            return f"Unknown skill: {skill_name}"
+        if result.get("context") == "fork":
+            return (
+                f'Skill "{skill_name}" requests fork context, which is not enabled yet (C08). '
+                "Use an inline skill or wait for sub-agent support."
+            )
+        return f'[Skill "{skill_name}" activated]\n\n{result["prompt"]}'
+
     async def chat(self, user_message: str) -> None:
         self._aborted = False
-        self.messages.append({"role": "user", "content": user_message})
+        original_user_message = user_message
+        augmented, _ = self._augment_user_message_with_skill_context(original_user_message)
+        self.messages.append({"role": "user", "content": augmented})
 
         memory_prefetch: MemoryPrefetch | None = None
         sq = self._build_side_query()
         if sq:
             memory_prefetch = start_memory_prefetch(
-                user_message,
+                original_user_message,
                 sq,
                 self._already_surfaced_memories,
                 self._session_memory_bytes,
@@ -407,6 +433,14 @@ class Agent:
 
         if name in {"enter_plan_mode", "exit_plan_mode"}:
             result = await self._execute_plan_mode_tool(name)
+            print_tool_result(name, result)
+            self.messages.append(
+                {"role": "tool", "tool_call_id": tc_id, "content": result}
+            )
+            return
+
+        if name == "skill":
+            result = await self._execute_skill_tool(inp)
             print_tool_result(name, result)
             self.messages.append(
                 {"role": "tool", "tool_call_id": tc_id, "content": result}

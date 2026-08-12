@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from .agent import Agent
 from .memory import list_memories
 from .session import list_sessions, load_session
+from .skills import discover_skills, reset_skill_cache
 from .ui import (
     print_error,
     print_goodbye,
@@ -19,6 +20,7 @@ from .ui import (
     print_memory_entries,
     print_plan_approval_options,
     print_plan_for_approval,
+    print_skills,
     print_user_prompt,
     print_welcome,
     print_warning,
@@ -83,6 +85,7 @@ REPL:
   /resume <id|n>      Resume by session id or list number
   /plan               Toggle plan mode (read-only planning)
   /memory             List long-term memories for this project
+  /skills             List discovered skills
   /exit               Quit
 """.strip()
     )
@@ -248,6 +251,14 @@ async def run_repl(agent: Agent) -> None:
                 print_info("No memories saved yet.")
             else:
                 print_memory_entries(memories)
+            continue
+        if line == "/skills":
+            reset_skill_cache()
+            skills = discover_skills()
+            if not skills:
+                print_info("No skills registered. Add .run/skills/<name>/SKILL.md")
+            else:
+                print_skills(skills)
             continue
 
         try:

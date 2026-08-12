@@ -15,7 +15,7 @@ def print_welcome() -> None:
     console.print()
     console.print("[bold cyan]Run Agent[/bold cyan] — Coding Agent CLI")
     console.print(
-        "[dim]命令: /help  /clear  /cost  /sessions  /resume  /plan  /memory  /exit[/dim]"
+        "[dim]命令: /help  /clear  /cost  /sessions  /resume  /plan  /memory  /skills  /exit[/dim]"
     )
     console.print()
 
@@ -97,4 +97,23 @@ def print_memory_entries(memories: list[object]) -> None:
         )
     console.print(
         Panel(table, title="[bold cyan]Memories[/bold cyan]", border_style="cyan", box=ROUNDED)
+    )
+
+
+def print_skills(skills: list[object]) -> None:
+    table = Table(box=ROUNDED, header_style="bold cyan", border_style="cyan")
+    table.add_column("Source", style="bold yellow", no_wrap=True)
+    table.add_column("Name", style="white")
+    table.add_column("Mode", style="dim", no_wrap=True)
+    table.add_column("Description", style="dim")
+    for s in skills:
+        invocable = bool(getattr(s, "user_invocable", True))
+        table.add_row(
+            str(getattr(s, "source", "") or ""),
+            str(getattr(s, "name", "") or ""),
+            "user" if invocable else "auto",
+            str(getattr(s, "description", "") or ""),
+        )
+    console.print(
+        Panel(table, title="[bold cyan]Skills[/bold cyan]", border_style="cyan", box=ROUNDED)
     )

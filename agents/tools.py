@@ -1,4 +1,4 @@
-"""Built-in coding tools + permission gate for Run Agent (C01–C04)."""
+"""Built-in coding tools + permission gate for Run Agent (C01–C05)."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ READ_TOOLS = {"read_file", "list_files", "grep"}
 WRITE_TOOLS = {"write_file", "edit_file"}
 SHELL_TOOLS = {"bash"}
 PLAN_TOOLS = {"enter_plan_mode", "exit_plan_mode"}
+SKILL_TOOLS = {"skill"}
 
 MAX_RESULT_CHARS = 50_000
 
@@ -124,6 +125,21 @@ TOOL_DEFINITIONS: list[ToolDef] = [
         ),
         "input_schema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "skill",
+        "description": (
+            "Invoke a registered skill by name. Skills are prompt templates loaded from "
+            ".run/skills/. Returns the skill's resolved prompt to follow."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "skill_name": {"type": "string", "description": "The name of the skill to invoke"},
+                "args": {"type": "string", "description": "Optional arguments to pass to the skill"},
+            },
+            "required": ["skill_name"],
+        },
+    },
 ]
 
 
@@ -167,7 +183,7 @@ def check_permission(
     if mode == "bypassPermissions":
         return {"action": "allow", "message": ""}
 
-    if name in PLAN_TOOLS:
+    if name in PLAN_TOOLS or name in SKILL_TOOLS:
         return {"action": "allow", "message": ""}
 
     if name in READ_TOOLS:
