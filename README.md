@@ -1,5 +1,3 @@
-# Run Agent-本地 Coding Agent Runtime
-
 # Run Agent（Harness Coding Agent）
 
 ## 项目简介
@@ -8,7 +6,7 @@ Run Agent 是一个基于 Python 实现的 **自进化 Harness Agent**。它不�
 
 项目重点是 **Harness**：模型只负责推理和提出工具调用意图，真正的环境操作由 Run Agent Runtime 统一做权限判断、工具执行、结果回写、上下文压缩和经验沉淀。它适合学习 Claude Code 类工具的底层机制，也适合作为个人 Coding Agent、项目分析助手或领域 Agent 的二次开发基础。
 
-品牌为 **Run**，运行时目录为 **`.run/`**。能力按 C01–C10 增量演进，始终可通过 `python -m agents.main` 一键演示。
+品牌为 **Run**，运行时目录为 **`.run/`**。可通过 `python -m agents.main` 启动。
 
 ## 系统架构
 
@@ -52,7 +50,6 @@ run-agent/
 │   ├── mcp_client.py                # stdio JSON-RPC MCP 客户端
 │   ├── subagent.py                  # explore / plan / general 配置
 │   └── frontmatter.py               # SKILL.md / Memory 头解析
-├── study/                           # 手敲计划、进度、C01–C10 notebooks
 ├── .run/                            # 运行时（sessions / skills / plans / skill-evolution）
 ├── echo_mcp_server.py               # 演示用 stdio MCP Server
 ├── .mcp.json                        # 项目级 MCP 配置
@@ -160,11 +157,6 @@ run-agent/
 - **配置**：python-dotenv
 - **终端 UI**：Rich
 - **MCP**：自研 stdio JSON-RPC（无官方 SDK 依赖）
-
-### 开发与学习
-
-- **教程**：`study/notebooks/C01_*.ipynb` … `C10_*.ipynb`（Hermes 风格：讲解 + 可执行格子）
-- **计划 / 进度**：`study/HAND_CODING_PLAN.md`、`study/PROGRESS.md`、`study/NOTES.md`
 - **构建**：pip + `requirements.txt`，本地 `.venv`
 
 ## 技术亮点
@@ -274,10 +266,6 @@ Agent Runtime：协议分叉、工具调度、Memory 注入、compact、自进�
 
 从对话抽取 skill、落盘升版本、审计与 champion 评测。
 
-### 学习层（study/）
-
-C01–C10 Jupyter 教程与手敲计划。稳定代码以 `agents/` 为准，notebook 用于试验与讲解。
-
 ## 运行说明
 
 ### CLI 参数
@@ -332,32 +320,8 @@ C01–C10 Jupyter 教程与手敲计划。稳定代码以 `agents/` 为准，not
 - `RUN_AUTO_SKILL_TARGET=project|user` 控制落盘目标
 - 后台自动写 skill 仅在 `bypassPermissions` / `acceptEdits`（`-y`）下生效，否则可用 `/extract_now` 交互确认
 
-## 开发规范
-
-### 演进方式
-
-与 runcli 相同：每次提交后项目能跑，新提交只增加能力、不拆掉上一版演示。提交信息使用 `feat: <中文摘要>`。
-
-### 手敲流程
-
-1. 打开 `study/notebooks/Cxx_*.ipynb`
-2. 自上而下 Run / 试验
-3. 把稳定代码写入 `agents/`
-4. 跑一键演示，不绿不提交
-5. 勾选 `study/PROGRESS.md`，补充 `study/NOTES.md`
-
 ### 当前范围
 
 - 品牌为 **Run Agent**，运行时目录 `.run/`，环境变量 `RUN_*`
 - System prompt 会加载 `CLAUDE.md`（向上查找）与 `.run/rules/*.md`
 - 无独立 wiki 站点 / Docker 编排；冷启动以本 README 为准
-
-## 学习文档
-
-| 文件 | 用途 |
-|------|------|
-| [study/README.md](study/README.md) | 手敲入口 |
-| [study/HAND_CODING_PLAN.md](study/HAND_CODING_PLAN.md) | 十条提交总计划 |
-| [study/notebooks/](study/notebooks/) | C01–C10 教程 |
-| [study/PROGRESS.md](study/PROGRESS.md) | 进度打卡 |
-| [study/NOTES.md](study/NOTES.md) | 分章笔记 |
