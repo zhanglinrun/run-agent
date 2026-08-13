@@ -1,4 +1,4 @@
-"""Session-scoped structured memory folding for conversation compaction (C06)."""
+"""Session-scoped structured memory folding for conversation compaction."""
 
 from __future__ import annotations
 
@@ -6,8 +6,10 @@ import json
 import re
 from typing import Any
 
+
 MAX_TRANSCRIPT_CHARS = 80_000
 MAX_BLOCK_CHARS = 12_000
+
 
 FOLD_SESSION_MEMORY_SYSTEM = """You compact an AI coding agent session into structured session memory.
 
@@ -51,21 +53,14 @@ Guidelines:
 
 
 def _clip(text: str, limit: int = MAX_BLOCK_CHARS) -> str:
-    """截断过长文本：保留首尾，中间用占位符标明被裁掉的字符数。
-
-    用于 transcript / tool 输出等大块内容，避免单条消息撑爆上下文。
-    中间预留约 80 字符给占位提示；首尾各保留 keep 字符（至少 100）。
-    """
     text = str(text or "")
     if len(text) <= limit:
         return text
-    # 两端各留 keep；中间留给 "[... clipped N chars ...]" 提示
     keep = max(100, (limit - 80) // 2)
     return text[:keep] + f"\n\n[... clipped {len(text) - keep * 2} chars ...]\n\n" + text[-keep:]
 
 
 def _content_text(content: Any) -> str:
-    """将各种消息内容转换为纯文本，忽略 HTML 等非文本格式。"""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -97,7 +92,6 @@ def _content_text(content: Any) -> str:
 
 
 def build_openai_transcript(messages: list[dict[str, Any]]) -> str:
-    """构建 OpenAI 风格的 transcript，保留首尾，中间用占位符标明被裁掉的字符数。"""
     parts: list[str] = []
     for i, msg in enumerate(messages):
         if not isinstance(msg, dict):
@@ -127,8 +121,19 @@ def build_openai_transcript(messages: list[dict[str, Any]]) -> str:
     return _clip("\n\n".join(parts), MAX_TRANSCRIPT_CHARS)
 
 
+def build_anthropic_transcript(messages: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for i, msg in enumerate(messages):
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "unknown")
+        text = _content_text(msg.get("content"))
+        if text:
+            parts.append(f"## Message {i} ({role})\n{_clip(text)}")
+    return _clip("\n\n".join(parts), MAX_TRANSCRIPT_CHARS)
+
+
 def build_folding_user_prompt(transcript: str) -> str:
-    """构建用于折叠的提示词，要求将对话转换为结构化内存 JSON。"""
     return (
         "Compact the following coding-agent conversation into the required structured session memory JSON.\n\n"
         "Conversation transcript:\n"
@@ -137,7 +142,6 @@ def build_folding_user_prompt(transcript: str) -> str:
 
 
 def _extract_json_text(text: str) -> str:
-    """提取文本中的 JSON 内容，忽略 Markdown 代码块格式。"""
     text = str(text or "").strip()
     fenced = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
     if fenced:
@@ -155,7 +159,6 @@ def _as_dict(value: Any) -> dict[str, Any]:
 
 
 def parse_folded_memory(text: str) -> dict[str, Any]:
-    """解析折叠后的内存 JSON，提取各字段。"""
     parsed = json.loads(_extract_json_text(text))
     if not isinstance(parsed, dict):
         raise ValueError("folded memory is not a JSON object")
@@ -183,7 +186,6 @@ def parse_folded_memory(text: str) -> dict[str, Any]:
 
 
 def fallback_folded_memory(transcript: str) -> dict[str, Any]:
-    """处理折叠失败的情况，生成 fallback 内存 JSON。"""
     return {
         "episode_memory": {
             "task_description": "Previous conversation was compacted without structured JSON.",
@@ -193,19 +195,13 @@ def fallback_folded_memory(transcript: str) -> dict[str, Any]:
         "working_memory": {
             "immediate_goal": "Continue the user's current coding task from the compacted context.",
             "current_challenges": "Some detail may have been lost during fallback compaction.",
-            "next_actions": [
-                {
-                    "type": "planning",
-                    "description": "Review the folded context and continue carefully.",
-                }
-            ],
+            "next_actions": [{"type": "planning", "description": "Review the folded context and continue carefully."}],
         },
         "tool_memory": {"tools_used": [], "derived_rules": []},
     }
 
 
 def format_folded_memory(memory: dict[str, Any]) -> str:
-    """格式化折叠后的内存 JSON，添加提示信息。"""
     return (
         "<session-folded-memory>\n"
         "Previous raw conversation history was compacted. Use this structured memory as session state, "
