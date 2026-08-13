@@ -1,8 +1,9 @@
-"""Built-in coding tools + permission gate for Run Agent (C01–C08)."""
+"""Built-in coding tools + permission gate for Run Agent (C01–C09)."""
 
 from __future__ import annotations
 
 import fnmatch
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -17,6 +18,7 @@ WRITE_TOOLS = {"write_file", "edit_file"}
 SHELL_TOOLS = {"bash"}
 PLAN_TOOLS = {"enter_plan_mode", "exit_plan_mode"}
 SKILL_TOOLS = {"skill"}
+SKILL_EDIT_TOOLS = {"skill_create", "skill_evolve"}
 COMPACT_TOOLS = {"compact_context"}
 AGENT_TOOLS = {"agent"}
 
@@ -188,6 +190,79 @@ TOOL_DEFINITIONS: list[ToolDef] = [
             "required": ["description", "prompt"],
         },
     },
+    {
+        "name": "skill_evolve",
+        "description": (
+            "Persist an explicit reusable user correction or workflow preference into an "
+            "existing skill. Creates a version snapshot before editing the skill."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "skill_name": {
+                    "type": "string",
+                    "description": "The registered skill name to evolve",
+                },
+                "lesson": {
+                    "type": "string",
+                    "description": "Durable reusable rule to add to the skill",
+                },
+                "rationale": {
+                    "type": "string",
+                    "description": "Why this lesson should affect future similar tasks",
+                },
+                "target": {
+                    "type": "string",
+                    "enum": ["active", "project", "user"],
+                    "description": "Which skill file to update. Defaults to active.",
+                },
+            },
+            "required": ["skill_name", "lesson"],
+        },
+    },
+    {
+        "name": "skill_create",
+        "description": (
+            "Create a new reusable skill from explicit durable workflow guidance when no "
+            "suitable existing skill exists."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Concise reusable skill name"},
+                "description": {
+                    "type": "string",
+                    "description": "One-sentence description of what the skill does and when to use it",
+                },
+                "instructions": {
+                    "type": "string",
+                    "description": (
+                        "Reusable SKILL.md body. Focus on durable method, constraints, and "
+                        "workflow, not one-off task content."
+                    ),
+                },
+                "when_to_use": {
+                    "type": "string",
+                    "description": "Trigger condition for auto-invocation",
+                },
+                "target": {
+                    "type": "string",
+                    "enum": ["project", "user"],
+                    "description": "Where to create the skill. Defaults to project.",
+                },
+                "context": {
+                    "type": "string",
+                    "enum": ["inline", "fork"],
+                    "description": "Skill execution mode. Defaults to inline.",
+                },
+                "evidence": {
+                    "type": "string",
+                    "description": "Optional short evidence / user quote supporting the skill",
+                },
+            },
+            "required": ["name", "description", "instructions"],
+        },
+    },
 ]
 
 
@@ -254,15 +329,30 @@ def check_permission(
             if plan_file_path and _same_path(str(target) if target is not None else None, plan_file_path):
                 return {"action": "allow", "message": ""}
             return {"action": "deny", "message": f"Blocked in plan mode: {name}"}
-        if name in SHELL_TOOLS:
+        if name in SHELL_TOOLS or name in SKILL_EDIT_TOOLS:
             return {"action": "deny", "message": f"Blocked in plan mode: {name}"}
         return {"action": "allow", "message": ""}
 
     if mode == "acceptEdits" and name in WRITE_TOOLS:
         return {"action": "allow", "message": ""}
 
+    if mode == "acceptEdits" and name in SKILL_EDIT_TOOLS:
+        return {"action": "allow", "message": ""}
+
     if name == "bash" and is_dangerous(inp.get("command", "")):
         msg = inp.get("command", "")
+        if mode == "dontAsk":
+            return {"action": "deny", "message": f"Auto-denied (dontAsk): {msg}"}
+        return {"action": "confirm", "message": msg}
+
+    if name == "skill_evolve":
+        msg = f"evolve skill: {inp.get('skill_name', '')}"
+        if mode == "dontAsk":
+            return {"action": "deny", "message": f"Auto-denied (dontAsk): {msg}"}
+        return {"action": "confirm", "message": msg}
+
+    if name == "skill_create":
+        msg = f"create skill: {inp.get('name', '')}"
         if mode == "dontAsk":
             return {"action": "deny", "message": f"Auto-denied (dontAsk): {msg}"}
         return {"action": "confirm", "message": msg}
@@ -456,6 +546,34 @@ def _bash(inp: dict) -> str:
         return f"Error: {e}"
 
 
+def _skill_evolve(inp: dict) -> str:
+    from .skills import evolve_skill
+
+    result = evolve_skill(
+        skill_name=str(inp.get("skill_name") or ""),
+        lesson=str(inp.get("lesson") or ""),
+        rationale=str(inp.get("rationale") or ""),
+        target=str(inp.get("target") or "active"),
+    )
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+def _skill_create(inp: dict) -> str:
+    from .skills import create_skill
+
+    result = create_skill(
+        name=str(inp.get("name") or ""),
+        description=str(inp.get("description") or ""),
+        instructions=str(inp.get("instructions") or ""),
+        when_to_use=str(inp.get("when_to_use") or ""),
+        target=str(inp.get("target") or "project"),
+        context=str(inp.get("context") or "inline"),
+        evidence=str(inp.get("evidence") or ""),
+        actor="agent",
+    )
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
 _HANDLERS = {
     "read_file": _read_file,
     "write_file": _write_file,
@@ -463,6 +581,8 @@ _HANDLERS = {
     "list_files": _list_files,
     "grep": _grep,
     "bash": _bash,
+    "skill_evolve": _skill_evolve,
+    "skill_create": _skill_create,
 }
 
 

@@ -1,4 +1,4 @@
-"""Skills discovery / retrieval / inline execution (C05)."""
+"""Skills discovery / retrieval / inline execution (C05) + evolution wrappers (C09)."""
 
 from __future__ import annotations
 
@@ -11,6 +11,15 @@ from pathlib import Path
 from typing import Any
 
 from .frontmatter import parse_frontmatter
+from .skill_evolution import (
+    create_skill_file,
+    evolve_skill_file,
+    format_skill_stats,
+    record_online_skill_provenance,
+    record_skill_feedback,
+    record_skill_invocation,
+    record_skill_usage_judgments,
+)
 
 
 @dataclass
@@ -52,6 +61,15 @@ def execute_skill(skill_name: str, args: object) -> dict | None:
     skill = get_skill_by_name(skill_name)
     if not skill:
         return None
+    try:
+        record_skill_invocation(
+            skill_name=skill.name,
+            source=skill.source,
+            context=skill.context,
+            args=args,
+        )
+    except Exception:
+        pass
     return {
         "prompt": resolve_skill_prompt(skill, args),
         "allowed_tools": skill.allowed_tools,
@@ -186,6 +204,21 @@ def build_skill_descriptions() -> str:
         )
         lines.append("")
 
+    lines.append("# Skill Evolution")
+    lines.append(
+        "Run Agent has an online skill evolution loop after each assistant response. "
+        "Do not create or evolve skills during normal task execution unless the user "
+        "explicitly asks for manual skill maintenance."
+    )
+    lines.append(
+        "If manual maintenance is explicitly requested, call `skill_evolve` only for "
+        "durable reusable feedback on an existing skill, and call `skill_create` only "
+        "when no suitable existing skill exists."
+    )
+    lines.append(
+        "Never create or evolve skills from one-off task content, private secrets, "
+        "temporary project facts, or assistant-only guesses."
+    )
     return "\n".join(lines)
 
 
@@ -294,3 +327,97 @@ def format_retrieved_skill_context(query: str, *, limit: int = 3) -> tuple[str, 
 def reset_skill_cache() -> None:
     global _cached_skills
     _cached_skills = None
+
+
+def evolve_skill(
+    skill_name: str,
+    lesson: str,
+    rationale: str = "",
+    target: str = "active",
+    instructions: str = "",
+    description: str = "",
+    when_to_use: str = "",
+    tags: list[str] | None = None,
+) -> dict:
+    skill = get_skill_by_name(skill_name)
+    result = evolve_skill_file(
+        skill_name=skill_name,
+        lesson=lesson,
+        rationale=rationale,
+        target=target,
+        active_dir=skill.skill_dir if skill else "",
+        instructions=instructions,
+        description=description,
+        when_to_use=when_to_use,
+        tags=tags,
+    )
+    if result.get("ok"):
+        reset_skill_cache()
+    return result
+
+
+def create_skill(
+    name: str,
+    description: str,
+    instructions: str,
+    when_to_use: str = "",
+    target: str = "project",
+    context: str = "inline",
+    user_invocable: bool = False,
+    allowed_tools: object = None,
+    evidence: str = "",
+    actor: str = "agent",
+    tags: list[str] | None = None,
+) -> dict:
+    result = create_skill_file(
+        name=name,
+        description=description,
+        instructions=instructions,
+        when_to_use=when_to_use,
+        target=target,
+        context=context,
+        user_invocable=user_invocable,
+        allowed_tools=allowed_tools,
+        evidence=evidence,
+        actor=actor,
+        tags=tags,
+    )
+    if result.get("ok"):
+        reset_skill_cache()
+    return result
+
+
+def record_online_provenance(
+    *,
+    action: str,
+    skill_name: str = "",
+    result: dict[str, Any] | None = None,
+    messages: list[dict[str, Any]] | None = None,
+    retrieved_reference: dict[str, Any] | None = None,
+    decision: dict[str, Any] | None = None,
+    error: str = "",
+) -> None:
+    record_online_skill_provenance(
+        action=action,
+        skill_name=skill_name,
+        result=result,
+        messages=messages,
+        retrieved_reference=retrieved_reference,
+        decision=decision,
+        error=error,
+    )
+
+
+def record_feedback(skill_name: str, rating: str, note: str = "") -> None:
+    record_skill_feedback(skill_name=skill_name, rating=rating, note=note)
+
+
+def record_usage_judgments(judgments: list[dict[str, Any]]) -> dict[str, Any]:
+    result = record_skill_usage_judgments(judgments)
+    if result.get("pruned"):
+        reset_skill_cache()
+    return result
+
+
+def skill_stats() -> str:
+    return format_skill_stats()

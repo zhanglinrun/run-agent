@@ -11,7 +11,12 @@ from dotenv import load_dotenv
 from .agent import Agent
 from .memory import list_memories
 from .session import list_sessions, load_session
-from .skills import discover_skills, reset_skill_cache
+from .skills import (
+    discover_skills,
+    evolve_skill,
+    reset_skill_cache,
+    skill_stats,
+)
 from .ui import (
     print_error,
     print_goodbye,
@@ -88,10 +93,15 @@ REPL:
   /skills             List discovered skills
   /compact            Compact conversation into structured session memory
   /mcp                List connected MCP servers and tools
+  /extract_now        Run online skill extraction on the pending window: /extract_now [hint]
+  /skill-evolve       Evolve a skill: /skill-evolve <skill> <durable lesson>
+  /skills-stats       Show skill evolution / usage stats
   /exit               Quit
 
 Notes:
   Sub-agents: the model may call the `agent` tool (explore/plan/general).
+  Skill evolution: after a turn, the next user message can trigger online add/merge
+  (set RUN_AUTO_SKILL_EVOLUTION=0 to disable). Background writes auto-apply under -y / --accept-edits.
 """.strip()
     )
 
@@ -279,6 +289,32 @@ async def run_repl(agent: Agent) -> None:
             if line == "/mcp":
                 await agent.ensure_mcp()
                 print_info(agent.mcp_status())
+                continue
+            if line == "/extract_now" or line.startswith("/extract_now "):
+                hint = ""
+                if line.startswith("/extract_now "):
+                    hint = line[len("/extract_now ") :].strip()
+                result = await agent.extract_now(hint)
+                if result.get("ok"):
+                    print_info("Ran online skill extraction for the current pending window.")
+                else:
+                    print_error(str(result.get("error") or result))
+                continue
+            if line.startswith("/skill-evolve "):
+                parts = line[len("/skill-evolve ") :].strip().split(None, 1)
+                if len(parts) < 2:
+                    print_error("Usage: /skill-evolve <skill-name> <durable lesson>")
+                    continue
+                result = evolve_skill(
+                    parts[0], parts[1], rationale="Manual REPL evolution", target="active"
+                )
+                if result.get("ok"):
+                    print_info(f"Evolved skill {result.get('skill')} -> v{result.get('version')}")
+                else:
+                    print_error(str(result.get("error") or result))
+                continue
+            if line in {"/skills-stats", "/skill-stats"}:
+                print_info(skill_stats())
                 continue
 
             try:

@@ -1,7 +1,8 @@
-"""Run Agent runtime: OpenAI-compatible chat + tool loop (C01–C08)."""
+"""Run Agent runtime: OpenAI-compatible chat + tool loop (C01–C09)."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -28,7 +29,7 @@ from .session_memory import (
     format_folded_memory,
     parse_folded_memory,
 )
-from .skills import execute_skill, format_retrieved_skill_context
+from .skills import execute_skill, format_retrieved_skill_context, reset_skill_cache
 from .subagent import get_sub_agent_config
 from .tools import TOOL_DEFINITIONS, ToolDef, check_permission, execute_tool, to_openai_tools
 from .ui import (
@@ -143,6 +144,12 @@ class Agent:
         self._mcp_manager = McpManager()
         self._mcp_initialized = False
 
+        self._pending_skill_extraction_window: dict[str, Any] | None = None
+        self._last_retrieved_skill_reference: dict[str, Any] | None = None
+        self._last_retrieved_skill_hits: list[dict[str, Any]] = []
+        self._background_skill_tasks: set[asyncio.Task] = set()
+        self._turn_output_buffer: list[str] | None = None
+
         if self.permission_mode == "plan":
             self._enter_plan_mode(announce=False)
         else:
@@ -173,6 +180,9 @@ class Agent:
         self._tool_error_streak = 0
         self._same_tool_repeat_count = 0
         self._last_tool_name = ""
+        self._pending_skill_extraction_window = None
+        self._last_retrieved_skill_reference = None
+        self._last_retrieved_skill_hits = []
         self._sync_system_prompt()
         self._auto_save()
 
@@ -271,6 +281,8 @@ class Agent:
         )
 
     def _emit_text(self, text: str) -> None:
+        if self._turn_output_buffer is not None:
+            self._turn_output_buffer.append(text)
         if self._output_buffer is not None:
             self._output_buffer.append(text)
         else:
@@ -349,6 +361,191 @@ class Agent:
             self.messages[0]["content"] = content
         else:
             self.messages.insert(0, {"role": "system", "content": content})
+
+    def _refresh_runtime_system_prompt(self) -> None:
+        """Rebuild base system prompt (skills list may have changed)."""
+        if self._custom_system_prompt is not None:
+            return
+        reset_skill_cache()
+        self._base_system_prompt = build_system_prompt()
+        self._sync_system_prompt()
+
+    def _message_text(self, msg: dict[str, Any]) -> str:
+        content = msg.get("content")
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    parts.append(str(item.get("text") or ""))
+                elif isinstance(item, str):
+                    parts.append(item)
+            return "\n".join(p for p in parts if p).strip()
+        return ""
+
+    def _recent_dialog_messages(self, *, max_messages: int = 8) -> list[dict[str, str]]:
+        out: list[dict[str, str]] = []
+        for msg in self.messages:
+            if not isinstance(msg, dict):
+                continue
+            role = str(msg.get("role") or "").strip().lower()
+            if role not in {"user", "assistant"}:
+                continue
+            text = self._message_text(msg)
+            if text:
+                out.append({"role": role, "content": text})
+        return out[-max(2, int(max_messages)) :]
+
+    def _online_evolution_enabled(self) -> bool:
+        raw = os.environ.get("RUN_AUTO_SKILL_EVOLUTION", "1").strip().lower()
+        return raw not in {"0", "false", "no", "off"}
+
+    def _schedule_background_skill_task(self, coro) -> None:
+        if self.permission_mode == "plan" or self.is_sub_agent:
+            try:
+                coro.close()
+            except Exception:
+                pass
+            return
+        task = asyncio.create_task(coro)
+        self._background_skill_tasks.add(task)
+
+        def _done(done_task: asyncio.Task) -> None:
+            self._background_skill_tasks.discard(done_task)
+            try:
+                done_task.result()
+            except Exception:
+                pass
+
+        task.add_done_callback(_done)
+
+    async def drain_background_skill_tasks(self) -> None:
+        tasks = [task for task in self._background_skill_tasks if not task.done()]
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _pop_pending_skill_extraction_window(self, next_user_feedback: str) -> dict[str, Any] | None:
+        pending = self._pending_skill_extraction_window
+        self._pending_skill_extraction_window = None
+        if not pending:
+            return None
+        messages = list(pending.get("messages") or [])
+        feedback = str(next_user_feedback or "").strip()
+        if feedback:
+            messages.append({"role": "user", "content": feedback})
+        pending["messages"] = messages[-10:]
+        pending["next_user_feedback"] = feedback
+        return pending
+
+    def _set_pending_skill_extraction_window(
+        self,
+        *,
+        original_user_message: str,
+        assistant_text: str,
+        retrieved_reference: dict[str, Any] | None,
+    ) -> None:
+        if not original_user_message.strip() or not assistant_text.strip():
+            return
+        self._pending_skill_extraction_window = {
+            "messages": self._recent_dialog_messages(max_messages=8),
+            "latest_user": original_user_message,
+            "latest_assistant": assistant_text,
+            "retrieved_reference": self._compact_retrieved_reference(retrieved_reference),
+            "session_id": self.session_id,
+        }
+
+    def _compact_retrieved_reference(self, ref: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not ref:
+            return None
+        return {k: v for k, v in ref.items() if k != "all_hits"}
+
+    async def _confirm_online_skill_write(self, summary: str) -> bool:
+        if self.permission_mode in {"bypassPermissions", "acceptEdits"}:
+            return True
+        if self.permission_mode in {"plan", "dontAsk"}:
+            return False
+        if self._confirm_fn is None:
+            return False
+        try:
+            return bool(await self._confirm_fn(summary))
+        except Exception:
+            return False
+
+    async def _confirm_background_online_skill_write(self, summary: str) -> bool:
+        return self.permission_mode in {"bypassPermissions", "acceptEdits"}
+
+    async def _run_online_skill_evolution(
+        self, window: dict[str, Any], *, interactive_confirm: bool = False
+    ) -> None:
+        if not self._online_evolution_enabled() or self.permission_mode == "plan":
+            return
+        messages = list(window.get("messages") or [])
+        if not messages:
+            return
+
+        side_query = self._build_side_query(max_tokens=2200)
+        if side_query is None:
+            return
+
+        try:
+            from .online_skill_evolution import online_ingest
+        except Exception:
+            return
+
+        result = await online_ingest(
+            messages=messages,
+            side_query=side_query,
+            retrieved_reference=window.get("retrieved_reference") or None,
+            hint=str(window.get("hint") or ""),
+            confirm_write=(
+                self._confirm_online_skill_write
+                if interactive_confirm
+                else self._confirm_background_online_skill_write
+            ),
+            target=os.environ.get("RUN_AUTO_SKILL_TARGET", "project"),
+        )
+        if result.get("ok"):
+            if result.get("action") in {"add", "merge"}:
+                self._refresh_runtime_system_prompt()
+                print_info(f"Online skill {result.get('action')}: {result.get('skill')}")
+        elif result.get("action") not in {"add_denied", "merge_denied"}:
+            print_error(f"Online skill evolution failed: {result.get('error') or result}")
+
+    async def _run_skill_usage_tracking(
+        self, original_user_message: str, assistant_text: str
+    ) -> None:
+        if not self._online_evolution_enabled() or self.permission_mode == "plan":
+            return
+        hits = list(self._last_retrieved_skill_hits or [])
+        if not hits or not assistant_text.strip():
+            return
+        side_query = self._build_side_query(max_tokens=700)
+        try:
+            from .online_skill_evolution import judge_retrieved_skill_usage
+            from .skills import record_usage_judgments
+
+            judgments = await judge_retrieved_skill_usage(
+                hits=hits,
+                user_message=original_user_message,
+                assistant_text=assistant_text,
+                side_query=side_query,
+            )
+            result = record_usage_judgments(judgments)
+            if result.get("pruned"):
+                self._refresh_runtime_system_prompt()
+        except Exception:
+            return
+
+    async def extract_now(self, hint: str = "") -> dict[str, Any]:
+        pending = self._pending_skill_extraction_window
+        if not pending:
+            return {"ok": False, "error": "no pending online skill extraction window"}
+        window = dict(pending)
+        window["hint"] = hint
+        await self._run_online_skill_evolution(window, interactive_confirm=True)
+        self._pending_skill_extraction_window = None
+        return {"ok": True}
 
     def _read_plan_content(self) -> str:
         if not self._plan_file_path:
@@ -480,6 +677,120 @@ class Agent:
         if not context.strip():
             return user_message, top_ref
         return f"{user_message}\n\n{context}", top_ref
+
+    async def disconnect_mcp(self) -> None:
+        await self.drain_background_skill_tasks()
+        await self._mcp_manager.disconnect_all()
+        self._mcp_initialized = False
+
+    async def chat(self, user_message: str) -> None:
+        self._aborted = False
+        if not self.is_sub_agent:
+            await self.ensure_mcp()
+
+        original_user_message = str(user_message or "")
+        ready_skill_extraction_window: dict[str, Any] | None = None
+        self._last_retrieved_skill_reference = None
+        self._last_retrieved_skill_hits = []
+
+        if self.is_sub_agent:
+            augmented = original_user_message
+        else:
+            ready_skill_extraction_window = self._pop_pending_skill_extraction_window(
+                original_user_message
+            )
+            augmented, self._last_retrieved_skill_reference = (
+                self._augment_user_message_with_skill_context(original_user_message)
+            )
+            hits = (self._last_retrieved_skill_reference or {}).get("all_hits") or []
+            self._last_retrieved_skill_hits = list(hits) if isinstance(hits, list) else []
+
+        self.messages.append({"role": "user", "content": augmented})
+        self._turn_output_buffer = []
+
+        memory_prefetch: MemoryPrefetch | None = None
+        if not self.is_sub_agent:
+            sq = self._build_side_query()
+            if sq:
+                memory_prefetch = start_memory_prefetch(
+                    original_user_message,
+                    sq,
+                    self._already_surfaced_memories,
+                    self._session_memory_bytes,
+                )
+
+        turns = 0
+        try:
+            while True:
+                if self._aborted:
+                    break
+                if turns >= self.max_turns:
+                    print_warning(f"Stopped: reached max_turns={self.max_turns}")
+                    break
+
+                self._run_compression_pipeline()
+                self._consume_memory_prefetch(memory_prefetch)
+                self._sync_system_prompt()
+
+                try:
+                    message, usage = await self._call_model()
+                except Exception as e:
+                    print_error(f"model call failed: {e}")
+                    break
+
+                self.last_api_call_time = time.time()
+                if usage:
+                    prompt_tokens = int(usage.get("prompt_tokens") or 0)
+                    self.total_input_tokens += prompt_tokens
+                    self.total_output_tokens += int(usage.get("completion_tokens") or 0)
+                    self.last_input_token_count = prompt_tokens
+
+                assistant_msg: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": message.get("content"),
+                }
+                tool_calls = message.get("tool_calls")
+                if tool_calls:
+                    assistant_msg["tool_calls"] = tool_calls
+                self.messages.append(assistant_msg)
+
+                if not tool_calls:
+                    text = (message.get("content") or "").strip()
+                    if text:
+                        self._emit_text(text + "\n")
+                    break
+
+                turns += 1
+                for tc in tool_calls:
+                    if self._aborted:
+                        break
+                    await self._handle_tool_call(tc)
+                    if self._context_break:
+                        self._context_break = False
+                        break
+
+                self._sync_system_prompt()
+                if not self.is_sub_agent:
+                    await self._check_and_compact()
+                    self._auto_save()
+        finally:
+            assistant_text = "".join(self._turn_output_buffer or []).strip()
+            self._turn_output_buffer = None
+            if not self.is_sub_agent and not self._aborted:
+                self._schedule_background_skill_task(
+                    self._run_skill_usage_tracking(original_user_message, assistant_text)
+                )
+                if ready_skill_extraction_window:
+                    self._schedule_background_skill_task(
+                        self._run_online_skill_evolution(ready_skill_extraction_window)
+                    )
+                self._set_pending_skill_extraction_window(
+                    original_user_message=original_user_message,
+                    assistant_text=assistant_text,
+                    retrieved_reference=self._last_retrieved_skill_reference,
+                )
+            if not self.is_sub_agent:
+                self._auto_save()
 
     async def _execute_skill_tool(self, inp: dict) -> str:
         skill_name = str(inp.get("skill_name") or "").strip()
@@ -702,10 +1013,6 @@ class Agent:
     def mcp_status(self) -> str:
         return self._mcp_manager.format_status()
 
-    async def disconnect_mcp(self) -> None:
-        await self._mcp_manager.disconnect_all()
-        self._mcp_initialized = False
-
     async def _execute_tool(self, name: str, inp: dict) -> str:
         if self._mcp_manager.is_mcp_tool(name):
             try:
@@ -713,86 +1020,6 @@ class Agent:
             except Exception as e:
                 return f"Error: {e}"
         return await execute_tool(name, inp)
-
-    async def chat(self, user_message: str) -> None:
-        self._aborted = False
-        if not self.is_sub_agent:
-            await self.ensure_mcp()
-
-        original_user_message = user_message
-        if self.is_sub_agent:
-            augmented = user_message
-        else:
-            augmented, _ = self._augment_user_message_with_skill_context(original_user_message)
-        self.messages.append({"role": "user", "content": augmented})
-
-        memory_prefetch: MemoryPrefetch | None = None
-        if not self.is_sub_agent:
-            sq = self._build_side_query()
-            if sq:
-                memory_prefetch = start_memory_prefetch(
-                    original_user_message,
-                    sq,
-                    self._already_surfaced_memories,
-                    self._session_memory_bytes,
-                )
-
-        turns = 0
-        while True:
-            if self._aborted:
-                break
-            if turns >= self.max_turns:
-                print_warning(f"Stopped: reached max_turns={self.max_turns}")
-                break
-
-            self._run_compression_pipeline()
-            self._consume_memory_prefetch(memory_prefetch)
-            self._sync_system_prompt()
-
-            try:
-                message, usage = await self._call_model()
-            except Exception as e:
-                print_error(f"model call failed: {e}")
-                break
-
-            self.last_api_call_time = time.time()
-            if usage:
-                prompt_tokens = int(usage.get("prompt_tokens") or 0)
-                self.total_input_tokens += prompt_tokens
-                self.total_output_tokens += int(usage.get("completion_tokens") or 0)
-                self.last_input_token_count = prompt_tokens
-
-            assistant_msg: dict[str, Any] = {
-                "role": "assistant",
-                "content": message.get("content"),
-            }
-            tool_calls = message.get("tool_calls")
-            if tool_calls:
-                assistant_msg["tool_calls"] = tool_calls
-            self.messages.append(assistant_msg)
-
-            if not tool_calls:
-                text = (message.get("content") or "").strip()
-                if text:
-                    self._emit_text(text + "\n")
-                break
-
-            turns += 1
-            for tc in tool_calls:
-                if self._aborted:
-                    break
-                await self._handle_tool_call(tc)
-                if self._context_break:
-                    self._context_break = False
-                    break
-
-            self._sync_system_prompt()
-            if not self.is_sub_agent:
-                await self._check_and_compact()
-                self._auto_save()
-
-        if not self.is_sub_agent:
-            self._auto_save()
 
     async def _call_model(self) -> tuple[dict[str, Any], dict[str, Any] | None]:
         kwargs: dict[str, Any] = {

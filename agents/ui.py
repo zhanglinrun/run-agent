@@ -15,7 +15,8 @@ def print_welcome() -> None:
     console.print()
     console.print("[bold cyan]Run Agent[/bold cyan] — Coding Agent CLI")
     console.print(
-        "[dim]命令: /help  /clear  /cost  /sessions  /resume  /plan  /memory  /skills  /compact  /mcp  /exit[/dim]"
+        "[dim]命令: /help  /clear  /cost  /sessions  /resume  /plan  /memory  /skills  "
+        "/compact  /mcp  /extract_now  /skill-evolve  /skills-stats  /exit[/dim]"
     )
     console.print()
 
