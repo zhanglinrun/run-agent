@@ -1,0 +1,10 @@
+{"event_id":"evt-1","payload":{"case_id":"multi-tool-once","prompt":"Read two files and summarize them."},"run_id":"multi-tool-once","sequence":1,"timestamp":"2026-09-01T00:00:00Z","type":"run.started"}
+{"event_id":"evt-2","payload":{"call_id":"call-1","input":{"file_path":"a.txt"},"name":"read_file"},"run_id":"multi-tool-once","sequence":2,"timestamp":"2026-09-01T00:00:01Z","type":"tool.requested"}
+{"event_id":"evt-3","payload":{"action":"allow","call_id":"call-1","final":true,"name":"read_file"},"run_id":"multi-tool-once","sequence":3,"timestamp":"2026-09-01T00:00:01Z","type":"permission.decision"}
+{"event_id":"evt-4","payload":{"call_id":"call-1","input":{"file_path":"a.txt"},"name":"read_file"},"run_id":"multi-tool-once","sequence":4,"timestamp":"2026-09-01T00:00:01Z","type":"tool.effective"}
+{"event_id":"evt-5","payload":{"call_id":"call-1","content":"a","executed":true,"name":"read_file","ok":true},"run_id":"multi-tool-once","sequence":5,"timestamp":"2026-09-01T00:00:02Z","type":"tool.result"}
+{"event_id":"evt-6","payload":{"call_id":"call-2","input":{"file_path":"b.txt"},"name":"read_file"},"run_id":"multi-tool-once","sequence":6,"timestamp":"2026-09-01T00:00:02Z","type":"tool.requested"}
+{"event_id":"evt-7","payload":{"action":"allow","call_id":"call-2","final":true,"name":"read_file"},"run_id":"multi-tool-once","sequence":7,"timestamp":"2026-09-01T00:00:02Z","type":"permission.decision"}
+{"event_id":"evt-8","payload":{"call_id":"call-2","input":{"file_path":"b.txt"},"name":"read_file"},"run_id":"multi-tool-once","sequence":8,"timestamp":"2026-09-01T00:00:02Z","type":"tool.effective"}
+{"event_id":"evt-9","payload":{"call_id":"call-2","content":"b","executed":true,"name":"read_file","ok":true},"run_id":"multi-tool-once","sequence":9,"timestamp":"2026-09-01T00:00:03Z","type":"tool.result"}
+{"event_id":"evt-10","payload":{"answer":"Read both files exactly once.","success":true,"tokens":{"input":16,"output":8}},"run_id":"multi-tool-once","sequence":10,"timestamp":"2026-09-01T00:00:04Z","type":"run.completed"}

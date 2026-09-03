@@ -1,0 +1,2 @@
+{"id":"python-off-by-one","fixture":"fixtures/python-off-by-one","prompt":"修复 range_sum 的边界错误。不要修改测试；完成前运行 pytest。","verify":[["python","-m","pytest","-q"]],"tags":["bug-fix","python","boundary"]}
+{"id":"python-slug-normalization","fixture":"fixtures/python-slug-normalization","prompt":"修复 slugify，使连续空白或下划线归一化为单个连字符，并去掉首尾连字符。不要修改测试。","verify":[["python","-m","pytest","-q"]],"tags":["bug-fix","python","string"]}

@@ -1,0 +1,6 @@
+{"event_id":"evt-1","payload":{"case_id":"read-runtime-config","cwd":"fixture","model":"fixture-model","prompt":"Read the runtime configuration and report the model name."},"run_id":"read-runtime-config","sequence":1,"timestamp":"2026-09-01T00:00:00Z","type":"run.started"}
+{"event_id":"evt-2","payload":{"call_id":"call-1","input":{"file_path":".env.example"},"name":"read_file"},"run_id":"read-runtime-config","sequence":2,"timestamp":"2026-09-01T00:00:01Z","type":"tool.requested"}
+{"event_id":"evt-3","payload":{"action":"allow","call_id":"call-1","final":true,"name":"read_file"},"run_id":"read-runtime-config","sequence":3,"timestamp":"2026-09-01T00:00:01Z","type":"permission.decision"}
+{"event_id":"evt-4","payload":{"call_id":"call-1","input":{"file_path":".env.example"},"name":"read_file"},"run_id":"read-runtime-config","sequence":4,"timestamp":"2026-09-01T00:00:01Z","type":"tool.effective"}
+{"event_id":"evt-5","payload":{"call_id":"call-1","content":"MODEL=deepseek-chat","executed":true,"name":"read_file","ok":true},"run_id":"read-runtime-config","sequence":5,"timestamp":"2026-09-01T00:00:02Z","type":"tool.result"}
+{"event_id":"evt-6","payload":{"answer":"The configured model is deepseek-chat.","success":true,"tokens":{"input":10,"output":8}},"run_id":"read-runtime-config","sequence":6,"timestamp":"2026-09-01T00:00:03Z","type":"run.completed"}

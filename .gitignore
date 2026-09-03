@@ -4,6 +4,8 @@ venv/
 
 # 密钥（保留 .env.example）
 .env
+.env.*
+!.env.example
 
 # Python 缓存
 __pycache__/
@@ -27,9 +29,30 @@ Thumbs.db
 
 # 日志与本地杂项
 *.log
+logs/
 dist/
 build/
 
 
-/study/
+/study/*
+!study/README.md
+!study/architecture.md
+!study/eval-benchmarks.md
+!study/online-skill-eval.md
+!study/resume-project.md
+!study/docs/
+!study/docs/**
 
+data/*
+!data/README.md
+!data/SWE-bench_Verified/
+data/SWE-bench_Verified/*
+!data/SWE-bench_Verified/dataset-manifest.json
+examples/*
+!examples/README.md
+!examples/sessions/
+!examples/sessions/**
+!examples/extensions/
+!examples/extensions/**
+.codegraph/
+AI-Agents-in-Depth-*.pdf

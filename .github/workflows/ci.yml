@@ -1,0 +1,59 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: Compile
+        run: python -m compileall -q agents tests
+      - name: Unit and architecture tests
+        run: python -m pytest -q
+      - name: Offline trace evaluation
+        run: >-
+          python -m agents.evaluation.cli
+          evals/smoke/cases.jsonl
+          --traces evals/smoke/traces
+          --fail-on-regression
+      - name: Build wheel
+        run: python -m pip wheel . --no-deps --wheel-dir .run/wheels
+      - name: Audit wheel layout
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import zipfile
+
+          wheel = next(Path(".run/wheels").glob("*.whl"))
+          names = set(zipfile.ZipFile(wheel).namelist())
+          forbidden = {
+              "agents/agent.py",
+              "agents/api_config.py",
+              "agents/core/__init__.py",
+              "agents/execution/manager.py",
+              "agents/harness/builder.py",
+              "agents/main.py",
+              "agents/runtime/loop.py",
+              "agents/runtime/queue.py",
+              "agents/tools.py",
+              "agents/tools/legacy.py",
+              "agents/ui.py",
+          }
+          stale = sorted(forbidden & names)
+          if stale:
+              raise SystemExit(f"stale compatibility modules in wheel: {stale}")
+          PY
+      - name: Dependency check
+        run: python -m pip check
