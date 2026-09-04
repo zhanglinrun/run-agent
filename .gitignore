@@ -16,7 +16,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
-# 运行时数据（会话 / 记忆等）；保留可提交的项目 Skills
+# 运行时数据（会话、trace、评测证据等）；保留可提交的项目 Skills
 .run/*
 !.run/skills/
 !.run/skills/**
@@ -33,26 +33,15 @@ logs/
 dist/
 build/
 
-
 /study/*
-!study/README.md
-!study/architecture.md
-!study/eval-benchmarks.md
-!study/online-skill-eval.md
-!study/resume-project.md
-!study/docs/
-!study/docs/**
 
-data/*
-!data/README.md
-!data/SWE-bench_Verified/
-data/SWE-bench_Verified/*
-!data/SWE-bench_Verified/dataset-manifest.json
 examples/*
 !examples/README.md
-!examples/sessions/
-!examples/sessions/**
 !examples/extensions/
 !examples/extensions/**
+!examples/gateway_extensions/
+!examples/gateway_extensions/**
+/examples/**/__pycache__/
 .codegraph/
 AI-Agents-in-Depth-*.pdf
+

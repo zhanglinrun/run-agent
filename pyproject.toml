@@ -1,45 +1,73 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
 
 [project]
 name = "run-agent-harness"
-version = "0.4.0"
-description = "A provider-neutral Python agent core with a composable extension host"
+version = "0.5.0"
+description = "A Pi-style Python agent harness with extensions, JSONL sessions, gateway scheduling, and reproducible evaluation."
 readme = "README.md"
-requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
 dependencies = [
-  "openai>=1.0.0",
-  "anthropic>=0.40.0",
-  "python-dotenv>=1.0.0",
-  "rich>=13.0.0",
+    "anyio>=4.0",
+    "httpx[socks]>=0.27",
+    "packaging>=24.0",
+    "pillow>=11.0",
+    "pydantic>=2.11",
+    "python-dotenv>=1.1",
+    "pygments>=2.18",
+    "rich>=13.0",
+    "textual>=8.2.8",
+    "typer>=0.12",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "pyarrow>=15.0",
-  "pytest>=8.0.0",
-  "pytest-asyncio>=0.24.0",
-]
-swebench = [
-  "pyarrow>=15.0",
-  "swebench==5.0.2",
+    "build>=1.2",
+    "mypy>=1.10",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.5",
 ]
 
 [project.scripts]
-run-agent = "agents.cli:main"
-run-agent-eval = "agents.evaluation.cli:main"
-run-agent-benchmark = "agents.evaluation.benchmarks:main"
-run-agent-compare = "agents.evaluation.compare:main"
-run-agent-coding-benchmark = "agents.evaluation.coding:main"
-run-agent-swebench = "agents.evaluation.swebench:main"
+run-agent = "run_agent_coding.cli:app"
+run-agent-gateway = "run_agent_gateway.cli:main"
+run-agent-bench = "run_agent_evals.cli:main"
 
-[tool.setuptools.packages.find]
-include = ["agents*"]
+[tool.hatch.build.targets.wheel]
+packages = ["src/run_agent_ai", "src/run_agent_core", "src/run_agent_coding", "src/run_agent_gateway", "src/run_agent_observability", "src/run_agent_evals"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["E501"]
+"src/run_agent_coding/updater.py" = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["run_agent_ai", "run_agent_core", "run_agent_coding", "run_agent_gateway", "run_agent_observability", "run_agent_evals", "extensions"]
+
+[[tool.mypy.overrides]]
+module = "pygments.*"
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
-addopts = "-q"
 testpaths = ["tests"]
 pythonpath = ["."]
+addopts = "-ra"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

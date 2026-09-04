@@ -1,0 +1,387 @@
+from pathlib import Path
+
+import pytest
+
+from run_agent_coding import (
+    RunAgentResourcePaths,
+    Skill,
+    build_skill_index,
+    expand_skill_command,
+    format_skill_invocation,
+    load_skills,
+    load_skills_with_diagnostics,
+    parse_skill_invocation,
+)
+from run_agent_coding.resources import ResourceError
+
+
+def test_load_skills_does_not_include_run_agent_self_knowledge(tmp_path: Path) -> None:
+    skills = load_skills(RunAgentResourcePaths(root=tmp_path, agents_root=None))
+
+    assert skills == []
+
+
+def test_load_skills_from_directory(tmp_path: Path) -> None:
+    """Skills must live in ``<dir>/<name>/SKILL.md`` subdirectories."""
+    skills_dir = tmp_path / "skills"
+    (skills_dir / "python-testing").mkdir(parents=True)
+    (skills_dir / "python-testing" / "SKILL.md").write_text(
+        "---\ndescription: Test Python code\n---\n# Python Testing\nUse pytest.",
+        encoding="utf-8",
+    )
+    (skills_dir / "git-review").mkdir()
+    (skills_dir / "git-review" / "SKILL.md").write_text(
+        "# Git Review\nReview diffs.", encoding="utf-8"
+    )
+
+    skills = load_skills(RunAgentResourcePaths(root=tmp_path, agents_root=None))
+
+    skill_by_name = {skill.name: skill for skill in skills}
+    assert set(skill_by_name) == {"git-review", "python-testing"}
+    assert skill_by_name["git-review"].description == "Git Review"
+    assert skill_by_name["python-testing"].description == "Test Python code"
+
+
+def test_load_skills_includes_user_and_project_agents_directories(tmp_path: Path) -> None:
+    """Skills in .agents/skills/ must be subdirectories containing SKILL.md."""
+    run_agent_home = tmp_path / "home" / ".run"
+    agents_home = tmp_path / "home" / ".agents"
+    cwd = tmp_path / "project"
+    (agents_home / "skills" / "user-skill").mkdir(parents=True)
+    (agents_home / "skills" / "user-skill" / "SKILL.md").write_text(
+        "# User Skill\nFrom user agents.", encoding="utf-8"
+    )
+    (cwd / ".agents" / "skills" / "project-skill").mkdir(parents=True)
+    (cwd / ".agents" / "skills" / "project-skill" / "SKILL.md").write_text(
+        "# Project Skill\nFrom project agents.", encoding="utf-8"
+    )
+
+    skills = load_skills(
+        RunAgentResourcePaths(root=run_agent_home, agents_root=agents_home, cwd=cwd)
+    )
+
+    assert {skill.name for skill in skills} == {"project-skill", "user-skill"}
+
+
+def test_user_skill_can_use_a_former_bundled_skill_name(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "skills" / "tau-model-catalog"
+    skill_dir.mkdir(parents=True)
+    skill_path = skill_dir / "SKILL.md"
+    skill_path.write_text("# Custom catalog workflow", encoding="utf-8")
+
+    skills, diagnostics = load_skills_with_diagnostics(
+        RunAgentResourcePaths(root=tmp_path, agents_root=None)
+    )
+
+    assert [(skill.name, skill.path) for skill in skills] == [("tau-model-catalog", skill_path)]
+    assert diagnostics == []
+
+
+def test_project_agents_skill_overrides_user_agents_skill(tmp_path: Path) -> None:
+    """Project .agents/skills/ skills take precedence over user-level ones."""
+    run_agent_home = tmp_path / "home" / ".run"
+    agents_home = tmp_path / "home" / ".agents"
+    cwd = tmp_path / "project"
+    (agents_home / "skills" / "review").mkdir(parents=True)
+    (agents_home / "skills" / "review" / "SKILL.md").write_text("# User Review", encoding="utf-8")
+    (cwd / ".agents" / "skills" / "review").mkdir(parents=True)
+    (cwd / ".agents" / "skills" / "review" / "SKILL.md").write_text(
+        "# Project Review", encoding="utf-8"
+    )
+
+    skills = load_skills(
+        RunAgentResourcePaths(root=run_agent_home, agents_root=agents_home, cwd=cwd)
+    )
+
+    review = next(skill for skill in skills if skill.name == "review")
+    assert review.path == cwd / ".agents" / "skills" / "review" / "SKILL.md"
+    assert review.description == "Project Review"
+
+
+def test_load_skills_with_diagnostics_reports_overrides(tmp_path: Path) -> None:
+    run_agent_home = tmp_path / "home" / ".run"
+    agents_home = tmp_path / "home" / ".agents"
+    cwd = tmp_path / "project"
+    (run_agent_home / "skills" / "review").mkdir(parents=True)
+    (run_agent_home / "skills" / "review" / "SKILL.md").write_text(
+        "# User Run Agent Review", encoding="utf-8"
+    )
+    (cwd / ".run" / "skills" / "review").mkdir(parents=True)
+    (cwd / ".run" / "skills" / "review" / "SKILL.md").write_text(
+        "# Project Run Agent Review", encoding="utf-8"
+    )
+
+    skills, diagnostics = load_skills_with_diagnostics(
+        RunAgentResourcePaths(root=run_agent_home, agents_root=agents_home, cwd=cwd)
+    )
+
+    review = next(skill for skill in skills if skill.name == "review")
+    assert review.path == cwd / ".run" / "skills" / "review" / "SKILL.md"
+    override_diagnostics = [
+        d for d in diagnostics if "overrides lower-precedence resource" in d.message
+    ]
+    assert len(override_diagnostics) == 1
+    assert override_diagnostics[0].kind == "skill"
+    assert override_diagnostics[0].name == "review"
+
+
+def test_load_skills_with_diagnostics_reports_bare_md_migration_hint(
+    tmp_path: Path,
+) -> None:
+    """Bare ``.md`` files at a skills-dir root produce an info diagnostic.
+
+    They are silently skipped from the loaded skill set, but users are told
+    how to migrate: rename ``foo.md`` to ``foo/SKILL.md``.
+    """
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    (skills_dir / "legacy.md").write_text("# Legacy Skill\nOld body.", encoding="utf-8")
+    (skills_dir / "good").mkdir()
+    (skills_dir / "good" / "SKILL.md").write_text("# Good Skill", encoding="utf-8")
+
+    skills, diagnostics = load_skills_with_diagnostics(
+        RunAgentResourcePaths(root=tmp_path, agents_root=None)
+    )
+
+    assert "good" in {skill.name for skill in skills}
+    migration_diagnostics = [d for d in diagnostics if d.severity == "info"]
+    assert len(migration_diagnostics) == 1
+    assert migration_diagnostics[0].name == "legacy"
+    assert migration_diagnostics[0].path == skills_dir / "legacy.md"
+    assert "bare .md files are no longer treated as skills" in migration_diagnostics[0].message
+    assert str(skills_dir / "legacy" / "SKILL.md") in migration_diagnostics[0].message
+
+
+def test_agents_root_is_not_a_skills_directory(tmp_path: Path) -> None:
+    """The .agents root directory itself must not be scanned for skills.
+
+    Files like ``README.md`` or ``AGENTS.md`` in the root should be ignored.
+    Only ``.agents/skills/`` is a valid skill location.
+    """
+    agents_home = tmp_path / ".agents"
+    agents_home.mkdir()
+    (agents_home / "AGENTS.md").write_text("# Instructions", encoding="utf-8")
+    (agents_home / "README.md").write_text("# Readme", encoding="utf-8")
+    (agents_home / "review.md").write_text("# Review", encoding="utf-8")
+
+    skills = load_skills(RunAgentResourcePaths(root=tmp_path / ".run", agents_root=agents_home))
+
+    assert skills == []
+
+
+def test_agents_skills_dir_ignores_bare_md_files(tmp_path: Path) -> None:
+    """Bare .md files in .agents/skills/ are not treated as skills.
+
+    Only subdirectories containing ``SKILL.md`` are valid. Files like
+    ``reference.md`` alongside a skill directory should be ignored.
+    """
+    agents_home = tmp_path / ".agents"
+    skills_dir = agents_home / "skills"
+    (skills_dir / "my-skill").mkdir(parents=True)
+    (skills_dir / "my-skill" / "SKILL.md").write_text("# Valid Skill", encoding="utf-8")
+    (skills_dir / "reference.md").write_text("# Reference doc", encoding="utf-8")
+
+    paths = RunAgentResourcePaths(root=tmp_path / ".run", agents_root=agents_home)
+    skills = load_skills(paths)
+
+    assert "my-skill" in {skill.name for skill in skills}
+
+
+def test_run_agent_skills_dir_ignores_bare_md_files(tmp_path: Path) -> None:
+    """Bare .md files in .run/skills/ are also ignored (unified with .agents/).
+
+    Run Agent diverges from Pi here: Pi keeps a permissive ``.pi/skills`` for
+    backward compatibility, but Run Agent applies the Agent Skills spec uniformly.
+    """
+    skills_dir = tmp_path / "skills"
+    (skills_dir / "my-skill").mkdir(parents=True)
+    (skills_dir / "my-skill" / "SKILL.md").write_text("# Subdir Skill", encoding="utf-8")
+    (skills_dir / "reference.md").write_text("# Reference doc", encoding="utf-8")
+
+    paths = RunAgentResourcePaths(root=tmp_path, agents_root=None)
+    skills = load_skills(paths)
+
+    assert "my-skill" in {skill.name for skill in skills}
+
+
+def test_expand_skill_command_includes_skill_and_user_request(tmp_path: Path) -> None:
+    skills_dir = tmp_path / "skills" / "testing"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "SKILL.md").write_text("# Testing\nRun pytest.", encoding="utf-8")
+    skills = load_skills(RunAgentResourcePaths(root=tmp_path, agents_root=None))
+
+    expanded = expand_skill_command("/skill:testing add parser tests", skills)
+
+    assert expanded is not None
+    testing = next(skill for skill in skills if skill.name == "testing")
+    assert f'<skill name="testing" location="{testing.path}">' in expanded
+    assert f"References are relative to {testing.path.parent}." in expanded
+    assert "Run pytest." in expanded
+    assert expanded.endswith("</skill>\n\nadd parser tests")
+
+
+def test_expand_skill_command_includes_multiline_user_request(tmp_path: Path) -> None:
+    skill = Skill(
+        name="testing",
+        path=tmp_path / "skills" / "testing" / "SKILL.md",
+        content="# Testing\nRun pytest.",
+        description="Test code",
+    )
+
+    expanded = expand_skill_command(
+        "/skill:testing\n\nhere are some instructions\n\n- keep this structure",
+        [skill],
+    )
+
+    assert expanded is not None
+    assert expanded.endswith("</skill>\n\nhere are some instructions\n\n- keep this structure")
+
+
+def test_format_skill_invocation_without_extra_instructions(tmp_path: Path) -> None:
+    skill = Skill(
+        name="testing",
+        path=tmp_path / "skills" / "testing" / "SKILL.md",
+        content="# Testing\nRun pytest.",
+        description="Test code",
+    )
+
+    formatted = format_skill_invocation(skill)
+
+    assert formatted == (
+        f'<skill name="testing" location="{skill.path}">\n'
+        f"References are relative to {skill.path.parent}.\n\n"
+        "# Testing\n"
+        "Run pytest.\n"
+        "</skill>"
+    )
+
+
+def test_parse_skill_invocation_extracts_display_metadata(tmp_path: Path) -> None:
+    skill = Skill(
+        name="testing",
+        path=tmp_path / "skills" / "testing" / "SKILL.md",
+        content="# Testing\nRun pytest.",
+        description="Test Python code",
+    )
+    formatted = format_skill_invocation(skill, "add parser tests")
+
+    parsed = parse_skill_invocation(formatted)
+
+    assert parsed is not None
+    assert parsed.name == "testing"
+    assert parsed.location == str(skill.path)
+    assert "# Testing" in parsed.content
+    assert parsed.additional_instructions == "add parser tests"
+
+
+def test_expand_skill_command_returns_none_for_normal_prompt(tmp_path: Path) -> None:
+    assert (
+        expand_skill_command(
+            "hello", load_skills(RunAgentResourcePaths(root=tmp_path, agents_root=None))
+        )
+        is None
+    )
+
+
+def test_expand_skill_command_rejects_unknown_skill() -> None:
+    with pytest.raises(ResourceError, match="Unknown skill"):
+        expand_skill_command("/skill:missing", [])
+
+
+def test_build_skill_index(tmp_path: Path) -> None:
+    skills_dir = tmp_path / "skills" / "testing"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "SKILL.md").write_text(
+        "---\ndescription: Test things\n---\nBody",
+        encoding="utf-8",
+    )
+
+    index = build_skill_index(load_skills(RunAgentResourcePaths(root=tmp_path, agents_root=None)))
+
+    assert "Available skills:" in index
+    assert "- testing: Test things" in index
+    assert "create-tau-extension" not in index
+    assert "tau-model-catalog" not in index
+
+
+def test_load_skill_parses_disable_model_invocation(tmp_path: Path) -> None:
+    skills_dir = tmp_path / "skills"
+    (skills_dir / "hidden").mkdir(parents=True)
+    (skills_dir / "hidden" / "SKILL.md").write_text(
+        "---\ndescription: Hidden skill\ndisable-model-invocation: true\n---\nBody",
+        encoding="utf-8",
+    )
+    (skills_dir / "visible").mkdir()
+    (skills_dir / "visible" / "SKILL.md").write_text(
+        "---\ndescription: Visible skill\n---\nBody",
+        encoding="utf-8",
+    )
+    (skills_dir / "explicit-false").mkdir()
+    (skills_dir / "explicit-false" / "SKILL.md").write_text(
+        "---\ndescription: Explicitly enabled\ndisable-model-invocation: false\n---\nBody",
+        encoding="utf-8",
+    )
+    (skills_dir / "invalid-value").mkdir()
+    (skills_dir / "invalid-value" / "SKILL.md").write_text(
+        "---\ndescription: Invalid flag value\ndisable-model-invocation: yes\n---\nBody",
+        encoding="utf-8",
+    )
+
+    skills = load_skills(RunAgentResourcePaths(root=tmp_path, agents_root=None))
+
+    skill_by_name = {skill.name: skill for skill in skills}
+    assert skill_by_name["hidden"].disable_model_invocation is True
+    assert skill_by_name["visible"].disable_model_invocation is False
+    assert skill_by_name["explicit-false"].disable_model_invocation is False
+    assert skill_by_name["invalid-value"].disable_model_invocation is False
+
+
+def test_disable_model_invocation_accepts_case_insensitive_true(tmp_path: Path) -> None:
+    skills_dir = tmp_path / "skills" / "hidden"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "SKILL.md").write_text(
+        "---\ndescription: Hidden skill\ndisable-model-invocation: True\n---\nBody",
+        encoding="utf-8",
+    )
+
+    skills = load_skills(RunAgentResourcePaths(root=tmp_path, agents_root=None))
+
+    assert skills[0].disable_model_invocation is True
+
+
+def test_disabled_skill_remains_invocable_via_skill_command(tmp_path: Path) -> None:
+    skill = Skill(
+        name="hidden",
+        path=tmp_path / "skills" / "hidden" / "SKILL.md",
+        content="Hidden body",
+        description="Hidden skill",
+        disable_model_invocation=True,
+    )
+
+    expanded = expand_skill_command("/skill:hidden", [skill])
+
+    assert expanded is not None
+    assert "Hidden body" in expanded
+
+
+def test_build_skill_index_excludes_disabled_skills(tmp_path: Path) -> None:
+    visible = Skill(
+        name="visible",
+        path=tmp_path / "visible" / "SKILL.md",
+        content="Body",
+        description="Visible skill",
+    )
+    hidden = Skill(
+        name="hidden",
+        path=tmp_path / "hidden" / "SKILL.md",
+        content="Body",
+        description="Hidden skill",
+        disable_model_invocation=True,
+    )
+
+    index = build_skill_index([visible, hidden])
+
+    assert "- visible: Visible skill" in index
+    assert "hidden" not in index
+
+    assert build_skill_index([hidden]) == "Available skills: none"

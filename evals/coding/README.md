@@ -1,29 +1,29 @@
-# Coding Agent task format
+# Coding task fixtures
 
-`tasks.jsonl` contains one isolated fixture repository per line:
+`tasks.jsonl` 每行定义一个隔离任务：
 
 ```json
 {"id":"python-off-by-one","fixture":"fixtures/python-off-by-one","prompt":"修复边界条件并确保测试通过。","verify":[["python","-m","pytest","-q"]],"tags":["bug-fix","python"]}
 ```
 
-The campaign copies each fixture into a temporary workspace, verifies that the
-seeded task initially fails, runs the Agent, executes the declared acceptance
-commands, and stores the patch, Trace and result.  Real resume metrics should
-come from a fixed 30–50 task manifest committed with its fixtures or from a
-public coding benchmark adapter.
+字段：
 
-Two deliberately failing no-API fixtures are checked in under `smoke/` to
-validate task packaging.  A live smoke campaign can be launched with:
+- `id`：campaign 内唯一任务标识。
+- `fixture`：相对 manifest 的只读种子目录；每个 trial 会复制到独立临时工作区。
+- `prompt`：交给标准 `CodingSession` 的任务。
+- `verify`：模型执行结束后运行的确定性验收命令列表。
+- `timeout_seconds`：单条 verifier 超时，默认 120 秒。
+- `tags`：仅用于任务分类。
 
-```powershell
-run-agent-coding-benchmark evals/coding/smoke/tasks.jsonl --limit 2 --model <model> --max-cost 0.50
-```
-
-To validate the task lifecycle without an API key or model call, use
-`--adapter-only`. Docker mode exercises the real container when the daemon and
-image are available:
+运行两个故意以失败状态开局的 smoke fixture：
 
 ```powershell
-run-agent-coding-benchmark evals/coding/smoke/tasks.jsonl --adapter-only --sandbox local
-run-agent-coding-benchmark evals/coding/smoke/tasks.jsonl --adapter-only --sandbox docker
+uv run run-agent-bench run evals/coding/smoke/tasks.jsonl `
+  --output-root .run/evals/coding-smoke `
+  --extension extensions/observability `
+  --candidate-id smoke
+uv run run-agent-bench rebuild .run/evals/coding-smoke
 ```
+
+正式简历指标应扩大并冻结任务集，保留相同 task id 的 baseline/candidate 配对；当前两题仅用于
+验证复制、Agent 修改、外部 verifier、调用账本、trace 与离线重建的端到端链路。

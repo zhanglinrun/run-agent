@@ -1,9 +1,0 @@
-{
-  "bytes": 6304616,
-  "dataset": "SWE-bench/SWE-bench_Verified",
-  "downloaded_at": "2026-09-02T02:17:24.962147Z",
-  "rows": 500,
-  "sha256": "030cfd7f2a704c4c0226e7f104c725a3b41230b1d3517f9c915ad7ea5be3fa25",
-  "source_url": "https://huggingface.co/datasets/SWE-bench/SWE-bench_Verified/resolve/main/data/test-00000-of-00001.parquet?download=true",
-  "split": "test"
-}
