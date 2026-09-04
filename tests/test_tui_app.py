@@ -33,19 +33,6 @@ from run_agent_coding.events import (
     QueueUpdateEvent,
     SessionAgentEndEvent,
 )
-from run_agent_coding.extensions import (
-    DynamicProvider,
-    DynamicProviderRegistry,
-    LocalBackend,
-    LocalBackendRegistry,
-    LocalBackendStatus,
-    LocalConfigureResult,
-    LocalConfigureSpec,
-    LocalModel,
-    NoAuth,
-    OpenAICompatibleTransport,
-    ProviderModel,
-)
 from run_agent_coding.paths import RunAgentPaths
 from run_agent_coding.prompt_templates import PromptTemplate
 from run_agent_coding.provider_config import (
@@ -113,7 +100,6 @@ from run_agent_coding.tui.config import (
     TuiTheme,
     tui_settings_path,
 )
-from run_agent_coding.tui.local_backends import LocalBackendScreen, LocalConfirmScreen
 from run_agent_coding.tui.state import ChatItem, TuiState
 from run_agent_coding.tui.terminal_notification import TerminalNotificationController
 from run_agent_coding.tui.terminal_title import TerminalTitleController
@@ -3087,7 +3073,7 @@ async def test_tui_app_highlights_prompt_shell_mode() -> None:
 
         assert not prompt.has_class("-shell-mode")
         assert prompt.get_line(0).spans == []
-        assert indicator.render().plain == "τ"
+        assert indicator.render().plain == "run"
 
 
 @pytest.mark.anyio
@@ -3804,7 +3790,7 @@ async def test_tui_app_shows_activity_indicator_while_running() -> None:
         assert prompt.styles.border_top[0] == ""
         assert prompt.styles.border_right[0] == ""
         assert prompt.styles.border_bottom[0] == ""
-        assert indicator.render().plain == "τ"
+        assert indicator.render().plain == "run"
 
         app.adapter.apply(AgentStartEvent())
         app._refresh()
@@ -3824,7 +3810,7 @@ async def test_tui_app_shows_activity_indicator_while_running() -> None:
 
         assert not app.query("#status")
         assert prompt.styles.border_left[1].hex.lower() == "#2d3748"
-        assert indicator.render().plain == "τ"
+        assert indicator.render().plain == "run"
 
 
 @pytest.mark.anyio
@@ -3836,24 +3822,24 @@ async def test_tui_app_updates_terminal_title_for_running_and_named_session() ->
     app._terminal_title = TerminalTitleController(enabled=True, writer=writes.append)
 
     async with app.run_test():
-        assert writes[-1] == "\x1b]0;τ | build notes\x07"
+        assert writes[-1] == "\x1b]0;run | build notes\x07"
 
         app.adapter.apply(AgentStartEvent())
         app._refresh()
-        assert writes[-1] == "\x1b]0;⠋ τ | build notes\x07"
+        assert writes[-1] == "\x1b]0;⠋ run | build notes\x07"
 
         app._tick_activity()
-        assert writes[-1] == "\x1b]0;⠙ τ | build notes\x07"
+        assert writes[-1] == "\x1b]0;⠙ run | build notes\x07"
 
         session._session_title = "ship notes"
         app._refresh_chrome()
-        assert writes[-1] == "\x1b]0;⠙ τ | ship notes\x07"
+        assert writes[-1] == "\x1b]0;⠙ run | ship notes\x07"
 
         app.adapter.apply(AgentEndEvent())
         app._refresh()
-        assert writes[-1] == "\x1b]0;τ | ship notes\x07"
+        assert writes[-1] == "\x1b]0;run | ship notes\x07"
 
-    assert writes[-1] == "\x1b]0;τ\x07"
+    assert writes[-1] == "\x1b]0;run\x07"
 
 
 @pytest.mark.anyio
@@ -3920,16 +3906,16 @@ async def test_tui_app_updates_terminal_title_after_auto_session_naming() -> Non
     app._terminal_title = TerminalTitleController(enabled=True, writer=writes.append)
 
     async with app.run_test():
-        assert writes[-1] == "\x1b]0;τ\x07"
+        assert writes[-1] == "\x1b]0;run\x07"
 
         await app._run_prompt("debug the login flow")
 
-        assert "\x1b]0;τ | Debug login\x07" in writes
+        assert "\x1b]0;run | Debug login\x07" in writes
         sidebar_content = app.query_one("#sidebar-content", Static)
         console = Console(record=True, width=80, file=StringIO())
         console.print(sidebar_content.content)
         assert "Debug login" in console.export_text()
-        assert writes[-1] == "\x1b]0;τ | Debug login\x07"
+        assert writes[-1] == "\x1b]0;run | Debug login\x07"
 
 
 @pytest.mark.anyio
@@ -3954,7 +3940,7 @@ async def test_tui_app_clears_activity_status_on_error() -> None:
         assert prompt.styles.border_top[0] == ""
         assert prompt.styles.border_right[0] == ""
         assert prompt.styles.border_bottom[0] == ""
-        assert indicator.render().plain == "τ"
+        assert indicator.render().plain == "run"
 
 
 @pytest.mark.anyio
@@ -4230,98 +4216,6 @@ async def test_extension_confirm_dialog_yes_and_cancel() -> None:
         await pilot.pause()
         await pilot.press("escape")
         assert await cancel_task is False
-
-
-@pytest.mark.anyio
-async def test_local_modals_receive_app_level_arrow_navigation() -> None:
-    providers = DynamicProviderRegistry(generation_id="local-navigation")
-    providers.register(
-        "source",
-        DynamicProvider(
-            id="local-provider",
-            display_name="Local provider",
-            models=(ProviderModel("first"), ProviderModel("second")),
-            default_model="first",
-            transport=OpenAICompatibleTransport(
-                base_url="http://example.test/v1",
-                auth=NoAuth(),
-            ),
-        ),
-    )
-    registry = LocalBackendRegistry(providers, generation_id="local-navigation")
-
-    async def status(context):
-        del context
-        return LocalBackendStatus(
-            state="ready",
-            models=(
-                LocalModel("first", state="unloaded"),
-                LocalModel("second", state="unloaded"),
-            ),
-            actions=("configure", "refresh"),
-        )
-
-    registry.register(
-        "source",
-        LocalBackend(
-            id="local",
-            provider_id="local-provider",
-            display_name="Local",
-            configure_spec=LocalConfigureSpec(),
-            configure=lambda values, context: LocalConfigureResult(committed=True),
-            status=status,
-            refresh=status,
-        ),
-    )
-    app = RunAgentTuiApp(FakeSession())  # type: ignore[arg-type]
-
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        app.session.extension_runtime = SimpleNamespace(local_backend_registry=registry)
-        prompt = app.query_one("#prompt", PromptInput)
-        prompt.focus()
-        app._open_local_backend_picker()
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
-        assert isinstance(app.screen, LocalBackendScreen)
-        assert len(app.screen_stack) == 2
-        model_list = app.screen.query_one("#local-model-list", ListView)
-        action_menu = app.screen.query_one("#local-action-menu", ListView)
-        assert model_list.has_focus
-        assert model_list.index == 0
-        assert action_menu.index == 0
-        await pilot.press("down")
-        assert model_list.index == 1
-        await pilot.press("up")
-        assert model_list.index == 0
-        await pilot.press("down", "down")
-        assert action_menu.has_focus
-        assert action_menu.index == 0
-        await pilot.press("up")
-        assert model_list.has_focus
-        assert model_list.index == 1
-
-        await pilot.press("escape")
-        await pilot.pause()
-        assert len(app.screen_stack) == 1
-        assert app.focused is prompt
-        await pilot.press("x")
-        assert prompt.text == "x"
-
-        selected: list[bool | None] = []
-        app.push_screen(
-            LocalConfirmScreen("Load model?", "This is expensive.", theme=RUN_AGENT_DARK_THEME),
-            callback=selected.append,
-        )
-        await pilot.pause()
-        choices = app.screen.query_one("#local-confirm-list", ListView)
-        assert choices.index == 1  # No is the safe default.
-        await pilot.press("up")
-        await pilot.press("enter")
-        assert selected == [True]
-
-    await registry.aclose()
 
 
 @pytest.mark.anyio
@@ -4893,11 +4787,11 @@ async def test_tui_app_shows_working_state_during_manual_compaction() -> None:
         assert app._is_agent_or_queue_active() is False
         assert app._is_compaction_active() is True
         assert prompt._footer_mode == "running"
-        assert indicator.render().plain != "τ"
-        assert titles[-1] == "\x1b]0;⠋ τ | build notes\x07"
+        assert indicator.render().plain != "run"
+        assert titles[-1] == "\x1b]0;⠋ run | build notes\x07"
 
         app._tick_activity()
-        assert titles[-1] == "\x1b]0;⠙ τ | build notes\x07"
+        assert titles[-1] == "\x1b]0;⠙ run | build notes\x07"
 
         finish.set()
         await pilot.pause()
@@ -4906,8 +4800,8 @@ async def test_tui_app_shows_working_state_during_manual_compaction() -> None:
         assert app._is_working() is False
         assert app._is_compaction_active() is False
         assert prompt._footer_mode == "normal"
-        assert indicator.render().plain == "τ"
-        assert titles[-1] == "\x1b]0;τ | build notes\x07"
+        assert indicator.render().plain == "run"
+        assert titles[-1] == "\x1b]0;run | build notes\x07"
 
 
 @pytest.mark.anyio

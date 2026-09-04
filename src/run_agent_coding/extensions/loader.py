@@ -19,7 +19,7 @@ _MODULE_NAME_PREFIX = "run_agent_extension"
 _load_counter = 0
 
 
-ExtensionSource = Literal["built-in", "user", "explicit", "project"]
+ExtensionSource = Literal["user", "explicit", "project"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,7 +42,6 @@ class LoadedExtension:
     source_id: str
     setup: Callable[..., object]
     source: ExtensionSource = "explicit"
-    hidden: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,7 +51,6 @@ class ExtensionSourceMetadata:
     name: str
     source_id: str
     source: ExtensionSource
-    hidden: bool
     path: Path | None
 
 

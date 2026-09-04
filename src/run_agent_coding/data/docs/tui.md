@@ -21,41 +21,6 @@ four hours and failures leave the existing list usable. Use
 `run-agent update --models` for forced revalidation or `RUN_AGENT_OFFLINE=1` to disable
 catalog network access.
 
-## `/local`
-
-Type `/local` to open the generic local-backend host. It explicitly chooses a
-registered backend even when only one is available; the recommended backend is
-preselected but still requires confirmation. Once confirmed, Run Agent probes its one
-effective saved/environment/default endpoint. The built-in `llama.cpp` backend
-provides endpoint/API-key fields plus separate arrow-key navigable model and
-action sections. Only the focused section has a `focused` marker, accent border,
-and selection highlight. Up/Down moves continuously across section boundaries;
-Tab switches sections directly. Enter selects from the focused section and
-Escape closes. Loading and downloading open a
-separate confirmation with model details before work begins. Downloading shows a
-full-width block bar and router-reported byte counts, including after reopening
-`/local` during a transfer. The actions section exposes
-Hugging Face search/download, explicit active-download cancellation, status,
-refresh, Doctor, and reset.
-
-Configuration fields are structured text, secret, or choice values. Secret input
-is not echoed into diagnostics or session history. Backends perform async
-validation and return typed status, model, diagnostic, and progress data; they
-do not construct Textual widgets.
-
-Refresh may show a cached/stale model snapshot when the server is down. Use an
-exact discovered model with `--provider llama.cpp --model ...` for print or TUI
-startup. A missing active model is marked stale rather than silently replaced.
-State-changing local actions require an idle agent. Closing the screen cancels
-its owned work except an active server-side download, which continues in
-llama.cpp and can be explicitly cancelled from the Actions section after
-reopening `/local`. Results from a retired or replaced extension generation are
-ignored.
-
-Reset removes only Run Agent's llama.cpp settings and safe snapshot. Stored credential
-deletion is separately confirmed. Run Agent never stops the external server or
-deletes model files. See `local-inference.md` and `security.md`.
-
 Do not introduce Textual dependencies into `run_agent_core`. Keep reusable behavior
 in the harness/session layers and UI behavior in this adapter. Use Textual pilot
-tests and deterministic fake providers/backends for interaction tests.
+tests and deterministic fake providers for interaction tests.

@@ -10,11 +10,8 @@ from inspect import isawaitable
 from pathlib import Path
 from time import time_ns
 from types import MappingProxyType
-from typing import Literal, Protocol, cast
+from typing import Literal, Protocol
 
-import httpx
-
-from run_agent_coding.built_in_extensions import BuiltInExtension, BuiltInExtensionContext
 from run_agent_coding.commands import (
     CommandContext,
     CommandRegistry,
@@ -22,7 +19,6 @@ from run_agent_coding.commands import (
     SlashCommand,
     create_default_command_registry,
 )
-from run_agent_coding.credentials import CredentialStore, FileCredentialStore, credentials_path
 from run_agent_coding.extensions.api import (
     AGENT_EVENT_TYPES,
     AGENT_EVENT_WILDCARD,
@@ -63,7 +59,6 @@ from run_agent_coding.extensions.provider_registry import (
     ProviderRegistryCloseResult,
 )
 from run_agent_coding.extensions.providers import CredentialReader, DynamicProvider
-from run_agent_coding.local_backends import LocalBackend, LocalBackendRegistry
 from run_agent_coding.paths import RunAgentPaths
 from run_agent_coding.project_trust import ExtensionTrustResult, ProjectTrustEvent
 from run_agent_coding.provider_config import ProviderConfig
@@ -192,16 +187,9 @@ class ExtensionRuntime:
         durable_providers: Sequence[ProviderConfig] = (),
         credentials: CredentialReader | None = None,
         environment: Mapping[str, str] | None = None,
-        built_in_extensions: Sequence[BuiltInExtension] | None = None,
         paths: RunAgentPaths | None = None,
-        built_in_credentials: CredentialStore | None = None,
-        built_in_http_client: httpx.AsyncClient | None = None,
     ) -> None:
         self._generation = ExtensionGeneration()
-        self._built_in_extensions = tuple(
-            () if built_in_extensions is None else built_in_extensions
-        )
-        self._built_ins_loaded = False
         self._durable_providers = tuple(durable_providers)
         self._provider_credentials = credentials
         self._provider_environment = environment
@@ -209,37 +197,13 @@ class ExtensionRuntime:
         self._environment = MappingProxyType(
             dict(environment) if environment is not None else dict(os.environ)
         )
-        resolved_built_in_credentials: CredentialStore = (
-            built_in_credentials
-            if built_in_credentials is not None
-            else (
-                cast(CredentialStore, credentials)
-                if credentials is not None
-                and all(
-                    callable(getattr(credentials, name, None))
-                    for name in ("set", "delete", "names")
-                )
-                else FileCredentialStore(credentials_path(self._paths))
-            )
-        )
-        self._built_in_context = BuiltInExtensionContext(
-            paths=self._paths,
-            credential_store=resolved_built_in_credentials,
-            environment=self._environment,
-            http_client=built_in_http_client,
-        )
         self._provider_registry = DynamicProviderRegistry(
             self._durable_providers,
             generation_id=self._generation.id,
             credentials=credentials,
             environment=environment,
         )
-        self._local_backend_registry = LocalBackendRegistry(
-            self._provider_registry,
-            generation_id=self._generation.id,
-        )
         self._retired_provider_registries: list[DynamicProviderRegistry] = []
-        self._retired_local_backend_registries: list[LocalBackendRegistry] = []
         self._extensions: list[RegisteredExtension] = []
         self._tools: dict[str, RegisteredExtensionTool] = {}
         self._commands: dict[str, ExtensionCommand] = {}
@@ -266,8 +230,7 @@ class ExtensionRuntime:
         include_project_dir: bool = False,
         include_user_dir: bool = True,
     ) -> None:
-        """Load built-ins, then discover extensions and run isolated setup."""
-        self._load_built_ins()
+        """Discover extensions and run isolated setup."""
         result = load_extensions(
             paths,
             extra_paths=extra_paths,
@@ -278,34 +241,6 @@ class ExtensionRuntime:
         self._load_diagnostics.extend(result.diagnostics)
         for extension in result.extensions:
             self._setup_extension(extension)
-
-    def _load_built_ins(self) -> None:
-        """Load each trusted declaration once, before filesystem sources."""
-        if self._built_ins_loaded:
-            return
-        self._built_ins_loaded = True
-        for declaration in self._built_in_extensions:
-            setup = declaration.setup
-            if declaration.setup_with_context is not None:
-
-                def setup_with_runtime_context(
-                    api: ExtensionAPI,
-                    declaration: BuiltInExtension = declaration,
-                ) -> None:
-                    assert declaration.setup_with_context is not None
-                    declaration.setup_with_context(api, self._built_in_context)
-
-                setup = setup_with_runtime_context
-            self._setup_extension(
-                LoadedExtension(
-                    name=declaration.name,
-                    path=None,
-                    source_id=declaration.source_id,
-                    setup=setup,
-                    source="built-in",
-                    hidden=declaration.hidden,
-                )
-            )
 
     @property
     def active(self) -> bool:
@@ -319,8 +254,7 @@ class ExtensionRuntime:
         # Replacement callers clear host UI before a successor uses the shared
         # bridge; clearing here could erase that successor's freshly mounted UI.
         # Provider retirement synchronously detaches every layer and requests
-        # cancellation of generation-owned provider and backend work.
-        self._local_backend_registry.retire()
+        # cancellation of generation-owned provider work.
         self._provider_registry.retire()
         self._generation.invalidate()
         if self._harness_unsubscribe is not None:
@@ -340,21 +274,15 @@ class ExtensionRuntime:
         """Retire this generation and report drain or bounded containment."""
         self.retire()
         provider_registries = (*self._retired_provider_registries, self._provider_registry)
-        backend_registries = (
-            *self._retired_local_backend_registries,
-            self._local_backend_registry,
-        )
         try:
-            _, provider_results = await asyncio.gather(
-                asyncio.gather(*(registry.aclose() for registry in backend_registries)),
-                asyncio.gather(*(registry.aclose() for registry in provider_registries)),
+            provider_results = await asyncio.gather(
+                *(registry.aclose() for registry in provider_registries)
             )
             self._retired_provider_registries = [
                 registry
                 for registry, result in zip(provider_registries, provider_results, strict=True)
                 if not result.drained and registry is not self._provider_registry
             ]
-            self._retired_local_backend_registries = []
             contained = sum(result.contained_discovery_tasks for result in provider_results)
             return ProviderRegistryCloseResult(
                 drained=contained == 0,
@@ -381,22 +309,15 @@ class ExtensionRuntime:
         # is still active so host cleanup triggered by component disposal can
         # safely use its API; only then make every captured API/context stale.
         self.clear_ui_components()
-        self._local_backend_registry.retire()
-        self._retired_local_backend_registries.append(self._local_backend_registry)
         self._provider_registry.retire()
         self._retired_provider_registries.append(self._provider_registry)
         self._generation.invalidate()
         self._generation = ExtensionGeneration()
-        self._built_ins_loaded = False
         self._provider_registry = DynamicProviderRegistry(
             self._durable_providers,
             generation_id=self._generation.id,
             credentials=self._provider_credentials,
             environment=self._provider_environment,
-        )
-        self._local_backend_registry = LocalBackendRegistry(
-            self._provider_registry,
-            generation_id=self._generation.id,
         )
         if self._harness_unsubscribe is not None:
             self._harness_unsubscribe()
@@ -436,7 +357,6 @@ class ExtensionRuntime:
             path=extension.path,
             api=api,
             source=extension.source,
-            hidden=extension.hidden,
         )
         self._extensions.append(registered)
         try:
@@ -449,11 +369,7 @@ class ExtensionRuntime:
                     kind="extension",
                     name=extension.name,
                     path=extension.path,
-                    message=(
-                        f"built-in setup failed: {exc!r}"
-                        if extension.source == "built-in"
-                        else f"setup failed: {exc!r}"
-                    ),
+                    message=f"setup failed: {exc!r}",
                     severity="error",
                 )
             )
@@ -485,7 +401,6 @@ class ExtensionRuntime:
             if registration[0] != source_id
         }
         self._provider_registry.unregister_source(source_id)
-        self._local_backend_registry.unregister_source(source_id)
 
     # -- registration (called through ExtensionAPI) -------------------------
 
@@ -496,10 +411,6 @@ class ExtensionRuntime:
     def update_provider(self, source_id: str, provider: DynamicProvider) -> bool:
         """Publish a provider snapshot without invalidating paired backends."""
         return self._provider_registry.update(source_id, provider)
-
-    def register_local_backend(self, source_id: str, backend: LocalBackend) -> None:
-        """Register a backend against its exact source-owned provider layer."""
-        self._local_backend_registry.register(source_id, backend)
 
     def register_tool(self, source_id: str, extension_name: str, tool: AgentTool) -> None:
         """Register an extension tool; first registration per name wins."""
@@ -803,16 +714,6 @@ class ExtensionRuntime:
         """Return the immutable environment snapshot exposed to every extension."""
         return self._environment
 
-    @property
-    def built_in_credentials(self) -> CredentialStore:
-        """Return the injected mutable store used by trusted built-ins."""
-        return self._built_in_context.credential_store
-
-    @property
-    def built_in_http_client(self) -> httpx.AsyncClient | None:
-        """Return the externally owned HTTP client used by trusted built-ins."""
-        return self._built_in_context.http_client
-
     def set_ui_bridge(self, ui: UiBridge) -> None:
         """Install the frontend UI bridge (TUI, print-mode fallback, or test)."""
         self._ui = ui
@@ -858,24 +759,18 @@ class ExtensionRuntime:
         return self._provider_registry
 
     @property
-    def local_backend_registry(self) -> LocalBackendRegistry:
-        """Return this staged runtime generation's local-backend registry."""
-        return self._local_backend_registry
-
-    @property
     def extension_names(self) -> tuple[str, ...]:
         """Return visible extension names in load order."""
-        return tuple(extension.name for extension in self._extensions if not extension.hidden)
+        return tuple(extension.name for extension in self._extensions)
 
     @property
     def extension_metadata(self) -> tuple[ExtensionSourceMetadata, ...]:
-        """Return active visible and hidden source metadata in load order."""
+        """Return active extension source metadata in load order."""
         return tuple(
             ExtensionSourceMetadata(
                 name=extension.name,
                 source_id=extension.source_id,
                 source=extension.source,
-                hidden=extension.hidden,
                 path=extension.path,
             )
             for extension in self._extensions
@@ -1131,8 +1026,8 @@ class ExtensionRuntime:
     async def decide_project_trust(self, event: ProjectTrustEvent) -> ExtensionTrustResult | None:
         """Return the first decisive eligible extension trust result.
 
-        This runtime must contain only built-in, user, and explicit extensions;
-        callers load project extensions only after this method resolves.
+        This runtime must contain only user and explicit extensions; callers
+        load project extensions only after this method resolves.
         """
         for owner, handler in self._handlers_for("project_trust"):
             try:

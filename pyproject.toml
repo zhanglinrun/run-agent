@@ -24,6 +24,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+feishu = [
+    "lark-oapi>=1.7.3,<2",
+]
 dev = [
     "build>=1.2",
     "mypy>=1.10",

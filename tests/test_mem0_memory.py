@@ -80,7 +80,7 @@ async def test_mem0_client_lists_searches_and_deletes_project_and_global_memory(
                     "results": [
                         {
                             "id": "searched-memory",
-                            "memory": "Use uv",
+                            "memory": "Use a project virtual environment",
                             "score": 0.9,
                             "created_at": "2026-09-04T00:00:00Z",
                         }

@@ -19,7 +19,6 @@ if TYPE_CHECKING:
 
     from run_agent_coding.extensions.providers import DynamicProvider
     from run_agent_coding.extensions.runtime import ExtensionRuntime
-    from run_agent_coding.local_backends import LocalBackend
     from run_agent_coding.paths import RunAgentPaths
     from run_agent_coding.tui.config import TuiTheme
 
@@ -1050,11 +1049,6 @@ class ExtensionAPI:
         self._generation.assert_active()
         return self._runtime.update_provider(self._source_id, provider)
 
-    def register_local_backend(self, backend: LocalBackend) -> None:
-        """Register a backend paired with this source's provider layer."""
-        self._generation.assert_active()
-        self._runtime.register_local_backend(self._source_id, backend)
-
     def register_command(
         self,
         name: str,
@@ -1191,6 +1185,5 @@ class RegisteredExtension:
     source_id: str
     path: Path | None
     api: ExtensionAPI
-    source: Literal["built-in", "user", "explicit", "project"] = "explicit"
-    hidden: bool = False
+    source: Literal["user", "explicit", "project"] = "explicit"
     handlers: dict[str, list[ExtensionHandler]] = field(default_factory=dict)

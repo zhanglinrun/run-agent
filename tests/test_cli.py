@@ -404,7 +404,7 @@ def test_update_command_upgrades_without_startup_check(monkeypatch: pytest.Monke
         cli,
         "update_run_agent",
         lambda: UpdateResult(
-            command=("uv", "tool", "install", "run-agent-harness@0.2.4"),
+            command=(sys.executable, "-m", "pip", "install", "--upgrade", "run-agent-harness"),
             stdout="Updated run-agent-harness",
         ),
     )
@@ -413,9 +413,7 @@ def test_update_command_upgrades_without_startup_check(monkeypatch: pytest.Monke
 
     assert result.exit_code == 0
     assert "Updated run-agent-harness" in result.stdout
-    assert (
-        "Run Agent update completed with: uv tool install run-agent-harness@0.2.4" in result.stdout
-    )
+    assert f"Run Agent update completed with: {sys.executable} -m pip install" in result.stdout
 
 
 def test_update_models_force_refreshes_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -439,39 +437,18 @@ def test_update_models_force_refreshes_catalog(monkeypatch: pytest.MonkeyPatch) 
     assert "Model catalogs refreshed: 42 models" in result.stdout
 
 
-def test_update_command_reports_windows_handoff_without_claiming_completion(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        cli,
-        "update_run_agent",
-        lambda: UpdateResult(
-            command=("uv", "tool", "install", "run-agent-harness@0.2.4"),
-            stdout="Run Agent update is scheduled and will start after this process exits.",
-            deferred=True,
-        ),
-    )
-
-    result = CliRunner().invoke(app, ["update"])
-
-    assert result.exit_code == 0
-    assert "scheduled" in result.stdout
-    assert "Run Agent update handed off with:" in result.stdout
-    assert "Run Agent update completed" not in result.stdout
-
-
 def test_update_command_reports_installer_failures(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         cli,
         "update_run_agent",
-        lambda: UpdateResult(command=None, failures=("uv: not found", "pipx: not found")),
+        lambda: UpdateResult(command=None, failures=("pipx: not found",)),
     )
 
     result = CliRunner().invoke(app, ["update"])
 
     assert result.exit_code == 1
     assert "Could not safely update Run Agent" in result.stderr
-    assert "uv: not found" in result.stderr
+    assert "pipx: not found" in result.stderr
 
 
 def test_print_mode_writes_update_notice_to_stderr(monkeypatch: pytest.MonkeyPatch) -> None:

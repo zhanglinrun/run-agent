@@ -9,7 +9,6 @@ import httpx
 import pytest
 from extensions.mcp.extension import McpHttpClient
 
-from run_agent_coding.built_in_extensions import BUILT_IN_EXTENSIONS
 from run_agent_coding.commands import CommandRegistry
 from run_agent_coding.extension_installer import install_extension
 from run_agent_coding.extensions.runtime import ExtensionRuntime
@@ -29,7 +28,6 @@ def _runtime(
     runtime = ExtensionRuntime(
         paths=RunAgentPaths(home=tmp_path / ".run", agents_home=tmp_path / ".agents"),
         environment=environment or {},
-        built_in_extensions=BUILT_IN_EXTENSIONS,
     )
     runtime.bind(SimpleNamespace(cwd=tmp_path, session_id="session-1"))  # type: ignore[arg-type]
     runtime.load(
@@ -46,14 +44,6 @@ def _runtime(
 
 def _tool(tools: tuple[AgentTool, ...] | list[AgentTool], name: str) -> AgentTool:
     return next(tool for tool in tools if tool.name == name)
-
-
-def test_only_llama_cpp_is_a_built_in_extension(tmp_path: Path) -> None:
-    runtime = _runtime(tmp_path)
-
-    assert [extension.name for extension in BUILT_IN_EXTENSIONS] == ["llama.cpp"]
-    assert runtime.extension_names == ()
-    assert runtime.extension_tools == ()
 
 
 def test_official_extensions_are_discovered_only_when_explicit(tmp_path: Path) -> None:
@@ -88,7 +78,6 @@ def test_installed_mem0_extension_is_discovered_from_user_directory(tmp_path: Pa
     runtime = ExtensionRuntime(
         paths=paths,
         environment={"MEM0_API_KEY": "test-key"},
-        built_in_extensions=BUILT_IN_EXTENSIONS,
     )
     runtime.bind(SimpleNamespace(cwd=tmp_path, session_id="session-1"))  # type: ignore[arg-type]
 
@@ -119,7 +108,9 @@ async def test_mem0_and_plan_mode_compose_as_regular_extensions(
         if request.url.path == "/v3/memories/search/":
             return httpx.Response(
                 200,
-                json={"results": [{"id": "memory-1", "memory": "Use uv"}]},
+                json={
+                    "results": [{"id": "memory-1", "memory": "Use a project virtual environment"}]
+                },
             )
         raise AssertionError(f"Unexpected Mem0 request: {request.method} {request.url}")
 
@@ -136,11 +127,13 @@ async def test_mem0_and_plan_mode_compose_as_regular_extensions(
     )
     memory = _tool(list(runtime.compose_tools([])), "memory")
 
-    stored = await memory.execute("put", {"action": "put", "text": "Use uv"})
-    found = await memory.execute("search", {"action": "search", "query": "dependency uv"})
+    stored = await memory.execute(
+        "put", {"action": "put", "text": "Use a project virtual environment"}
+    )
+    found = await memory.execute("search", {"action": "search", "query": "project environment"})
 
     assert "Stored Mem0 memory memory-1" in stored.text
-    assert "Use uv" in found.text
+    assert "Use a project virtual environment" in found.text
     assert all(request.headers["Authorization"] == "Token mem0-test-key" for request in requests)
     assert json.loads(requests[0].content)["infer"] is False
 

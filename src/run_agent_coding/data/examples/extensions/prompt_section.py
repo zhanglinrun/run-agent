@@ -12,8 +12,8 @@ def setup(api: ExtensionAPI) -> None:
 Run the relevant checks before reporting success:
 
 ```bash
-uv run pytest
-uv run ruff check .
+python -m pytest
+python -m ruff check .
 ```
 """,
     )

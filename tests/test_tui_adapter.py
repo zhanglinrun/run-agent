@@ -852,7 +852,7 @@ def test_bash_tool_formatter_never_previews_undescribed_commands() -> None:
         "python - <<'PY'\nprint('one')\nPY",
         "git status &&\ngit diff",
         "echo " + "x" * 200,
-        'uv run python -c "print(1)"',
+        'python -c "print(1)"',
         "\n\n",
     ]
 

@@ -17,7 +17,7 @@ jobs:
           python-version: "3.12"
           cache: pip
       - name: Install
-        run: python -m pip install -e ".[dev]"
+        run: python -m pip install -e ".[dev,feishu]"
       - name: Compile
         run: python -m compileall -q src extensions tests
       - name: Lint and types
@@ -41,7 +41,6 @@ jobs:
               "run_agent_ai/__init__.py",
               "run_agent_core/__init__.py",
               "run_agent_coding/__init__.py",
-              "run_agent_coding/extensions/builtins/llama_cpp/__init__.py",
               "run_agent_gateway/__init__.py",
               "run_agent_observability/__init__.py",
               "run_agent_evals/__init__.py",

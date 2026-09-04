@@ -2,20 +2,17 @@
 
 `run_agent_evals` 使用真实 `CodingSession` 执行任务，并将可复核证据与归约结果分离。
 
-本次重构的冻结结果、验证命令和证据摘要见
-[2026-09-04 验证报告](results/2026-09-04.md)。
-
 ## Coding campaign
 
 ```powershell
-uv run run-agent-bench run evals/coding/smoke/tasks.jsonl `
+.\.venv\Scripts\run-agent-bench.exe run evals/coding/smoke/tasks.jsonl `
   --output-root .run/evals/smoke `
   --extension extensions/observability `
   --candidate-id baseline `
   --seed 0 `
   --concurrency 1
 
-uv run run-agent-bench rebuild .run/evals/smoke
+.\.venv\Scripts\run-agent-bench.exe rebuild .run/evals/smoke
 ```
 
 输出包含：
@@ -31,8 +28,8 @@ uv run run-agent-bench rebuild .run/evals/smoke
 ## Runtime benchmark
 
 ```powershell
-uv run run-agent-bench runtime
-uv run run-agent-bench runtime-rebuild .run/benchmarks/runtime/<run-id>
+.\.venv\Scripts\run-agent-bench.exe runtime
+.\.venv\Scripts\run-agent-bench.exe runtime-rebuild .run/benchmarks/runtime/<run-id>
 ```
 
 该命令覆盖 10,000 请求的生产 `TurnScheduler`、生产 Agent loop 上的合成异步 read tool，

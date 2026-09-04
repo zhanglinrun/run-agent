@@ -42,9 +42,7 @@ def _source_paths(root: Path) -> tuple[Path, ...]:
         if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"
     ]
     paths.extend(
-        path
-        for name in ("pyproject.toml", "uv.lock", ".python-version")
-        if (path := root / name).is_file()
+        path for name in ("pyproject.toml", ".python-version") if (path := root / name).is_file()
     )
     return tuple(sorted(paths, key=lambda path: path.relative_to(root).as_posix()))
 

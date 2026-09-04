@@ -51,7 +51,7 @@ run-agent/
 │   ├── run_agent_core/            # 消息 / 工具 / loop / harness / session tree
 │   │   └── session/               # JSONL 持久化与分支树
 │   ├── run_agent_coding/          # CLI、TUI、CodingSession、扩展宿主、Skills
-│   │   ├── extensions/            # 扩展 API / loader / runtime；内置仅 llama.cpp
+│   │   ├── extensions/            # 扩展 API / loader / runtime
 │   │   ├── tui/                   # Textual 交互界面
 │   │   └── data/docs/             # 随包文档（架构 / CLI / 扩展 / 安全等）
 │   ├── run_agent_gateway/         # 多会话调度与渠道 adapter 宿主
@@ -62,14 +62,13 @@ run-agent/
 │   ├── permission_policy/ · plan_mode/ · verification/
 ├── examples/
 │   ├── extensions/                # hello_tool / prompt_section / sidebar_status
-│   └── gateway_extensions/        # stdin JSONL adapter 示例
+│   └── gateway_extensions/        # 飞书长连接 / stdin JSONL adapter
 ├── evals/
-│   ├── coding/                    # 隔离任务与 verifier
-│   └── results/                   # 验证报告摘要
+│   └── coding/                    # 隔离任务与 verifier
 ├── tests/                         # pytest（asyncio）
+├── Dockerfile · compose.yaml      # 飞书 Gateway 容器部署
 ├── study/                         # 简历表述与面试证据入口（可选）
-├── pyproject.toml                 # 包元数据、入口脚本、ruff/mypy/pytest
-└── uv.lock                        # uv 依赖锁定
+└── pyproject.toml                 # 包元数据、入口脚本、ruff/mypy/pytest
 ```
 
 ## 核心功能
@@ -79,7 +78,7 @@ run-agent/
 - **四工具默认面**：`read`（可并行）/ `write` / `edit` / `bash`（整批串行）
 - **上下文预算**：token 预算触发 compaction；JSONL session tree 保存可恢复分支
 - **Skills**：文件系统 Skill 检索，不绑死在核心 loop
-- **内置清单极薄**：产品内置仅隐藏的 `llama.cpp` 本地后端；其余能力走扩展
+- **无产品能力内置**：模型提供方通过配置或扩展接入，其他能力由扩展按需加载
 
 ### 2. 普通文件系统扩展
 
@@ -111,7 +110,7 @@ run-agent/
 ### 语言与运行时
 
 - **Python**：3.12+
-- **包管理**：uv（`uv.lock` 锁定）
+- **环境与包管理**：标准 `.venv` + pip
 - **构建**：hatchling；分发包名 `run-agent-harness`
 
 ### 核心依赖
@@ -145,12 +144,12 @@ run-agent/
 
 ### 4. 可离线验签的评测闭环
 
-Campaign 冻结仓库状态与内容凭证；live smoke（`gpt-5.6-luna/high`）2/2 故障修复、13 次逻辑调用对应 13 次物理尝试；全量质量门禁 1,887 passed / 8 skipped。详见 [`evals/results/2026-09-04.md`](evals/results/2026-09-04.md)。
+Campaign 冻结仓库状态与内容凭证，离线重建会校验 manifest、trial matrix、artifact path 和全部内容摘要，拒绝被修改的证据。
 
 ## 环境要求
 
 - **Python**：3.12+
-- **uv**：推荐（也可用兼容的虚拟环境 + pip）
+- **虚拟环境**：项目根目录下的 `.venv`
 - **操作系统**：Windows / macOS / Linux（文档命令以 PowerShell 为例）
 - **（可选）LLM 网关**：OpenAI-compatible 或 Anthropic-compatible
 - **（可选）Mem0 / MCP**：仅在加载对应扩展时需要
@@ -160,8 +159,13 @@ Campaign 冻结仓库状态与内容凭证；live smoke（`gpt-5.6-luna/high`）
 ### 1. 安装依赖
 
 ```powershell
-uv sync --extra dev
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -e ".[dev,feishu]"
 ```
+
+macOS / Linux 将最后两条命令中的 `.\.venv\Scripts\python.exe` 换成
+`.venv/bin/python`。不使用飞书时可安装 `.[dev]`，省去飞书 SDK。
 
 ### 2. 配置环境变量
 
@@ -178,6 +182,7 @@ Copy-Item .env.example .env
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` | OpenAI-compatible 网关 |
 | `MODEL` | 默认模型 ID |
 | `REASONING_EFFORT` | 推理强度（如 `high`） |
+| `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | 飞书自建应用凭证 |
 | `MEM0_API_KEY` 等 | 仅在加载 Mem0 扩展后生效 |
 
 显式 `--model` / `--thinking` 与进程环境变量优先于 `.env`。CLI、Gateway、评测共用同一回退规则。
@@ -186,29 +191,29 @@ Copy-Item .env.example .env
 
 ```powershell
 # 交互式 TUI
-uv run run-agent
+.\.venv\Scripts\run-agent.exe
 
 # 单轮或可续接的非交互执行
-uv run run-agent --print "检查当前仓库并给出结论"
+.\.venv\Scripts\run-agent.exe --print "检查当前仓库并给出结论"
 
 # JSON 事件流
-uv run run-agent --mode json "读取 pyproject.toml"
+.\.venv\Scripts\run-agent.exe --mode json "读取 pyproject.toml"
 
 # 显式加载示例扩展 / 全部正式可选扩展
-uv run run-agent -e examples/extensions/hello_tool.py --print "调用 hello 工具"
-uv run run-agent -e extensions
+.\.venv\Scripts\run-agent.exe -e examples/extensions/hello_tool.py --print "调用 hello 工具"
+.\.venv\Scripts\run-agent.exe -e extensions
 
 # 会话与 provider 管理
-uv run run-agent sessions
-uv run run-agent providers
-uv run run-agent export <session-id>
+.\.venv\Scripts\run-agent.exe sessions
+.\.venv\Scripts\run-agent.exe providers
+.\.venv\Scripts\run-agent.exe export <session-id>
 ```
 
 安装可信扩展供后续自动发现：
 
 ```powershell
-uv run run-agent install extensions/mem0
-uv run run-agent install extensions/permission_policy
+.\.venv\Scripts\run-agent.exe install extensions/mem0
+.\.venv\Scripts\run-agent.exe install extensions/permission_policy
 ```
 
 项目 `.run/extensions` 是可执行 Python，必须同时使用 `--project-extensions` 和项目审批。`--no-approve` 只拒绝受保护的项目输入，不是操作系统 sandbox。
@@ -229,25 +234,46 @@ JSONL stdin/stdout 示例：
 
 ```powershell
 '{"conversation_id":"demo","text":"Reply with OK"}' |
-  uv run run-agent-gateway `
+  .\.venv\Scripts\run-agent-gateway.exe `
     --extension examples/gateway_extensions/stdin_jsonl.py `
     --cwd .
 ```
+
+飞书使用官方 SDK 的长连接模式，不需要公网回调地址。先在飞书开放平台创建企业
+自建应用、启用机器人，授予 `im:message.p2p_msg:readonly`、
+`im:message.group_at_msg:readonly`、`im:message:send_as_bot`，再在“事件与回调”中
+选择长连接并订阅 `im.message.receive_v1`。发布应用并把机器人加入目标群后，配置：
+
+```dotenv
+FEISHU_APP_ID=cli_xxx
+FEISHU_APP_SECRET=xxx
+```
+
+启动 Gateway：
+
+```powershell
+.\.venv\Scripts\run-agent-gateway.exe `
+  --extension examples/gateway_extensions/feishu.py `
+  --cwd .
+```
+
+群聊默认要求 @机器人，私聊可直接发送。完整说明见
+[`examples/gateway_extensions/README.md`](examples/gateway_extensions/README.md)。
 
 ### 5. 评测与基准
 
 ```powershell
 # 真实 CodingSession campaign
-uv run run-agent-bench run evals/coding/smoke/tasks.jsonl `
+.\.venv\Scripts\run-agent-bench.exe run evals/coding/smoke/tasks.jsonl `
   --output-root .run/evals/my-run `
   --extension extensions/observability `
   --candidate-id baseline
 
-uv run run-agent-bench rebuild .run/evals/my-run
+.\.venv\Scripts\run-agent-bench.exe rebuild .run/evals/my-run
 
 # 本机 runtime 基准
-uv run run-agent-bench runtime
-uv run run-agent-bench runtime-rebuild .run/benchmarks/runtime/<run-id>
+.\.venv\Scripts\run-agent-bench.exe runtime
+.\.venv\Scripts\run-agent-bench.exe runtime-rebuild .run/benchmarks/runtime/<run-id>
 ```
 
 更多约定见 [`evals/README.md`](evals/README.md)、[`extensions/README.md`](extensions/README.md)。
@@ -263,7 +289,7 @@ uv run run-agent-bench runtime-rebuild .run/benchmarks/runtime/<run-id>
 
 - **会话面**：系统提示、上下文窗口、Skills、会话管理与导出
 - **前端**：CLI（`run-agent`）与 Textual TUI
-- **扩展宿主**：API / loader / runtime；内置仅 `llama.cpp`
+- **扩展宿主**：API / loader / runtime；默认不注入产品专属扩展
 - **信任**：项目审批控制 ambient 项目输入，不是沙箱
 
 ### `run_agent_gateway`
@@ -291,29 +317,29 @@ uv run run-agent-bench runtime-rebuild .run/benchmarks/runtime/<run-id>
 - 评测产物默认落在被忽略的 `.run/`；对外分享只发布 digest 与报告摘要，避免泄漏会话内容
 - 轮换 LLM / Mem0 / MCP 密钥；不要把项目扩展目录当作不可信代码自动执行源
 
-## 验证
+### Docker 部署飞书 Gateway
 
-环境参考：Windows，Python 3.12；证据摘要日期 2026-09-04（详见 [`evals/results/2026-09-04.md`](evals/results/2026-09-04.md)）。
+`compose.yaml` 会把当前项目挂载到 `/workspace`，并把持久会话保存在命名卷中：
 
 ```powershell
-uv run ruff format --check .
-uv run ruff check .
-uv run mypy
-uv run pytest -q
-uv build
+docker compose up --build -d
+docker compose logs -f run-agent-feishu
 ```
 
-本机验证快照（边界说明见报告原文）：
+修改 `.env` 后重建或重启容器。停止服务使用 `docker compose down`；默认不会删除
+保存会话的 `run-agent-data` 卷。
 
-| 项 | 结果 |
-| --- | --- |
-| 质量门禁 | 1,887 passed、8 skipped；Ruff + strict mypy 通过 |
-| Runtime 调度 | 10,000/10,000 完成；0 丢失/重复/失败/乱序；P95 453 ms；≈21.7k req/s |
-| 工具微基准 | 8 路合成读，中位 −87.47%，顺序 0 违规 |
-| Trace 微基准 | `fsync` 开启时 P95 额外开销 37.20 ms |
-| Live eval | 2/2 故障修复冒烟；13 logical = 13 physical；目录估算成本约 `$0.0055` |
+## 验证
 
-Runtime 工具延迟与 2/2 live eval 分别验证调度/并发语义与端到端链路，不代表磁盘时延或公开 Coding Benchmark 解决率。
+环境参考：Windows，Python 3.12。
+
+```powershell
+.\.venv\Scripts\python.exe -m ruff format --check .
+.\.venv\Scripts\python.exe -m ruff check .
+.\.venv\Scripts\python.exe -m mypy
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m build
+```
 
 ## 开发规范
 

@@ -54,9 +54,9 @@ concurrency, converge cancelled tasks, and publish results in declaration order.
 
 ## Extension ownership
 
-The product-owned built-in registry contains only the hidden `llama.cpp` local
-backend. It ships inside the wheel because it participates in provider validation
-and `/local` startup before filesystem extension discovery.
+Providers are supplied through durable configuration or explicit filesystem
+extensions. Other optional product capabilities are explicit filesystem or Gateway
+extensions.
 
 Mem0, MCP, Plan, Permission, Verification, and the session Trace Recorder live in
 the repository's top-level `extensions/` directory. They are ordinary trusted

@@ -5,10 +5,14 @@
     "sections": {
       "Changed": [
         "Rebuilt Run Agent on a Pi-style three-layer Python architecture with a provider-neutral core, coding-session host, extension runtime, and append-only JSONL session tree.",
-        "Renamed the installed command, package namespaces, environment variables, and resource roots for the Run Agent distribution."
+        "Renamed the installed command, package namespaces, environment variables, and resource roots for the Run Agent distribution.",
+        "Use a standard project-local .venv and pip workflow."
       ],
       "Removed": [
         "Removed the legacy SQLite session repository and bundled data-directory datasets."
+      ],
+      "New": [
+        "Connect the Gateway to Feishu over the official SDK long connection and deploy it with Docker Compose."
       ]
     }
   },
@@ -31,7 +35,6 @@
     "date": "2026-08-24",
     "sections": {
       "New": [
-        "Run tool-capable GGUF models through Run Agent's built-in llama.cpp local backend, with the /local workflow for endpoint configuration, diagnostics, model discovery, downloads, and load or unload management.",
         "Keep model metadata current from models.dev with a generated offline snapshot, background /model refreshes, run-agent update --models, richer capability metadata, and Pi-compatible reasoning levels including max.",
         "Recover eligible Hugging Face pre-output route failures automatically, persist successful replacement routes, and expose structured failover diagnostics while preserving explicitly fixed routes.",
         "Build dynamic providers from trusted extensions and let extensions add live sidebar sections, structured system-prompt sections, and react to session-name or thinking-level changes.",
@@ -247,7 +250,6 @@
     "date": "2026-07-23",
     "sections": {
       "New": [
-        "Add one-line installers for macOS, Linux, and Windows that install Run Agent through uv and verify the resulting command.",
         "Add configurable desktop or bell notifications when an agent run finishes while Run Agent is unfocused.",
         "Add searchable TUI pickers for prompt templates and skills, plus a searchable tools reference with full descriptions."
       ],

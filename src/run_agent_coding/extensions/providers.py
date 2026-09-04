@@ -325,15 +325,7 @@ RefreshModels = Callable[[ProviderRefreshContext], Awaitable[ProviderModelSnapsh
 
 @dataclass(frozen=True, slots=True)
 class DynamicProvider:
-    """A complete process-local provider definition owned by one source layer.
-
-    ``stable_scoped_references`` is an opt-in reserved for trusted built-in
-    providers with a stable identity: it lets the host persist scoped-model
-    references as ``provider id + exact model id`` pairs only.  Definitions,
-    endpoints, credentials, and discovered metadata are never persisted, and
-    references resolve only while this trusted source is loaded and its live
-    or safely cached snapshot contains the model.
-    """
+    """A complete process-local provider definition owned by one source layer."""
 
     id: str
     display_name: str
@@ -343,7 +335,6 @@ class DynamicProvider:
     runtime_factory: RuntimeFactory | None = field(default=None, repr=False)
     runtime_auth: ProviderAuth = field(default_factory=NoAuth, repr=False)
     refresh_models: RefreshModels | None = field(default=None, repr=False)
-    stable_scoped_references: bool = False
 
     def __post_init__(self) -> None:
         _require_identifier(self.id, "Provider id")
@@ -370,10 +361,6 @@ class DynamicProvider:
             raise DynamicProviderError("Runtime factory auth must define resolve(context)")
         if self.refresh_models is not None and not callable(self.refresh_models):
             raise DynamicProviderError("Dynamic provider refresh callback must be callable")
-        if not isinstance(self.stable_scoped_references, bool):
-            raise DynamicProviderError(
-                "Dynamic provider stable scoped references flag must be boolean"
-            )
 
     @property
     def auth(self) -> ProviderAuth:
@@ -393,7 +380,6 @@ class DynamicProvider:
             runtime_factory=self.runtime_factory,
             runtime_auth=self.runtime_auth,
             refresh_models=self.refresh_models,
-            stable_scoped_references=self.stable_scoped_references,
         )
 
 

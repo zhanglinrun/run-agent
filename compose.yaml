@@ -1,0 +1,12 @@
+services:
+  run-agent-feishu:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - .:/workspace
+      - run-agent-data:/home/runagent/.run
+
+volumes:
+  run-agent-data:

@@ -130,13 +130,6 @@ from run_agent_coding.tui.config import (
     save_tui_settings,
 )
 from run_agent_coding.tui.file_drop import normalize_dropped_paths
-from run_agent_coding.tui.local_backends import (
-    LocalBackendPickerScreen,
-    LocalBackendScreen,
-    LocalChoiceConfirmScreen,
-    LocalConfirmScreen,
-    LocalSearchResultsScreen,
-)
 from run_agent_coding.tui.project_trust import ProjectTrustScreen, prompt_project_trust
 from run_agent_coding.tui.state import TuiState, format_terminal_command_result_block
 from run_agent_coding.tui.terminal_notification import TerminalNotificationController
@@ -3206,7 +3199,7 @@ class RunAgentTuiApp(App[None]):
     }
 
     #prompt-prefix {
-        width: 2;
+        width: 4;
         height: 3;
         padding: 0 0 0 0;
         margin: 0;
@@ -3378,13 +3371,6 @@ class RunAgentTuiApp(App[None]):
     ExtensionSelectScreen,
     ExtensionConfirmScreen,
     ExtensionInputScreen,
-    LocalBackendPickerScreen,
-    LocalBackendScreen,
-    LocalChoiceConfirmScreen,
-    LocalConfigureScreen,
-    LocalConfirmScreen,
-    LocalModelActionScreen,
-    LocalSearchResultsScreen,
     ProjectTrustScreen {
         align: center middle;
     }
@@ -3438,125 +3424,6 @@ class RunAgentTuiApp(App[None]):
     #extension-input-help {
         height: 1;
         margin-top: 1;
-        color: $run-agent-muted-text;
-    }
-
-    #local-backend-picker,
-    #local-backend-screen,
-    #local-configure-screen,
-    #local-confirm-screen,
-    #local-model-action-screen,
-    #local-search-results-screen {
-        width: 82;
-        max-width: 92%;
-        height: auto;
-        max-height: 82%;
-        padding: 1 2;
-        background: $run-agent-chrome-background;
-        border: tall $run-agent-border;
-    }
-
-    #local-backend-picker-title,
-    #local-backend-title,
-    #local-configure-title,
-    #local-confirm-title,
-    #local-model-action-title,
-    #local-search-results-title {
-        height: auto;
-        color: $run-agent-chrome-text;
-        text-style: bold;
-        margin-bottom: 1;
-    }
-
-    #local-backend-picker-help,
-    #local-backend-help,
-    #local-configure-screen Label,
-    #local-confirm-message,
-    #local-search-results-help {
-        color: $run-agent-muted-text;
-    }
-
-    #local-backend-list,
-    #local-backend-status,
-    #local-backend-progress,
-    #local-model-list,
-    #local-action-menu,
-    #local-confirm-list,
-    #local-choice-list,
-    #local-search-results-list,
-    #local-configure-screen Input,
-    #local-configure-screen Select,
-    #local-model-action-input {
-        background: $run-agent-transcript-background;
-        border: tall $run-agent-border;
-        margin-top: 1;
-    }
-
-    #local-backend-list,
-    #local-model-list,
-    #local-action-menu,
-    #local-confirm-list,
-    #local-choice-list,
-    #local-search-results-list {
-        height: auto;
-        max-height: 16;
-    }
-
-    #local-model-list,
-    #local-action-menu {
-        max-height: 10;
-    }
-
-    #local-model-list:focus,
-    #local-action-menu:focus {
-        border: tall $run-agent-accent;
-    }
-
-    #local-model-list.local-section-inactive > ListItem.-highlight,
-    #local-action-menu.local-section-inactive > ListItem.-highlight,
-    #local-model-list.local-section-inactive > ListItem.-highlight Label,
-    #local-action-menu.local-section-inactive > ListItem.-highlight Label {
-        background: $run-agent-transcript-background;
-        color: $run-agent-chrome-text;
-    }
-
-    #local-model-section-title,
-    #local-action-section-title {
-        height: 1;
-        margin-top: 1;
-        color: $run-agent-chrome-text;
-        text-style: bold;
-    }
-
-    #local-backend-progress-bar {
-        width: 100%;
-        margin-top: 1;
-    }
-
-    #local-backend-progress-bar Bar {
-        width: 1fr;
-    }
-
-    #local-backend-progress-bar Bar > .bar--bar,
-    #local-backend-progress-bar Bar > .bar--complete,
-    #local-backend-progress-bar Bar > .bar--indeterminate {
-        color: $run-agent-accent;
-        background: $run-agent-border;
-    }
-
-    #local-backend-picker-footer,
-    #local-backend-footer,
-    #local-configure-footer,
-    #local-confirm-footer,
-    #local-model-action-footer,
-    #local-search-results-footer {
-        height: 1;
-        margin-top: 1;
-        color: $run-agent-muted-text;
-    }
-
-    #local-backend-progress {
-        min-height: 1;
         color: $run-agent-muted-text;
     }
 
@@ -4011,7 +3878,7 @@ class RunAgentTuiApp(App[None]):
                 yield Container(id="above-prompt-slot")
                 yield Static("", id="queued-messages")
                 with Horizontal(id="prompt-row"):
-                    yield Static("τ", id="prompt-prefix")
+                    yield Static("run", id="prompt-prefix")
                     yield PromptInput(
                         placeholder=PROMPT_PLACEHOLDER,
                         id="prompt",
@@ -4270,8 +4137,6 @@ class RunAgentTuiApp(App[None]):
                 self._open_login_picker()
             if command.custom_provider_login_requested:
                 self._open_custom_provider_login()
-            if command.local_requested:
-                self._open_local_backend_picker()
             if command.login_provider is not None:
                 self._open_login(command.login_provider, method=command.login_method)
             if command.logout_picker_requested:
@@ -5554,11 +5419,6 @@ class RunAgentTuiApp(App[None]):
             | ThemePickerScreen
             | ExtensionSelectScreen
             | ExtensionConfirmScreen
-            | LocalBackendPickerScreen
-            | LocalBackendScreen
-            | LocalChoiceConfirmScreen
-            | LocalConfirmScreen
-            | LocalSearchResultsScreen
             | ProjectTrustScreen,
         ):
             self.screen.action_select_cursor()
@@ -5593,11 +5453,6 @@ class RunAgentTuiApp(App[None]):
             | ToolsReferenceScreen
             | ExtensionSelectScreen
             | ExtensionConfirmScreen
-            | LocalBackendPickerScreen
-            | LocalBackendScreen
-            | LocalChoiceConfirmScreen
-            | LocalConfirmScreen
-            | LocalSearchResultsScreen
             | ProjectTrustScreen,
         ):
             self.screen.action_cursor_down()
@@ -5629,11 +5484,6 @@ class RunAgentTuiApp(App[None]):
             | ToolsReferenceScreen
             | ExtensionSelectScreen
             | ExtensionConfirmScreen
-            | LocalBackendPickerScreen
-            | LocalBackendScreen
-            | LocalChoiceConfirmScreen
-            | LocalConfirmScreen
-            | LocalSearchResultsScreen
             | ProjectTrustScreen,
         ):
             self.screen.action_cursor_up()
@@ -6249,65 +6099,6 @@ class RunAgentTuiApp(App[None]):
             )
         )
 
-    def _open_local_backend_picker(self) -> None:
-        """Open the generic local-backend chooser and require confirmation."""
-        runtime = getattr(self.session, "extension_runtime", None)
-        registry = getattr(runtime, "local_backend_registry", None)
-        if registry is None:
-            self._notify("Local backend controls are unavailable.", severity="warning")
-            return
-        self.push_screen(
-            LocalBackendPickerScreen(registry, theme=self.tui_settings.resolved_theme),
-            callback=self._handle_local_backend_picker_result,
-        )
-
-    def _handle_local_backend_picker_result(self, backend_id: str | None) -> None:
-        # Screen.dismiss() invokes its result callback before popping the screen.
-        # Defer the transition so the picker cannot pop the backend screen that
-        # this callback opens.
-        self.call_later(self._finish_local_backend_picker, backend_id)
-
-    def _finish_local_backend_picker(self, backend_id: str | None) -> None:
-        self._restore_prompt_focus()
-        if backend_id is None:
-            return
-        runtime = getattr(self.session, "extension_runtime", None)
-        registry = getattr(runtime, "local_backend_registry", None)
-        if registry is None or registry.effective(backend_id) is None:
-            self._notify("The selected local backend is no longer available.", severity="warning")
-            return
-        self.push_screen(
-            LocalBackendScreen(
-                registry,
-                backend_id,
-                theme=self.tui_settings.resolved_theme,
-                on_use=self._use_local_model,
-                notify_callback=self._notify_local_backend,
-                is_idle=lambda: not self._is_agent_or_queue_active(),
-            )
-        )
-
-    def _restore_prompt_focus(self) -> None:
-        with suppress(NoMatches):
-            self.query_one("#prompt", PromptInput).focus()
-
-    def _notify_local_backend(self, message: str, level: str) -> None:
-        severity: Literal["information", "warning", "error"] = {
-            "info": "information",
-            "warning": "warning",
-            "error": "error",
-        }.get(level, "information")  # type: ignore[assignment]
-        self._notify(message, severity=severity)
-
-    async def _use_local_model(self, provider_id: str, model_id: str) -> None:
-        if self._is_agent_or_queue_active():
-            self._notify(
-                "Run Agent is still working. Press Escape to interrupt before switching models.",
-                severity="warning",
-            )
-            return
-        await self._switch_model(ModelChoice(provider_name=provider_id, model=model_id))
-
     def _open_tools_reference(self) -> None:
         """Open a read-only view of tools from the active session."""
         self.push_screen(
@@ -6776,7 +6567,7 @@ def _render_activity_indicator(
     if shell_mode and not running:
         return Text("$", style=f"bold {theme.role_styles['tool'].border}")
     if not running:
-        return Text("τ", style=f"bold {theme.accent}")
+        return Text("run", style=f"bold {theme.accent}")
 
     cycle_length = (ACTIVITY_INDICATOR_HEIGHT - 1) * 2
     cycle_position = frame % cycle_length

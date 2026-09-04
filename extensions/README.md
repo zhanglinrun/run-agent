@@ -15,20 +15,20 @@ the core session automatically.
 Load one directly while developing:
 
 ```powershell
-uv run run-agent -e extensions/mem0 --print "Remember the package manager"
+.\.venv\Scripts\run-agent.exe -e extensions/mem0 --print "Remember the package manager"
 ```
 
 Install a trusted extension for normal user-level discovery:
 
 ```powershell
-uv run run-agent install extensions/mem0
-uv run run-agent install extensions/permission_policy
+.\.venv\Scripts\run-agent.exe install extensions/mem0
+.\.venv\Scripts\run-agent.exe install extensions/permission_policy
 ```
 
 Load the directory explicitly to exercise the complete official set:
 
 ```powershell
-uv run run-agent -e extensions
+.\.venv\Scripts\run-agent.exe -e extensions
 ```
 
 Extensions execute with the current user's OS permissions. Installation is a trust decision, not a

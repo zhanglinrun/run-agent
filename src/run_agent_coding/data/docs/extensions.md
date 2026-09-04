@@ -37,9 +37,9 @@ def setup(api: ExtensionAPI) -> None:
 ```
 
 The API can register tools, event hooks, slash commands, prompt guidelines or
-sections, dynamic providers, local backends, custom message renderers, and UI
-components. `setup` must only register capabilities; asynchronous work and cleanup
-belong in tools or lifecycle handlers.
+sections, dynamic providers, custom message renderers, and UI components. `setup`
+must only register capabilities; asynchronous work and cleanup belong in tools or
+lifecycle handlers.
 
 Every regular extension receives:
 
@@ -49,8 +49,6 @@ Every regular extension receives:
   extension-owned state.
 - session metadata such as cwd, model, provider, session id, thinking level, and
   a read-only copy of the active transcript.
-
-Regular extensions must not import or depend on `BuiltInExtensionContext`.
 
 ## Discovery and installation
 
@@ -108,10 +106,6 @@ MCP reads the `RUN_AGENT_MCP_SERVERS` JSON object. Permission policy reads
 `RUN_AGENT_PERMISSION_MODE=allow|guarded|ask|deny`. Missing extensions contribute
 no corresponding tools or policy.
 
-The production built-in registry intentionally contains only hidden `llama.cpp`.
-It uses the same registration API but also receives product-owned credentials,
-state paths, and an optional shared HTTP client because it ships with the host.
-
 ## Gateway extensions
 
 A Gateway channel module synchronously exports `setup_gateway(api)`:
@@ -145,4 +139,4 @@ The adapter owns channel credentials and SDK resources; the Gateway host owns
 session mapping, scheduling, model selection, and `CodingSession` lifecycle.
 
 Use `examples/extensions/` for Agent examples and
-`examples/gateway_extensions/stdin_jsonl.py` for the Gateway adapter protocol.
+`examples/gateway_extensions/` for Feishu and stdin JSONL Gateway adapters.

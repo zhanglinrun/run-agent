@@ -10,7 +10,6 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
-import run_agent_coding.built_in_extensions as built_in_extension_registry
 from run_agent_ai.model_limits import ModelLimitsProvider, RuntimeModelLimits
 from run_agent_coding.branch_summary import summarize_branch_messages_with_model
 from run_agent_coding.commands import (
@@ -84,7 +83,6 @@ from run_agent_coding.provider_config import (
     save_default_provider_model,
     save_provider_thinking_level,
     toggle_saved_scoped_model,
-    toggle_saved_stable_scoped_model,
     validate_huggingface_inference_provider,
     validate_provider_model,
 )
@@ -408,9 +406,7 @@ class CodingSession:
         self._config = config
         self._state = state
         self._harness = harness
-        self._extension_runtime = extension_runtime or ExtensionRuntime(
-            built_in_extensions=built_in_extension_registry.BUILT_IN_EXTENSIONS
-        )
+        self._extension_runtime = extension_runtime or ExtensionRuntime()
         self._provider_registry = self._extension_runtime.provider_registry
         self._image_support = image_support or ImageSupportState()
         self._session_start_pending = False
@@ -504,16 +500,9 @@ class CodingSession:
         )
         extension_runtime = ExtensionRuntime(
             paths=runtime_paths,
-            built_in_extensions=built_in_extension_registry.BUILT_IN_EXTENSIONS,
             credentials=injected_credentials or credential_store,
             environment=(
                 previous_runtime.provider_environment if previous_runtime is not None else None
-            ),
-            built_in_credentials=(
-                previous_runtime.built_in_credentials if previous_runtime is not None else None
-            ),
-            built_in_http_client=(
-                previous_runtime.built_in_http_client if previous_runtime is not None else None
             ),
             durable_providers=(
                 config.provider_settings.providers if config.provider_settings else ()
@@ -812,38 +801,16 @@ class CodingSession:
 
     @property
     def scoped_model_choices(self) -> tuple[ModelChoice, ...]:
-        """Return scoped references, including inert trusted built-in references."""
+        """Return scoped references present in the active provider catalog."""
         if self._provider_settings is None:
             return ()
         available = set(self.available_model_choices)
         choices: list[ModelChoice] = []
         for item in self._provider_settings.scoped_models:
             choice = ModelChoice(provider_name=item.provider, model=item.model)
-            if choice in available or self._stable_dynamic_scoped_provider(item.provider):
+            if choice in available:
                 choices.append(choice)
         return tuple(choices)
-
-    @property
-    def unavailable_scoped_model_choices(self) -> tuple[ModelChoice, ...]:
-        """Return persisted references that have no current provider snapshot row."""
-        available = set(self.available_model_choices)
-        return tuple(choice for choice in self.scoped_model_choices if choice not in available)
-
-    def _stable_dynamic_scoped_provider(self, provider_name: str) -> bool:
-        return any(
-            layer.token.source_id.startswith("built-in:")
-            and layer.provider.stable_scoped_references
-            for layer in self._provider_registry.layers(provider_name)
-        )
-
-    def _effective_stable_dynamic_scoped_provider(self, provider_name: str) -> bool:
-        effective = self._provider_registry.effective(provider_name)
-        return bool(
-            effective is not None
-            and effective.source_id.startswith("built-in:")
-            and isinstance(effective.definition, DynamicProvider)
-            and effective.definition.stable_scoped_references
-        )
 
     @property
     def tools(self) -> tuple[AgentTool, ...]:
@@ -1592,26 +1559,13 @@ class CodingSession:
         existing = choice in self.scoped_model_choices
         effective = self._provider_registry.effective(choice.provider_name)
         if effective is not None and isinstance(effective.definition, DynamicProvider):
-            if not (
-                self._effective_stable_dynamic_scoped_provider(choice.provider_name)
-                or (existing and self._stable_dynamic_scoped_provider(choice.provider_name))
-            ):
-                raise ProviderConfigError(
-                    "Only effective trusted built-in dynamic providers support scoped references"
-                )
-            if choice not in available and not existing:
-                raise ProviderConfigError(
-                    f"Model is unavailable: {choice.provider_name}:{choice.model}"
-                )
-            toggle = toggle_saved_stable_scoped_model
-        else:
-            if choice not in available:
-                raise ProviderConfigError(
-                    f"Model is not available: {choice.provider_name}:{choice.model}"
-                )
-            toggle = toggle_saved_scoped_model
+            raise ProviderConfigError("Dynamic providers do not support scoped references")
+        if choice not in available and not existing:
+            raise ProviderConfigError(
+                f"Model is not available: {choice.provider_name}:{choice.model}"
+            )
 
-        self._provider_settings = toggle(
+        self._provider_settings = toggle_saved_scoped_model(
             provider_name=choice.provider_name,
             model=choice.model,
             paths=self._resource_paths.paths,
@@ -2077,14 +2031,11 @@ class CodingSession:
         unfiltered_paths = resource_paths_with_cwd(self._config.resource_paths, self.cwd)
         previous_ui = self._extension_runtime.ui
         staged_runtime = ExtensionRuntime(
-            built_in_extensions=built_in_extension_registry.BUILT_IN_EXTENSIONS,
             durable_providers=(
                 self._provider_settings.providers if self._provider_settings else ()
             ),
             credentials=self._extension_runtime.provider_credentials or self._credential_store,
             environment=self._extension_runtime.provider_environment,
-            built_in_credentials=self._extension_runtime.built_in_credentials,
-            built_in_http_client=self._extension_runtime.built_in_http_client,
             paths=(
                 self._resource_paths.paths
                 or RunAgentPaths(

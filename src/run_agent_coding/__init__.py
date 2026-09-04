@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from run_agent_coding.built_in_extensions import BuiltInExtension, BuiltInExtensionSetup
 from run_agent_coding.commands import (
     CommandRegistry,
     CommandResult,
@@ -179,8 +178,6 @@ __all__ = [
     "CodingSession",
     "CodingSessionConfig",
     "CodingSessionRecord",
-    "BuiltInExtension",
-    "BuiltInExtensionSetup",
     "CommandRegistry",
     "CommandResult",
     "DEFAULT_MODEL",

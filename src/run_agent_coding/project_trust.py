@@ -260,7 +260,7 @@ class ProtectedResourceDetector:
     def _context(self, found: dict[str, list[Path]], cwd: Path) -> None:
         # Match current Run Agent discovery: nearest project marker through cwd, then
         # cwd-local namespace context files.
-        markers = (".git", "pyproject.toml", "uv.lock", "setup.py", "package.json")
+        markers = (".git", "pyproject.toml", "setup.py", "package.json")
         project_root = cwd
         for candidate in (cwd, *cwd.parents):
             if any((candidate / marker).exists() for marker in markers):

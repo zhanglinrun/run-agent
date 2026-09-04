@@ -1,5 +1,6 @@
 import json
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 from zipfile import ZipFile
@@ -57,7 +58,7 @@ def test_wheel_includes_release_notes_package_data(tmp_path: Path) -> None:
     wheel_dir = tmp_path / "wheel"
     wheel_dir.mkdir()
     result = subprocess.run(
-        ["uv", "build", "--wheel", "--out-dir", str(wheel_dir)],
+        [sys.executable, "-m", "build", "--wheel", "--outdir", str(wheel_dir)],
         cwd=ROOT,
         check=False,
         capture_output=True,

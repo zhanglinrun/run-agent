@@ -5,26 +5,6 @@ TUI. `run-agent` opens the TUI by default. Print mode is selected with `-p/--pri
 `--mode` and uses the same staged session/provider preparation as the TUI. The
 CLI entry point is `run_agent_coding.cli:app`.
 
-## Local inference
-
-`/local` is interactive-only. It opens the provider-neutral local-backend host
-in the TUI; print mode never runs setup, probes endpoints, or picks a model
-implicitly. Configure llama.cpp through `/local`, then use its exact provider
-and model explicitly in headless mode:
-
-```bash
-run-agent --provider llama.cpp --model <server-reported-id> --print "summarize this project"
-```
-
-The built-in provider is loaded before explicit provider/model validation, so
-both print and TUI startup work after setup. A saved safe snapshot can allow
-startup while the server is temporarily unavailable. A first-time explicit
-model still requires a successful discovery; an unavailable built-in backend
-never blocks unrelated ordinary-provider startup.
-
-See `local-inference.md` for endpoint precedence, optional/no authentication,
-state and credential storage, Doctor, reset, and troubleshooting.
-
 ## Common flags
 
 ```text
@@ -42,14 +22,13 @@ run-agent [OPTIONS] [PROMPT]
 - `--session ID`: resume a session in the TUI or print mode.
 - `--cwd PATH`: set the coding-session working directory.
 - `-e, --extension PATH`: load an explicit extension.
-- `--no-extensions`: disable discovered extension directories; trusted built-ins
-  remain available.
+- `--no-extensions`: disable discovered extension directories.
 - `--project-extensions`: opt in to trusted project extensions after approval.
 - `-a, --approve` / `-na, --no-approve`: run-only project-trust decisions.
 
 Explicit `--provider` and `--model` overrides take precedence over a resumed
 provider-aware transcript entry. Print mode reports actionable errors instead of
-opening an interactive login or local setup flow.
+opening an interactive login flow.
 
 ## Model catalog refresh
 
@@ -66,6 +45,5 @@ set `RUN_AGENT_OFFLINE=1` to disable catalog network access.
 ## Safety boundary
 
 Project trust controls ambient project-resource loading; it is not a sandbox.
-Built-in local backends are trusted package code and do not create a project
-trust prompt. They probe only configured endpoints and never stop external
-servers or delete model files. See `security.md`.
+Explicit and discovered extensions execute as trusted package code. See
+`security.md`.

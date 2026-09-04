@@ -7,7 +7,7 @@ from pathlib import Path
 from run_agent_coding.resources import ResourceDiagnostic, RunAgentResourcePaths
 from run_agent_coding.system_prompt import ProjectContextFile
 
-PROJECT_MARKERS = (".git", "pyproject.toml", "uv.lock", "setup.py", "package.json")
+PROJECT_MARKERS = (".git", "pyproject.toml", "setup.py", "package.json")
 
 
 def discover_project_context(

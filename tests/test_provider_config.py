@@ -315,7 +315,7 @@ def test_load_provider_settings_ignores_preference_without_catalog_entry(
                 "default_provider": "openai",
                 "provider_preferences": {
                     "openai": {"default_model": "gpt-5-mini"},
-                    "llama-cpp": {"default_model": "local"},
+                    "retired-provider": {"default_model": "local"},
                 },
             }
         ),
@@ -325,10 +325,10 @@ def test_load_provider_settings_ignores_preference_without_catalog_entry(
     settings = load_provider_settings(RunAgentPaths(home=run_agent_home))
 
     assert settings.get_provider("openai").default_model == "gpt-5-mini"
-    assert "llama-cpp" not in {provider.name for provider in settings.providers}
+    assert "retired-provider" not in {provider.name for provider in settings.providers}
 
 
-def test_llama_dot_cpp_and_llama_dash_cpp_are_distinct_provider_ids(tmp_path: Path) -> None:
+def test_dotted_and_dashed_names_are_distinct_provider_ids(tmp_path: Path) -> None:
     run_agent_home = tmp_path / ".run"
     run_agent_home.mkdir()
     (run_agent_home / "catalog.toml").write_text(
@@ -336,24 +336,24 @@ def test_llama_dot_cpp_and_llama_dash_cpp_are_distinct_provider_ids(tmp_path: Pa
 schema_version = 1
 
 [[providers]]
-name = "llama.cpp"
-display_name = "llama.cpp built-in-shaped override"
+name = "local.runtime"
+display_name = "Dotted local runtime"
 kind = "openai-compatible"
 base_url = "http://127.0.0.1:8080/v1"
-api_key_env = "LLAMA_API_KEY"
-models = ["built-in-model"]
-default_model = "built-in-model"
-docs_url = "https://github.com/ggml-org/llama.cpp"
+api_key_env = "LOCAL_RUNTIME_API_KEY"
+models = ["dotted-model"]
+default_model = "dotted-model"
+docs_url = "https://example.test/local-runtime"
 
 [[providers]]
-name = "llama-cpp"
-display_name = "Existing custom llama.cpp"
+name = "local-runtime"
+display_name = "Dashed local runtime"
 kind = "openai-compatible"
 base_url = "http://127.0.0.1:8081/v1"
-api_key_env = "LEGACY_LLAMA_API_KEY"
-models = ["legacy-model"]
-default_model = "legacy-model"
-docs_url = "https://example.test/legacy-llama-cpp"
+api_key_env = "OTHER_LOCAL_RUNTIME_API_KEY"
+models = ["dashed-model"]
+default_model = "dashed-model"
+docs_url = "https://example.test/other-local-runtime"
 """.strip(),
         encoding="utf-8",
     )
@@ -361,23 +361,23 @@ docs_url = "https://example.test/legacy-llama-cpp"
     settings = load_provider_settings(RunAgentPaths(home=run_agent_home))
     dotted = resolve_provider_selection(
         settings,
-        provider_name="llama.cpp",
-        model="built-in-model",
+        provider_name="local.runtime",
+        model="dotted-model",
     )
     dashed = resolve_provider_selection(
         settings,
-        provider_name="llama-cpp",
-        model="legacy-model",
+        provider_name="local-runtime",
+        model="dashed-model",
     )
 
     assert isinstance(dotted.provider, OpenAICompatibleProviderConfig)
-    assert dotted.provider.name == "llama.cpp"
+    assert dotted.provider.name == "local.runtime"
     assert dotted.provider.base_url == "http://127.0.0.1:8080/v1"
     assert isinstance(dashed.provider, OpenAICompatibleProviderConfig)
-    assert dashed.provider.name == "llama-cpp"
+    assert dashed.provider.name == "local-runtime"
     assert dashed.provider.base_url == "http://127.0.0.1:8081/v1"
-    assert ScopedModelConfig(provider="llama.cpp", model="model:Q4_K_M").to_json() == {
-        "provider": "llama.cpp",
+    assert ScopedModelConfig(provider="local.runtime", model="model:Q4_K_M").to_json() == {
+        "provider": "local.runtime",
         "model": "model:Q4_K_M",
     }
 

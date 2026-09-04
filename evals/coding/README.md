@@ -18,11 +18,11 @@
 运行两个故意以失败状态开局的 smoke fixture：
 
 ```powershell
-uv run run-agent-bench run evals/coding/smoke/tasks.jsonl `
+.\.venv\Scripts\run-agent-bench.exe run evals/coding/smoke/tasks.jsonl `
   --output-root .run/evals/coding-smoke `
   --extension extensions/observability `
   --candidate-id smoke
-uv run run-agent-bench rebuild .run/evals/coding-smoke
+.\.venv\Scripts\run-agent-bench.exe rebuild .run/evals/coding-smoke
 ```
 
 正式简历指标应扩大并冻结任务集，保留相同 task id 的 baseline/candidate 配对；当前两题仅用于
