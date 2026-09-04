@@ -29,6 +29,10 @@ The adapter maps each Feishu chat to one durable Gateway session and replies to
 the triggering message. The SDK handles duplicate events, group mention policy,
 reconnection, and message chunking.
 
+Send `/new` in a direct chat, or mention the bot with `/new` in a group, to start
+a fresh CodingSession for that Feishu chat. The previous context remains on disk
+and durable Mem0 memory is not deleted.
+
 ## stdin JSONL
 
 `stdin_jsonl.py` is a small local integration and smoke-test adapter. It reads

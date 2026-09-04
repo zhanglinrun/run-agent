@@ -4,6 +4,13 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    command:
+      - --extension
+      - /app/examples/gateway_extensions/feishu.py
+      - --agent-extension
+      - /app/extensions/mem0
+      - --cwd
+      - /workspace
     volumes:
       - .:/workspace
       - run-agent-data:/home/runagent/.run

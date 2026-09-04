@@ -25,6 +25,13 @@ class CodingSessionTurnRunner:
             return TurnResult.cancelled(request)
         resolved = self._resolve_session(request.session_id)
         session = await resolved if isawaitable(resolved) else resolved
+        if request.content.strip() == "/new":
+            await session.new_session()
+            return TurnResult.succeeded(
+                request,
+                output="已开始新对话。此前聊天上下文已归档，长期记忆不受影响。",
+                metadata={"command": "new"},
+            )
         final: AssistantMessage | None = None
 
         async def consume() -> None:

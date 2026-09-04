@@ -170,6 +170,35 @@ async def test_coding_session_turn_runner_uses_public_prompt_stream() -> None:
 
 
 @pytest.mark.anyio
+async def test_coding_session_turn_runner_starts_new_session_without_prompting() -> None:
+    class FakeSession:
+        def __init__(self) -> None:
+            self.new_session_count = 0
+
+        async def new_session(self) -> str:
+            self.new_session_count += 1
+            return "Started new session: replacement"
+
+        async def prompt(self, content: str):  # noqa: ANN201
+            raise AssertionError(f"Unexpected prompt: {content}")
+            yield
+
+        def cancel(self) -> None:
+            raise AssertionError("New-session command should not be cancelled")
+
+    session = FakeSession()
+    runner = CodingSessionTurnRunner(lambda session_id: session)  # type: ignore[arg-type,return-value]
+    request = TurnRequest(id="new", session_id="session-1", content="  /new  ")
+
+    result = await runner.run(request, asyncio.Event())
+
+    assert result.status == "succeeded"
+    assert result.output == "已开始新对话。此前聊天上下文已归档，长期记忆不受影响。"
+    assert result.metadata == {"command": "new"}
+    assert session.new_session_count == 1
+
+
+@pytest.mark.anyio
 async def test_gateway_routes_channel_conversations_to_stable_sessions() -> None:
     runner = RecordingRunner()
     scheduler = TurnScheduler(runner, foreground_limit=2, background_limit=1)

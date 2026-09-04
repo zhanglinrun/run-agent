@@ -259,6 +259,8 @@ FEISHU_APP_SECRET=xxx
 
 群聊默认要求 @机器人，私聊可直接发送。完整说明见
 [`examples/gateway_extensions/README.md`](examples/gateway_extensions/README.md)。
+在当前聊天发送 `/new`（群聊中需 @机器人）可以新建 CodingSession；旧上下文保留在
+会话存储中，Mem0 长期记忆不会被清除。
 
 ### 5. 评测与基准
 

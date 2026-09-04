@@ -8,7 +8,9 @@ import pytest
 
 pytest.importorskip("lark_oapi.channel")
 
-from examples.gateway_extensions.feishu import FeishuAdapter
+from examples.gateway_extensions.feishu import FeishuAdapter, _GatewayFeishuChannel
+from lark_oapi.channel import FeishuChannel
+from lark_oapi.ws import client as ws_client_module
 
 from run_agent_gateway import OutboundMessage
 
@@ -108,3 +110,24 @@ async def test_feishu_adapter_receives_and_replies_to_message() -> None:
 def test_feishu_adapter_requires_credentials() -> None:
     with pytest.raises(ValueError, match="FEISHU_APP_ID"):
         FeishuAdapter(environment={})
+
+
+def test_real_feishu_channel_binds_sdk_loop_to_start_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    previous_ws_loop = ws_client_module.loop
+    observed: dict[str, asyncio.AbstractEventLoop] = {}
+
+    def fake_start(channel: FeishuChannel) -> None:
+        del channel
+        observed["thread"] = asyncio.get_event_loop()
+        observed["sdk"] = ws_client_module.loop
+
+    monkeypatch.setattr(FeishuChannel, "start", fake_start)
+    channel = object.__new__(_GatewayFeishuChannel)
+
+    channel.start()
+
+    assert observed["thread"] is observed["sdk"]
+    assert observed["thread"].is_closed()
+    assert ws_client_module.loop is previous_ws_loop

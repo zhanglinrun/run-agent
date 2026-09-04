@@ -12,12 +12,40 @@ from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
 from lark_oapi.channel import FeishuChannel, SendOpts
+from lark_oapi.ws import client as ws_client_module
 
 from run_agent_core.types import JSONValue
 from run_agent_gateway import InboundMessage, OutboundMessage
 
 GATEWAY_EXTENSION_API_VERSION = 1
 GATEWAY_EXTENSION_NAME = "feishu"
+
+
+class _GatewayFeishuChannel(FeishuChannel):
+    """Run the SDK's module-global WebSocket loop on its executor thread."""
+
+    def start(self) -> None:
+        previous_ws_loop = ws_client_module.loop
+        try:
+            previous_thread_loop = asyncio.get_event_loop()
+        except RuntimeError:
+            previous_thread_loop = None
+        websocket_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(websocket_loop)
+        ws_client_module.loop = websocket_loop
+        try:
+            super().start()
+        finally:
+            pending = asyncio.all_tasks(websocket_loop)
+            for task in pending:
+                task.cancel()
+            if pending and not websocket_loop.is_closed():
+                websocket_loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            if not websocket_loop.is_closed():
+                websocket_loop.close()
+            if ws_client_module.loop is websocket_loop:
+                ws_client_module.loop = previous_ws_loop
+            asyncio.set_event_loop(previous_thread_loop)
 
 
 class FeishuAdapter:
@@ -35,7 +63,7 @@ class FeishuAdapter:
         app_id = _required(env, "FEISHU_APP_ID")
         app_secret = _required(env, "FEISHU_APP_SECRET")
         domain = env.get("FEISHU_DOMAIN") or None
-        self._channel = channel or FeishuChannel(
+        self._channel = channel or _GatewayFeishuChannel(
             app_id=app_id,
             app_secret=app_secret,
             domain=domain,
