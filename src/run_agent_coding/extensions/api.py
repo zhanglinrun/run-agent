@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, cast
 from uuid import uuid4
 
-from run_agent_core.messages import AgentMessage, ToolResultMessage
+from run_agent_core.messages import AgentMessage, CustomMessage, ToolResultMessage
 from run_agent_core.tools import AgentTool, AgentToolResult
 from run_agent_core.types import JSONValue
 
@@ -52,6 +52,8 @@ LIFECYCLE_EVENT_TYPES: frozenset[str] = frozenset(
         "session_start",
         "session_shutdown",
         "input",
+        "before_agent_start",
+        "context",
         "tool_call",
         "tool_result",
         "project_trust",
@@ -459,16 +461,44 @@ class InputHookResult:
 
 
 @dataclass(frozen=True, slots=True)
-class ToolCallHookEvent:
-    """Payload for the `tool_call` hook, before a tool executes.
+class BeforeAgentStartEvent:
+    """Expanded prompt and base system prompt for one new agent run."""
 
-    Carries no tool-call id: the hook runs inside the tool executor seam,
-    which the agent loop invokes without the id. Use the observation events
-    (`tool_execution_start`/`tool_execution_end`) for id correlation.
-    """
+    prompt: str
+    system_prompt: str
+    type: Literal["before_agent_start"] = field(default="before_agent_start", init=False)
+
+
+@dataclass(frozen=True, slots=True)
+class BeforeAgentStartResult:
+    """Add durable custom messages or override the system prompt for this run only."""
+
+    messages: tuple[CustomMessage, ...] = ()
+    system_prompt: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ContextEvent:
+    """Detached message snapshot immediately before a model request."""
+
+    messages: tuple[AgentMessage, ...]
+    type: Literal["context"] = field(default="context", init=False)
+
+
+@dataclass(frozen=True, slots=True)
+class ContextHookResult:
+    """Replace request messages without rewriting the durable session transcript."""
+
+    messages: Sequence[AgentMessage]
+
+
+@dataclass(frozen=True, slots=True)
+class ToolCallHookEvent:
+    """Prepared arguments and call identity, before a tool executes."""
 
     tool_name: str
     arguments: Mapping[str, JSONValue]
+    tool_call_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -483,6 +513,7 @@ class ToolCallHookResult:
     block: bool = False
     reason: str | None = None
     arguments: Mapping[str, JSONValue] | None = None
+    terminate: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -492,6 +523,8 @@ class ToolResultHookEvent:
     tool_name: str
     arguments: Mapping[str, JSONValue]
     result: AgentToolResult
+    tool_call_id: str
+    is_error: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -500,6 +533,8 @@ class ToolResultHookResult:
 
     content: str | None = None
     details: dict[str, JSONValue] | None = None
+    is_error: bool | None = None
+    terminate: bool | None = None
 
 
 ExtensionHandler = Callable[[object, "ExtensionContext"], object | Awaitable[object]]

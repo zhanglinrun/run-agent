@@ -1,4 +1,4 @@
-"""Extension runtime: hook dispatch, tool wrapping, and session binding."""
+"""Extension runtime: registration, hook dispatch, and session binding."""
 
 from __future__ import annotations
 
@@ -23,6 +23,10 @@ from run_agent_coding.extensions.api import (
     AGENT_EVENT_TYPES,
     AGENT_EVENT_WILDCARD,
     LIFECYCLE_EVENT_TYPES,
+    BeforeAgentStartEvent,
+    BeforeAgentStartResult,
+    ContextEvent,
+    ContextHookResult,
     CustomMessageView,
     ExtensionAPI,
     ExtensionCommandContext,
@@ -67,13 +71,10 @@ from run_agent_coding.system_prompt import PromptSection
 from run_agent_core.events import AgentEvent, AgentStartEvent
 from run_agent_core.events import TurnEndEvent as AgentTurnEndEvent
 from run_agent_core.events import TurnStartEvent as AgentTurnStartEvent
-from run_agent_core.messages import AgentMessage, TextContent
-from run_agent_core.tools import (
-    AgentTool,
-    AgentToolResult,
-    ToolCancellationToken,
-    ToolUpdateCallback,
-)
+from run_agent_core.loop import BeforeToolCallResult
+from run_agent_core.messages import AgentMessage, CustomMessage, TextContent, ToolCall
+from run_agent_core.provider import CancellationToken
+from run_agent_core.tools import AgentTool, AgentToolResult
 from run_agent_core.types import JSONValue
 
 # Host callback that delivers a message through the frontend's serialized run
@@ -868,7 +869,7 @@ class ExtensionRuntime:
     # -- tools ----------------------------------------------------------------
 
     def compose_tools(self, builtin_tools: Sequence[AgentTool]) -> list[AgentTool]:
-        """Merge built-in and extension tools, then wrap all with hook seams.
+        """Merge tool definitions; policy hooks are installed on the agent loop.
 
         Extension tools override built-ins with the same name in place;
         extension-only tools append in registration order.
@@ -879,59 +880,27 @@ class ExtensionRuntime:
             override = extension_tools.pop(tool.name, None)
             merged.append(override.tool if override is not None else tool)
         merged.extend(registration.tool for registration in extension_tools.values())
-        return [self._wrap_tool(tool) for tool in merged]
+        return merged
 
-    def _wrap_tool(self, tool: AgentTool) -> AgentTool:
-        async def executor(
-            tool_call_id: str,
-            arguments: Mapping[str, JSONValue],
-            signal: ToolCancellationToken | None = None,
-            on_update: ToolUpdateCallback | None = None,
-        ) -> AgentToolResult:
-            call_outcome = await self._run_tool_call_hooks(tool.name, arguments)
-            if call_outcome.block:
-                reason = call_outcome.reason or "blocked by an extension"
-                return AgentToolResult(content=[TextContent(text=f"Tool call blocked: {reason}")])
-            effective_arguments = (
-                call_outcome.arguments if call_outcome.arguments is not None else arguments
-            )
-            result = await tool.execute(
-                tool_call_id,
-                effective_arguments,
-                signal=signal,
-                on_update=on_update,
-            )
-            return await self._run_tool_result_hooks(tool.name, effective_arguments, result)
-
-        return AgentTool(
-            name=tool.name,
-            label=tool.label,
-            description=tool.description,
-            parameters=tool.parameters,
-            execute_fn=executor,
-            prompt_snippet=tool.prompt_snippet,
-            prompt_guidelines=tool.prompt_guidelines,
-            prepare_arguments=tool.prepare_arguments,
-            execution_mode=tool.execution_mode,
-            render_call=tool.render_call,
-            render_result=tool.render_result,
-        )
-
-    async def _run_tool_call_hooks(
+    async def before_tool_call(
         self,
-        tool_name: str,
-        arguments: Mapping[str, JSONValue],
-    ) -> ToolCallHookResult:
-        effective: Mapping[str, JSONValue] = arguments
+        call: ToolCall,
+    ) -> BeforeToolCallResult:
+        """Resolve extension policy during the loop's preparation phase."""
+        effective: Mapping[str, JSONValue] = call.arguments
         for owner, handler in self._handlers_for("tool_call"):
-            event = ToolCallHookEvent(tool_name=tool_name, arguments=effective)
+            event = ToolCallHookEvent(
+                tool_name=call.name, arguments=effective, tool_call_id=call.id
+            )
             try:
                 result = await _resolve(handler(event, self._fresh_context(owner.source_id)))
             except Exception as exc:  # noqa: BLE001 - fail-safe: an error blocks the tool
                 self._record_runtime_failure(owner.name, "tool_call", exc)
-                return ToolCallHookResult(
+                return BeforeToolCallResult(
                     block=True,
-                    reason=f"extension `{owner.name}` tool_call hook failed: {exc}",
+                    reason=(
+                        f"Tool call blocked: extension `{owner.name}` tool_call hook failed: {exc}"
+                    ),
                 )
             if result is None:
                 continue
@@ -939,22 +908,31 @@ class ExtensionRuntime:
                 self._record_bad_result(owner.name, "tool_call", result)
                 continue
             if result.block:
-                return ToolCallHookResult(block=True, reason=result.reason)
+                return BeforeToolCallResult(
+                    block=True,
+                    reason=f"Tool call blocked: {result.reason or 'blocked by an extension'}",
+                    terminate=result.terminate,
+                )
             if result.arguments is not None:
                 effective = result.arguments
-        if effective is arguments:
-            return ToolCallHookResult()
-        return ToolCallHookResult(arguments=effective)
+        return BeforeToolCallResult(arguments=effective)
 
-    async def _run_tool_result_hooks(
+    async def after_tool_call(
         self,
-        tool_name: str,
-        arguments: Mapping[str, JSONValue],
+        call: ToolCall,
         result: AgentToolResult,
-    ) -> AgentToolResult:
+        is_error: bool,
+    ) -> tuple[AgentToolResult, bool]:
+        """Transform successful or failed executions before publishing their results."""
         current = result
         for owner, handler in self._handlers_for("tool_result"):
-            event = ToolResultHookEvent(tool_name=tool_name, arguments=arguments, result=current)
+            event = ToolResultHookEvent(
+                tool_name=call.name,
+                arguments=call.arguments,
+                result=current.model_copy(deep=True),
+                tool_call_id=call.id,
+                is_error=is_error,
+            )
             try:
                 outcome = await _resolve(handler(event, self._fresh_context(owner.source_id)))
             except Exception as exc:  # noqa: BLE001 - result hooks are observational-ish
@@ -970,9 +948,13 @@ class ExtensionRuntime:
                 updates["content"] = [TextContent(text=outcome.content)]
             if outcome.details is not None:
                 updates["details"] = outcome.details
+            if outcome.terminate is not None:
+                updates["terminate"] = outcome.terminate
+            if outcome.is_error is not None:
+                is_error = outcome.is_error
             if updates:
                 current = current.model_copy(update=updates)
-        return current
+        return current, is_error
 
     # -- commands ---------------------------------------------------------------
 
@@ -1090,6 +1072,65 @@ class ExtensionRuntime:
             if result.action == "transform" and result.text is not None:
                 current = result.text
         return InputHookOutcome(handled=False, text=current)
+
+    async def before_agent_start(self, prompt: str, system_prompt: str) -> BeforeAgentStartResult:
+        """Chain run-scoped prompt overrides and collect durable context messages."""
+        current_system = system_prompt
+        overridden = False
+        messages: list[CustomMessage] = []
+        for owner, handler in self._handlers_for("before_agent_start"):
+            try:
+                result = await _resolve(
+                    handler(
+                        BeforeAgentStartEvent(prompt=prompt, system_prompt=current_system),
+                        self._fresh_context(owner.source_id),
+                    )
+                )
+                if result is None:
+                    continue
+                if not isinstance(result, BeforeAgentStartResult):
+                    self._record_bad_result(owner.name, "before_agent_start", result)
+                    continue
+                if not all(isinstance(message, CustomMessage) for message in result.messages):
+                    raise TypeError("before_agent_start messages must be CustomMessage objects")
+                if result.system_prompt is not None and not isinstance(result.system_prompt, str):
+                    raise TypeError("before_agent_start system_prompt must be a string")
+                messages.extend(message.model_copy(deep=True) for message in result.messages)
+                if result.system_prompt is not None:
+                    current_system = result.system_prompt
+                    overridden = True
+            except Exception as exc:  # noqa: BLE001 - one extension cannot break run preparation
+                self._record_runtime_failure(owner.name, "before_agent_start", exc)
+        return BeforeAgentStartResult(
+            messages=tuple(messages), system_prompt=current_system if overridden else None
+        )
+
+    async def transform_context(
+        self, messages: Sequence[AgentMessage], signal: CancellationToken | None
+    ) -> Sequence[AgentMessage]:
+        """Apply request-only transforms on detached snapshots, in registration order."""
+        current = tuple(messages)
+        for owner, handler in self._handlers_for("context"):
+            if signal is not None and signal.is_cancelled():
+                break
+            try:
+                result = await _resolve(
+                    handler(
+                        ContextEvent(
+                            messages=tuple(message.model_copy(deep=True) for message in current)
+                        ),
+                        self._fresh_context(owner.source_id),
+                    )
+                )
+                if result is None:
+                    continue
+                if not isinstance(result, ContextHookResult):
+                    self._record_bad_result(owner.name, "context", result)
+                    continue
+                current = tuple(message.model_copy(deep=True) for message in result.messages)
+            except Exception as exc:  # noqa: BLE001 - retain the last accepted context snapshot
+                self._record_runtime_failure(owner.name, "context", exc)
+        return current
 
     async def emit_event(self, event: object) -> None:
         """Dispatch one canonical agent or coding-session event to extensions."""

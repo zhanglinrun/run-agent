@@ -46,12 +46,27 @@ from run_agent_core.tool_history import repair_tool_history
 from run_agent_core.tools import AgentTool, AgentToolResult
 from run_agent_core.types import JSONValue
 
-BeforeToolCall = Callable[[ToolCall], Awaitable[tuple[bool, str | None]]]
+
+@dataclass(frozen=True, slots=True)
+class BeforeToolCallResult:
+    """Policy decision for one prepared tool call."""
+
+    block: bool = False
+    reason: str | None = None
+    arguments: Mapping[str, JSONValue] | None = None
+    terminate: bool = False
+
+
+BeforeToolCall = Callable[[ToolCall], Awaitable[BeforeToolCallResult | None]]
 AfterToolCall = Callable[
     [ToolCall, AgentToolResult, bool],
     Awaitable[tuple[AgentToolResult, bool]],
 ]
 ToolBatchExecution = Literal["sequential", "parallel"]
+TransformContext = Callable[
+    [Sequence[AgentMessage], CancellationToken | None],
+    Awaitable[Sequence[AgentMessage]],
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +139,7 @@ async def run_agent_loop(
     max_parallel_tools: int = 8,
     prepare_next_turn: PrepareNextTurn | None = None,
     should_stop_after_turn: ShouldStopAfterTurn | None = None,
+    transform_context: TransformContext | None = None,
 ) -> AsyncIterator[AgentEvent]:
     """Run the provider/tool loop and emit Pi-compatible agent events."""
     new_messages = list(prompts)
@@ -191,12 +207,19 @@ async def run_agent_loop(
                 yield AgentEndEvent(messages=new_messages)
                 return
 
+            request_messages = messages
+            if transform_context is not None:
+                request_messages = list(
+                    await transform_context(
+                        [message.model_copy(deep=True) for message in messages], signal
+                    )
+                )
             assistant = None
             async for event in _assistant_events(
                 provider=provider,
                 model=current_model,
                 system=current_system,
-                messages=_provider_context(messages),
+                messages=_provider_context(request_messages),
                 tools=current_tools,
                 signal=signal,
                 session_id=session_id,
@@ -460,7 +483,7 @@ async def _execute_tool_calls_sequential(
             before_tool_call,
         )
         if immediate is not None:
-            outcome = await _finalize_tool_call(immediate, after_tool_call)
+            outcome = immediate
         else:
             assert prepared is not None
             queue: asyncio.Queue[_ToolQueueItem] = asyncio.Queue()
@@ -508,7 +531,7 @@ async def _execute_tool_calls_parallel(
             before_tool_call,
         )
         if immediate is not None:
-            outcome = await _finalize_tool_call(immediate, after_tool_call)
+            outcome = immediate
             ordered.append(outcome)
             yield _tool_end_event(outcome)
         else:
@@ -565,16 +588,6 @@ async def _prepare_tool_call(
     signal: CancellationToken | None,
     before_tool_call: BeforeToolCall | None,
 ) -> tuple[_PreparedToolCall | None, _ToolCallOutcome | None]:
-    blocked = False
-    block_reason: str | None = None
-    if before_tool_call is not None:
-        blocked, block_reason = await before_tool_call(call)
-    if blocked:
-        return None, _ToolCallOutcome(
-            call=call,
-            result=_error_result(block_reason or "Tool execution was blocked"),
-            is_error=True,
-        )
     if signal is not None and signal.is_cancelled():
         return None, _ToolCallOutcome(
             call=call,
@@ -594,13 +607,26 @@ async def _prepare_tool_call(
             if tool.prepare_arguments is not None
             else call.arguments
         )
-    except Exception as exc:  # noqa: BLE001 - argument preparation is a tool boundary
+        prepared_call = call.model_copy(update={"arguments": dict(arguments)}, deep=True)
+        decision = await before_tool_call(prepared_call) if before_tool_call is not None else None
+        if signal is not None and signal.is_cancelled():
+            return None, _ToolCallOutcome(
+                call=call, result=_error_result("Operation aborted"), is_error=True
+            )
+        if decision is not None and decision.block:
+            result = _error_result(decision.reason or "Tool execution was blocked")
+            result.terminate = decision.terminate
+            return None, _ToolCallOutcome(call=call, result=result, is_error=True)
+        if decision is not None and decision.arguments is not None:
+            arguments = decision.arguments
+            prepared_call = call.model_copy(update={"arguments": dict(arguments)}, deep=True)
+    except Exception as exc:  # noqa: BLE001 - preparation and policy failures block the tool
         return None, _ToolCallOutcome(
             call=call,
             result=_error_result(str(exc)),
             is_error=True,
         )
-    return _PreparedToolCall(call=call, tool=tool, arguments=arguments), None
+    return _PreparedToolCall(call=prepared_call, tool=tool, arguments=arguments), None
 
 
 async def _produce_tool_outcome(
@@ -657,11 +683,14 @@ async def _finalize_tool_call(
 ) -> _ToolCallOutcome:
     if after_tool_call is None:
         return outcome
-    result, is_error = await after_tool_call(
-        outcome.call,
-        outcome.result,
-        outcome.is_error,
-    )
+    try:
+        result, is_error = await after_tool_call(
+            outcome.call,
+            outcome.result,
+            outcome.is_error,
+        )
+    except Exception as exc:  # noqa: BLE001 - a failed result hook must settle its tool task
+        result, is_error = _error_result(str(exc)), True
     return _ToolCallOutcome(call=outcome.call, result=result, is_error=is_error)
 
 
@@ -728,9 +757,11 @@ __all__ = [
     "AfterToolCall",
     "AgentLoopTurnUpdate",
     "BeforeToolCall",
+    "BeforeToolCallResult",
     "PrepareNextTurn",
     "PrepareNextTurnContext",
     "ShouldStopAfterTurn",
     "ToolBatchExecution",
+    "TransformContext",
     "run_agent_loop",
 ]

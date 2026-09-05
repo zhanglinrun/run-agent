@@ -9,6 +9,7 @@ import httpx
 import pytest
 from extensions.mcp.extension import McpHttpClient
 
+from extension_helpers import execute_extension_tool
 from run_agent_coding.commands import CommandRegistry
 from run_agent_coding.extension_installer import install_extension
 from run_agent_coding.extensions.runtime import ExtensionRuntime
@@ -139,8 +140,11 @@ async def test_mem0_and_plan_mode_compose_as_regular_extensions(
 
     command_registry: CommandRegistry = runtime.build_command_registry()
     enabled = command_registry.execute(SimpleNamespace(), "/plan on")  # type: ignore[arg-type]
-    blocked = await memory.execute("blocked", {"action": "put", "text": "do not persist"})
+    blocked = await execute_extension_tool(
+        runtime, memory, "blocked", {"action": "put", "text": "do not persist"}
+    )
 
+    assert blocked.is_error is True
     assert enabled.message == "Plan mode enabled. Mutating tools are blocked."
     assert "Tool call blocked" in blocked.text
     assert len(requests) == 2
@@ -192,8 +196,11 @@ async def test_permission_policy_extension_blocks_outside_workspace_writes(
     )
     wrapped = _tool(list(runtime.compose_tools([write])), "write")
 
-    result = await wrapped.execute("outside", {"path": str(tmp_path.parent / "outside.txt")})
+    result = await execute_extension_tool(
+        runtime, wrapped, "outside", {"path": str(tmp_path.parent / "outside.txt")}
+    )
 
+    assert result.is_error is True
     assert executed is False
     assert "outside the workspace" in result.text
 

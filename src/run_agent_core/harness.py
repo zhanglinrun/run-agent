@@ -18,6 +18,7 @@ from run_agent_core.loop import (
     PrepareNextTurnContext,
     ShouldStopAfterTurn,
     ToolBatchExecution,
+    TransformContext,
     run_agent_loop,
 )
 from run_agent_core.messages import (
@@ -59,6 +60,7 @@ class AgentHarnessConfig:
     max_parallel_tools: int = 8
     prepare_next_turn: PrepareNextTurn | None = None
     should_stop_after_turn: ShouldStopAfterTurn | None = None
+    transform_context: TransformContext | None = None
 
 
 class SimpleCancellationToken:
@@ -158,9 +160,13 @@ class AgentHarness:
         return self._steering_queue.pop() if self._steering_queue else None
 
     def prompt_message(self, message: AgentMessage) -> AsyncIterator[AgentEvent]:
+        return self.prompt_messages((message,))
+
+    def prompt_messages(self, messages: Sequence[AgentMessage]) -> AsyncIterator[AgentEvent]:
+        """Start one run with a user prompt and optional extension context messages."""
         self._ensure_not_running()
         self._running = True
-        return self._run(prompts=(message,))
+        return self._run(prompts=tuple(messages))
 
     def prompt(self, content: str) -> AsyncIterator[AgentEvent]:
         return self.prompt_message(UserMessage(content=content))
@@ -205,6 +211,7 @@ class AgentHarness:
                     self._prepare_next_turn if self._config.prepare_next_turn is not None else None
                 ),
                 should_stop_after_turn=self._config.should_stop_after_turn,
+                transform_context=self._config.transform_context,
             ):
                 await self._notify(event)
                 yield event

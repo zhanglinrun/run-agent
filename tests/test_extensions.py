@@ -9,6 +9,7 @@ from typing import cast
 
 import pytest
 
+from extension_helpers import execute_extension_tool
 from pi_event_helpers import assistant_done, assistant_start
 from run_agent_ai import FakeProvider
 from run_agent_coding import (
@@ -851,9 +852,9 @@ async def test_tool_call_hook_can_block(tmp_path: Path) -> None:
     )
 
     tool = _make_tool("danger", content="ran")
-    wrapped = runtime.compose_tools([tool])[0]
-    result = await wrapped.execute("call-1", {})
+    result = await execute_extension_tool(runtime, tool, "call-1", {})
 
+    assert result.is_error is True
     assert result.text.startswith("Tool call blocked:")
     assert "not allowed" in result.text
 
@@ -872,8 +873,7 @@ async def test_tool_call_hook_can_rewrite_arguments(tmp_path: Path) -> None:
         return AgentToolResult(content="ok")
 
     tool = AgentTool(name="echo", label="echo", description="d", parameters={}, execute_fn=executor)
-    wrapped = runtime.compose_tools([tool])[0]
-    await wrapped.execute("call-1", {"who": "world"})
+    await execute_extension_tool(runtime, tool, "call-1", {"who": "world"})
 
     assert seen == [{"who": "tau"}]
 
@@ -892,13 +892,12 @@ async def test_tool_call_hook_can_clear_arguments(tmp_path: Path) -> None:
         return AgentToolResult(content="ok")
 
     tool = AgentTool(name="echo", label="echo", description="d", parameters={}, execute_fn=executor)
-    wrapped = runtime.compose_tools([tool])[0]
-    await wrapped.execute("call-1", {"who": "world"})
+    await execute_extension_tool(runtime, tool, "call-1", {"who": "world"})
 
     assert seen == [{}]
 
 
-async def test_wrapped_tool_forwards_on_update(tmp_path: Path) -> None:
+async def test_composed_tool_retains_on_update(tmp_path: Path) -> None:
     runtime = ExtensionRuntime()
     _register_inline_extension(runtime, "progress")
 
@@ -926,9 +925,7 @@ async def test_wrapped_tool_forwards_on_update(tmp_path: Path) -> None:
     assert received == [("halfway", {"pct": 50})]
 
 
-async def test_wrapped_tool_drops_on_update_for_inner_without_seam(tmp_path: Path) -> None:
-    # The wrapper always declares on_update, but the inner executor's own
-    # inspect-gate must drop it so a classic (arguments, signal) tool still runs.
+async def test_composed_tool_can_ignore_on_update(tmp_path: Path) -> None:
     runtime = ExtensionRuntime()
     _register_inline_extension(runtime, "plain")
 
@@ -959,9 +956,9 @@ async def test_raising_tool_call_hook_blocks_fail_safe(tmp_path: Path) -> None:
 
     api.on("tool_call", bad_hook)
 
-    wrapped = runtime.compose_tools([_make_tool("x", content="ran")])[0]
-    result = await wrapped.execute("call-1", {})
+    result = await execute_extension_tool(runtime, _make_tool("x", content="ran"), "call-1", {})
 
+    assert result.is_error is True
     assert result.text.startswith("Tool call blocked:")
     assert "hook failed" in result.text
 
@@ -971,8 +968,7 @@ async def test_tool_result_hook_transforms_result(tmp_path: Path) -> None:
     api = _register_inline_extension(runtime, "transform")
     api.on("tool_result", lambda event, context: ToolResultHookResult(content="redacted"))
 
-    wrapped = runtime.compose_tools([_make_tool("x", content="secret")])[0]
-    result = await wrapped.execute("call-1", {})
+    result = await execute_extension_tool(runtime, _make_tool("x", content="secret"), "call-1", {})
 
     assert result.text == "redacted"
 
@@ -986,8 +982,7 @@ async def test_raising_tool_result_hook_keeps_result(tmp_path: Path) -> None:
 
     api.on("tool_result", bad_hook)
 
-    wrapped = runtime.compose_tools([_make_tool("x", content="fine")])[0]
-    result = await wrapped.execute("call-1", {})
+    result = await execute_extension_tool(runtime, _make_tool("x", content="fine"), "call-1", {})
 
     assert result.text == "fine"
     assert any("tool_result" in diag.message for diag in runtime.diagnostics)
@@ -2119,7 +2114,7 @@ async def test_extension_tool_call_block_reaches_model(tmp_path: Path) -> None:
         message for message in session.messages if getattr(message, "role", None) == "toolResult"
     ]
     assert len(tool_results) == 1
-    assert tool_results[0].is_error is False
+    assert tool_results[0].is_error is True
     assert "no shell today" in tool_results[0].text
 
 

@@ -127,14 +127,16 @@ from run_agent_coding.thinking import (
 from run_agent_coding.tools import ImageSupportState, create_bash_tool, create_coding_tools
 from run_agent_core.events import AgentEndEvent, AgentEvent, MessageEndEvent, ToolExecutionEndEvent
 from run_agent_core.harness import AgentHarness, AgentHarnessConfig, QueuedMessages
+from run_agent_core.loop import AgentLoopTurnUpdate, BeforeToolCallResult, PrepareNextTurnContext
 from run_agent_core.messages import (
     AgentMessage,
     AssistantMessage,
     CustomMessage,
+    ToolCall,
     UserMessage,
     message_text,
 )
-from run_agent_core.provider import ModelProvider
+from run_agent_core.provider import CancellationToken, ModelProvider
 from run_agent_core.provider_events import AssistantDoneEvent, AssistantErrorEvent, TextDeltaEvent
 from run_agent_core.session import (
     BranchSummaryEntry,
@@ -153,7 +155,7 @@ from run_agent_core.session import (
 from run_agent_core.session.entries import SessionEntry
 from run_agent_core.session.tree import SessionTreeError, path_to_entry
 from run_agent_core.tool_history import ToolHistoryRepair, repair_tool_history
-from run_agent_core.tools import AgentTool
+from run_agent_core.tools import AgentTool, AgentToolResult
 from run_agent_core.types import JSONValue
 
 StreamingBehavior = Literal["steer", "follow_up"]
@@ -402,6 +404,7 @@ class CodingSession:
         extension_runtime: ExtensionRuntime | None = None,
         image_support: ImageSupportState | None = None,
         project_trust_resolution: ProjectTrustResolution | None = None,
+        base_tools: Sequence[AgentTool] | None = None,
     ) -> None:
         self._config = config
         self._state = state
@@ -453,7 +456,99 @@ class CodingSession:
         self._persisted_message_ids: set[int] = set()
         self._ended_message_ids: set[int] = set()
         self._pending_message_writes: dict[int, _PendingMessageWrite] = {}
+        self._base_tools = tuple(
+            base_tools
+            if base_tools is not None
+            else config.tools
+            if config.tools is not None
+            else harness.config.tools
+            if isinstance(harness, AgentHarness)
+            else ()
+        )
+        self._base_system_prompt = (
+            harness.config.system if isinstance(harness, AgentHarness) else ""
+        )
+        self._system_prompt_override: str | None = None
+        self._runtime_input_signature: tuple[object, ...] = (
+            tuple(harness.config.tools) if isinstance(harness, AgentHarness) else (),
+            self._extension_runtime.prompt_guidelines,
+            self._extension_runtime.prompt_sections,
+        )
+        self._run_active = False
+        self._install_runtime_callbacks()
         self._attach_persistence_listener()
+
+    def _install_runtime_callbacks(self) -> None:
+        if not isinstance(self._harness, AgentHarness):
+            return
+        self._harness.config.before_tool_call = self._before_tool_call
+        self._harness.config.after_tool_call = self._after_tool_call
+        self._harness.config.transform_context = self._transform_context
+        self._harness.config.prepare_next_turn = self._prepare_next_turn
+
+    async def _before_tool_call(self, call: ToolCall) -> BeforeToolCallResult:
+        return await self._extension_runtime.before_tool_call(call)
+
+    async def _after_tool_call(
+        self, call: ToolCall, result: AgentToolResult, is_error: bool
+    ) -> tuple[AgentToolResult, bool]:
+        return await self._extension_runtime.after_tool_call(call, result, is_error)
+
+    async def _transform_context(
+        self, messages: Sequence[AgentMessage], signal: CancellationToken | None
+    ) -> Sequence[AgentMessage]:
+        return await self._extension_runtime.transform_context(messages, signal)
+
+    def _refresh_runtime_inputs(self) -> None:
+        """Publish registered tools and prompt contributions without reloading resources."""
+        tools = self._extension_runtime.compose_tools(self._base_tools)
+        signature = (
+            tuple(tools),
+            self._extension_runtime.prompt_guidelines,
+            self._extension_runtime.prompt_sections,
+        )
+        if signature == self._runtime_input_signature:
+            return
+        system = self._config.system
+        if system is None:
+            system = build_system_prompt(
+                BuildSystemPromptOptions(
+                    cwd=self.cwd,
+                    tools=tools,
+                    skills=self._skills,
+                    custom_prompt=(
+                        self._config.custom_system_prompt
+                        if self._config.custom_system_prompt is not None
+                        else self._custom_system_prompt
+                    ),
+                    append_system_prompt=_compose_append_system_prompt(
+                        self._append_system_prompt, self._config.append_system_prompt
+                    ),
+                    context_files=self._context_files,
+                    extra_guidelines=self._extension_runtime.prompt_guidelines,
+                    extra_sections=self._extension_runtime.prompt_sections,
+                )
+            )
+        self._base_system_prompt = system
+        self._harness.config.tools = tools
+        self._harness.config.system = (
+            system if self._system_prompt_override is None else self._system_prompt_override
+        )
+        self._runtime_input_signature = signature
+        self._invalidate_context_usage_cache()
+
+    def _prepare_next_turn(self, _context: PrepareNextTurnContext) -> AgentLoopTurnUpdate:
+        self._refresh_runtime_inputs()
+        return AgentLoopTurnUpdate(
+            model=self.model,
+            system=self._harness.config.system,
+            tools=tuple(self._harness.config.tools),
+        )
+
+    def _reset_run_prompt(self) -> None:
+        self._system_prompt_override = None
+        self._harness.config.system = self._base_system_prompt
+        self._invalidate_context_usage_cache()
 
     @classmethod
     async def load(cls, config: CodingSessionConfig) -> CodingSession:
@@ -666,6 +761,7 @@ class CodingSession:
             extension_runtime=extension_runtime,
             image_support=image_support,
             project_trust_resolution=trust_resolution,
+            base_tools=base_tools,
         )
         if config.owns_initial_provider:
             # Ownership starts before any repair/discovery work so every
@@ -1258,11 +1354,11 @@ class CodingSession:
     @property
     def is_running(self) -> bool:
         """Return whether this session currently has an active agent run."""
-        return self._harness.is_running
+        return self._run_active or self._harness.is_running
 
     def _require_idle(self, operation: str) -> None:
         """Reject replacement-like operations until an active turn is drained."""
-        if self._harness.is_running:
+        if self.is_running:
             raise RuntimeError(
                 f"Cannot {operation} while Run Agent is working. "
                 "Press Escape to interrupt and wait for it to finish."
@@ -2191,6 +2287,9 @@ class CodingSession:
         self._provider_registry = staged_runtime.provider_registry
         self._harness.config.tools = staged_tools
         self._harness.config.system = staged_system
+        self._base_tools = tuple(base_tools)
+        self._base_system_prompt = staged_system
+        self._runtime_input_signature = (tuple(staged_tools), after_guidelines, after_sections)
         if system_prompt_rebuilt:
             self._invalidate_context_usage_cache()
         staged_runtime.attach_harness_listener(self._harness.subscribe)
@@ -2554,6 +2653,11 @@ class CodingSession:
         self._pending_initial_entries = replacement._pending_initial_entries
         self._pending_message_writes = replacement._pending_message_writes
         self._extension_runtime = replacement._extension_runtime
+        self._base_tools = replacement._base_tools
+        self._base_system_prompt = replacement._base_system_prompt
+        self._system_prompt_override = None
+        self._runtime_input_signature = replacement._runtime_input_signature
+        self._install_runtime_callbacks()
         self._provider_registry = replacement._provider_registry
         self._credential_store = replacement._credential_store
         self._diagnostic_logger = replacement._diagnostic_logger
@@ -2794,7 +2898,7 @@ class CodingSession:
             )
             raise
 
-        if self._harness.is_running:
+        if self.is_running:
             if streaming_behavior == "steer":
                 self._harness.steer(expanded_content)
                 session_event_0 = self.queue_update_event()
@@ -2811,9 +2915,7 @@ class CodingSession:
                 "CodingSession is already running; pass streaming_behavior to queue a message."
             )
 
-        await self._flush_pending_message_writes(context=context)
-        await self._refresh_runtime_model_limits()
-        await self._try_auto_compact(context=context, phase="auto_compact_before_prompt")
+        self._run_active = True
         # id() values can be reused once earlier message objects are freed.
         self._ended_message_ids.clear()
         self._persisted_message_ids.clear()
@@ -2823,6 +2925,20 @@ class CodingSession:
         overflow_message: AssistantMessage | None = None
         route_failure_message: AssistantMessage | None = None
         try:
+            await self._flush_pending_message_writes(context=context)
+            self._refresh_runtime_inputs()
+            await self._refresh_runtime_model_limits()
+            await self._try_auto_compact(context=context, phase="auto_compact_before_prompt")
+            before_start = await self._extension_runtime.before_agent_start(
+                expanded_content, self._base_system_prompt
+            )
+            self._refresh_runtime_inputs()
+            self._system_prompt_override = before_start.system_prompt
+            self._harness.config.system = (
+                self._base_system_prompt
+                if before_start.system_prompt is None
+                else before_start.system_prompt
+            )
             prompt_message: AgentMessage
             if custom_type is not None:
                 prompt_message = CustomMessage(
@@ -2833,7 +2949,7 @@ class CodingSession:
                 )
             else:
                 prompt_message = UserMessage(content=expanded_content)
-            events = self._harness.prompt_message(prompt_message)
+            events = self._harness.prompt_messages((prompt_message, *before_start.messages))
             self._invalidate_context_usage_cache()
             async for event in events:
                 auto_name_message: str | None = None
@@ -2948,6 +3064,8 @@ class CodingSession:
             try:
                 await self._reconcile_run_persistence(events, context=context)
             finally:
+                self._reset_run_prompt()
+                self._run_active = False
                 if events is not None:
                     settled_event = await self._dispatch_agent_settled()
         if settled_event is not None:
@@ -2955,9 +3073,9 @@ class CodingSession:
 
     async def continue_(self) -> AsyncIterator[CodingSessionEvent]:
         """Continue the agent from restored state and persist new messages."""
+        self._require_idle("continue")
         context = self._diagnostic_context()
-        await self._flush_pending_message_writes(context=context)
-        await self._refresh_runtime_model_limits()
+        self._run_active = True
         # id() values can be reused once earlier message objects are freed.
         self._ended_message_ids.clear()
         self._persisted_message_ids.clear()
@@ -2965,6 +3083,9 @@ class CodingSession:
         settled_event: AgentSettledEvent | None = None
         route_failure_message: AssistantMessage | None = None
         try:
+            await self._flush_pending_message_writes(context=context)
+            self._refresh_runtime_inputs()
+            await self._refresh_runtime_model_limits()
             events = self._harness.continue_()
             self._invalidate_context_usage_cache()
             async for event in events:
@@ -3004,6 +3125,8 @@ class CodingSession:
             try:
                 await self._reconcile_run_persistence(events, context=context)
             finally:
+                self._reset_run_prompt()
+                self._run_active = False
                 if events is not None:
                     settled_event = await self._dispatch_agent_settled()
         if settled_event is not None:

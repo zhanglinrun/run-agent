@@ -15,6 +15,7 @@ Run Agent 是一套面向多轮复杂任务的本地优先 Agent 基础设施：
 - **宿主与会话分离**：Gateway 是多会话宿主，不是单个 CodingSession 内的普通扩展；渠道通过 `setup_gateway(api)` 注册 adapter
 - **可复现证据**：评测 campaign 冻结 revision、fixture digest、prompt hash、seed 与候选配置；`rebuild` 只验签归约、不调用模型
 - **安全边界清晰**：项目审批控制环境输入加载，不是 OS sandbox；扩展与 adapter 以当前用户权限执行
+- **Pi 执行契约对齐**：Session 组合 `before_agent_start` / `context` / 工具前后钩子；Loop 统一错误结果与事件，回合间刷新工具和提示词
 
 ### 核心包边界
 
@@ -67,7 +68,7 @@ run-agent/
 │   └── coding/                    # 隔离任务与 verifier
 ├── tests/                         # pytest（asyncio）
 ├── Dockerfile · compose.yaml      # 飞书 Gateway 容器部署
-├── study/                         # 简历表述与面试证据入口（可选）
+├── study/                         # 学习笔记（可选）
 └── pyproject.toml                 # 包元数据、入口脚本、ruff/mypy/pytest
 ```
 
@@ -352,5 +353,3 @@ docker compose logs -f run-agent-feishu
 - 文档与实现同步：架构变更更新 `src/run_agent_coding/data/docs/` 与本 README
 
 ---
-
-包边界与扩展契约以本文及 [`architecture.md`](src/run_agent_coding/data/docs/architecture.md) 为准；简历口径与指标边界可参考 [`study/resume-project.md`](study/resume-project.md)。

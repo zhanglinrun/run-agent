@@ -86,6 +86,68 @@ Extensions can use `tool_call` and `tool_result` hooks for policy or observation
 A hook failure is contained by the host; tool-call hook failures block the call
 instead of silently bypassing policy.
 
+Tool policy runs in the Agent loop, not in `AgentTool.execute()`. Calling a tool
+executor directly only executes that tool. Embedders using `AgentHarness` without
+CodingSession must install `runtime.before_tool_call` and
+`runtime.after_tool_call` in its configuration. `compose_tools()` merges definitions
+and does not install policy. Core `before_tool_call` callbacks return
+`BeforeToolCallResult` (or `None`), replacing the former `(blocked, reason)` tuple.
+
+`ToolCallHookEvent` contains `tool_call_id`, `tool_name`, and prepared `arguments`.
+Return `ToolCallHookResult(block=True, reason=...)` to publish an error without
+executing the tool, or return `arguments` to replace its inputs. A blocked result
+with `terminate=True` contributes to the loop's all-tools-terminate stop rule.
+`ToolResultHookEvent` includes the same call identity and actual execution
+arguments, plus `result` and `is_error`. It runs after successful and failed tool
+executions, before result persistence. `ToolResultHookResult` can override content,
+details, error status, or termination. Preparation failures and blocked calls skip
+this hook. Observer events still report their error results.
+
+## Prompt and context hooks
+
+`before_agent_start` runs after input and Skill/template expansion for a new user
+prompt. Return `BeforeAgentStartResult` with an optional `system_prompt` and a tuple
+of `CustomMessage` objects. Overrides chain in registration order and apply only
+to the current run. Custom messages are persisted through the normal message
+events. Queued steering/follow-up messages stay in that run; they do not restart
+this hook. Cancellation and errors release preparation state and clear overrides.
+
+`context` runs before each model request in the Agent loop. Its `ContextEvent`
+contains a detached `messages` tuple. Return `ContextHookResult(messages=...)` to
+change that request without rewriting the transcript. Each handler sees the
+previous successful transform. A handler that raises cannot leak mutations to
+the saved transcript or the next handler's input. This is suitable for transient
+retrieval context or request pruning. Compaction and session naming use separate
+CodingSession-owned requests and do not dispatch this hook.
+
+```python
+from run_agent_coding.extensions import BeforeAgentStartResult, ContextHookResult
+from run_agent_core import CustomMessage
+
+
+def setup(api):
+    @api.on("before_agent_start")
+    def prepare(event, context):
+        return BeforeAgentStartResult(
+            system_prompt=event.system_prompt + "\nReview changes before finishing.",
+        )
+
+    @api.on("context")
+    def contextualize(event, context):
+        return ContextHookResult(
+            messages=(*event.messages, CustomMessage(
+                custom_type="task-context",
+                content="Prefer the repository's existing test commands.",
+                display=False,
+            )),
+        )
+```
+
+Tools and prompt contributions registered by an active extension become visible
+before the next model turn. Resources from disk change through explicit reload;
+they are not re-read every turn. Setup and generation invalidation remain the
+same for these hooks as for other extension registrations.
+
 ## Official optional extensions
 
 The repository's top-level `extensions/` directory contains:

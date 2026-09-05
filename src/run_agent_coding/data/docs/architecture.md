@@ -36,11 +36,15 @@ resource locations, and provider-specific request formats.
 
 ```text
 CLI / TUI / Gateway / Evaluation
-  -> CodingSession
-  -> AgentHarness
-  -> provider stream
-  -> tool batch
-  -> JSONL session tree
+  -> CodingSession: input hook, Skill/template expansion, context budget
+  -> before_agent_start: run-scoped system prompt and durable custom messages
+  -> AgentHarness / Agent loop
+     -> context hook: detached messages for this provider request
+     -> provider stream
+     -> prepare arguments -> tool_call hook -> tool execution -> tool_result hook
+     -> publish ordered tool results and turn_end
+     -> refresh registered tools and system prompt before the next turn
+  -> CodingSession: compaction, persistence reconciliation, agent_settled
 ```
 
 The core loop only understands messages, provider events, tool definitions, and
@@ -51,6 +55,46 @@ The default CodingSession exposes `read`, `write`, `edit`, and `bash`. Read is
 parallel-capable; write, edit, and bash are sequential. A tool batch containing
 any sequential tool executes in declaration order. Pure-read batches use bounded
 concurrency, converge cancelled tasks, and publish results in declaration order.
+
+Persistence subscribes to message events independently of the frontend consumer.
+Messages returned by `before_agent_start` enter this durable event path. A `context`
+hook transforms detached request messages only; it cannot replace the saved history
+through its return value. System-prompt overrides last for one run, including its
+tool turns and retries, and are reset during cleanup.
+
+## Alignment with Pi
+
+The reference is the coding-agent path through Pi's `AgentSession`, `Agent`, and
+`agentLoop`. Run Agent's `AgentHarness` corresponds to that stateful `Agent`, not
+to every newer Pi API also named `AgentHarness`.
+
+| Responsibility | Pi coding-agent path | Run Agent |
+| --- | --- | --- |
+| Provider protocols | pi-ai | run_agent_ai |
+| State, queues, cancellation | Agent | AgentHarness |
+| Model/tool iteration and policy callbacks | agentLoop | run_agent_loop |
+| Resources, prompt construction, compaction, persistence | AgentSession | CodingSession |
+| Optional behavior | ExtensionRunner and registered extensions | ExtensionRuntime and setup(api) |
+| Multiple sessions and ingress capacity | Host application | Gateway and TurnScheduler |
+
+The loop owns preparation, execution, error conversion, and final result events.
+CodingSession connects the active extension runtime to those callbacks. Tool
+definitions are composed without policy wrappers. A blocked call is an error
+result; an executed tool that raises still passes through the result hook. Calls
+rejected during preparation do not emit a `tool_result` hook, matching Pi's
+executed-tool boundary. They still emit normal tool execution/result events.
+
+Design alignment does not imply byte-identical prompts or API compatibility.
+Run Agent deliberately retains its engineering guidelines, an eight-tool default
+parallel limit, whole-batch serialization for write/edit/bash, Textual, and its
+Gateway/evaluation infrastructure. Pi can serialize mutations per file while
+allowing different files to be modified concurrently. Run Agent's compaction
+currently uses one summary request for an older prefix; Pi's separate history
+and split-turn-prefix summarization is not implemented here.
+
+Compaction and Skill/resource discovery belong to CodingSession. Mem0, MCP,
+planning, permission policy, verification, and session tracing are optional
+extensions. The portable loop contains no product-specific branching for them.
 
 ## Extension ownership
 
