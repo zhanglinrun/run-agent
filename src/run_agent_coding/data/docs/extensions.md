@@ -135,11 +135,14 @@ def setup(api):
     @api.on("context")
     def contextualize(event, context):
         return ContextHookResult(
-            messages=(*event.messages, CustomMessage(
-                custom_type="task-context",
-                content="Prefer the repository's existing test commands.",
-                display=False,
-            )),
+            messages=(
+                *event.messages,
+                CustomMessage(
+                    custom_type="task-context",
+                    content="Prefer the repository's existing test commands.",
+                    display=False,
+                ),
+            ),
         )
 ```
 
