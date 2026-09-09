@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol
 from uuid import uuid4
 
+from run_agent_coding.host.contracts import HostServices, TaskHandler
 from run_agent_core.messages import AgentMessage, CustomMessage, ToolResultMessage
 from run_agent_core.tools import AgentTool, AgentToolResult
 from run_agent_core.types import JSONValue
@@ -126,15 +127,16 @@ class ExtensionGeneration:
     :class:`ExtensionAPI` method and every :class:`ExtensionContext`/
     :class:`ExtensionUi` read checks this token before touching the runtime,
     so state captured before a `/reload` fails loudly instead of silently
-    acting against the new registration set. Only reload invalidates; session
-    rebinding (resume/new/branch) keeps the generation alive by design (see
-    the phase-21 lifecycle Ruling).
+    acting against the new registration set. Replacement and close invalidate
+    captured contexts. Per-source guards share the runtime identity and can
+    reject failed setup without invalidating unrelated extensions.
     """
 
-    __slots__ = ("_id", "_stale_message")
+    __slots__ = ("_id", "_parent", "_stale_message")
 
-    def __init__(self) -> None:
-        self._id = uuid4().hex
+    def __init__(self, *, parent: ExtensionGeneration | None = None) -> None:
+        self._parent = parent
+        self._id = parent.id if parent is not None else uuid4().hex
         self._stale_message: str | None = None
 
     @property
@@ -145,7 +147,7 @@ class ExtensionGeneration:
     @property
     def active(self) -> bool:
         """Return whether this generation is still the live one."""
-        return self._stale_message is None
+        return self._stale_message is None and (self._parent is None or self._parent.active)
 
     def invalidate(self, message: str | None = None) -> None:
         """Mark this generation stale; the first message wins (Pi parity)."""
@@ -154,6 +156,8 @@ class ExtensionGeneration:
 
     def assert_active(self) -> None:
         """Raise :class:`ExtensionError` when this generation is stale."""
+        if self._parent is not None:
+            self._parent.assert_active()
         if self._stale_message is not None:
             raise ExtensionError(self._stale_message)
 
@@ -311,7 +315,9 @@ class ToolResultHookResult:
 ExtensionHandler = Callable[[object, "ExtensionContext"], object | Awaitable[object]]
 # Command handlers are sync-only: the slash-command path (CommandRegistry ->
 # CodingSession.handle_command -> TUI submit) is synchronous end to end.
-ExtensionCommandHandler = Callable[["str", "ExtensionCommandContext"], "str | None"]
+ExtensionCommandHandler = Callable[
+    ["str", "ExtensionCommandContext"], "str | None | Awaitable[str | None]"
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -558,6 +564,11 @@ class ExtensionContext:
         return ScopedTelemetrySink(session.telemetry, prefix, self._generation.assert_active)
 
     @property
+    def services(self) -> HostServices:
+        self._generation.assert_active()
+        return self._runtime.host_services_for_source(self._source_id)
+
+    @property
     def paths(self) -> RunAgentPaths:
         """Return canonical host storage paths for extension-owned artifacts."""
         self._generation.assert_active()
@@ -695,6 +706,10 @@ class ExtensionAPI:
         """Return read-only session context."""
         self._generation.assert_active()
         return self._context
+
+    def register_task_handler(self, name: str, handler: TaskHandler) -> None:
+        self._generation.assert_active()
+        self._runtime.register_task_handler(self._source_id, name, handler)
 
     def set_inference_provider(self, route: str | None) -> str:
         """Select or reset the active Hugging Face session route."""

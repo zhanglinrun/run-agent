@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeVar
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 APPLICATION_ID = 1381322305
 T = TypeVar("T")
 

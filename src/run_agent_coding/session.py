@@ -51,6 +51,7 @@ from run_agent_coding.events import (
 from run_agent_coding.extensions.provider_registry import DynamicProviderRegistry
 from run_agent_coding.extensions.providers import DynamicProvider, ProviderModel
 from run_agent_coding.extensions.runtime import ExtensionRuntime
+from run_agent_coding.host.contracts import HostServicesRegistry
 from run_agent_coding.models_dev_store import ModelsDevRefreshResult, refresh_models_dev_catalog
 from run_agent_coding.paths import RunAgentPaths
 from run_agent_coding.project_trust import (
@@ -193,7 +194,7 @@ async def _await_cleanup_completion[CleanupResult](
         return cancelled
 
 
-async def _finish_adopted_runtime_close(runtime: ExtensionRuntime) -> None:
+async def _finish_adopted_runtime_close(runtime: ExtensionRuntime) -> str | None:
     """Finish outgoing cleanup after publication without failing adoption."""
     task = asyncio.create_task(
         runtime.aclose(),
@@ -202,8 +203,16 @@ async def _finish_adopted_runtime_close(runtime: ExtensionRuntime) -> None:
     await _await_cleanup_completion(task)
     # Publication is already committed. Cleanup cancellation/failure must not
     # masquerade as rollback while the task's outcome still gets retrieved.
-    with suppress(BaseException):
-        task.result()
+    try:
+        result = task.result()
+    except BaseException as exc:
+        return f"Previous extension cleanup failed: {type(exc).__name__}: {exc}"
+    if not result.drained:
+        return (
+            f"Previous extension cleanup is still pending: {result.contained_managed_tasks} "
+            f"managed tasks, {result.contained_discovery_tasks} provider callbacks."
+        )
+    return None
 
 
 async def _finish_aborted_session_close(session: CodingSession) -> None:
@@ -322,6 +331,7 @@ class CodingSessionConfig:
     storage: SessionStorage
     cwd: Path
     telemetry: TelemetrySink
+    host_services: HostServicesRegistry
     system: str | None = None
     custom_system_prompt: str | None = None
     append_system_prompt: str | None = None
@@ -847,6 +857,10 @@ class CodingSession:
         return self._harness.config.provider
 
     @property
+    def host_services(self) -> HostServicesRegistry:
+        return self._config.host_services
+
+    @property
     def inference_provider(self) -> str | None:
         """Return the pinned Hugging Face backing provider, if any."""
         return self._inference_provider
@@ -1294,6 +1308,9 @@ class CodingSession:
         """
         if not self._session_start_pending:
             return
+        cancelled = await self._extension_runtime.publish_host_services()
+        if cancelled:
+            raise asyncio.CancelledError
         await self._extension_runtime.emit_session_start("startup")
         self._commit_project_trust_resolution()
         self._session_start_pending = False
@@ -2229,15 +2246,22 @@ class CodingSession:
                 )
             )
 
-        # Cancellable lifecycle work stays before the publication boundary. The
-        # staged runtime may inspect the still-live session during session_start;
-        # cancellation leaves that prior snapshot/runtime/cache untouched.
+        # Outgoing shutdown runs before publication. The staged runtime gains
+        # writable services only at the atomic binding commit below.
         old_runtime = self._extension_runtime
         await old_runtime.emit_session_shutdown("reload")
         old_runtime.clear_ui_status()
         staged_runtime.set_ui_bridge(previous_ui)
         staged_runtime.bind(self)
-        await staged_runtime.emit_session_start("reload")
+        # Staging does not run user callbacks with writable host capabilities.
+        # The database first replaces all source bindings in one short transaction.
+        try:
+            await staged_runtime.publish_host_services(
+                expected_generation=old_runtime._generation.id
+            )
+        except BaseException:
+            await settle(staged_runtime.aclose())
+            raise
 
         # Publication is synchronous: cancellation can no longer report failure
         # after only part of the live snapshot or trust cache was adopted.
@@ -2277,7 +2301,14 @@ class CodingSession:
         # containment while the outgoing runtime still owns every task handle.
         # Caller cancellation at this committed seam is contained so reload
         # cannot report failure after the fresh snapshot became active.
-        await _finish_adopted_runtime_close(old_runtime)
+        cleanup_notice = await _finish_adopted_runtime_close(old_runtime)
+        if cleanup_notice:
+            self._resource_diagnostics += (
+                ResourceDiagnostic(kind="extension", message=cleanup_notice, severity="error"),
+            )
+            previous_ui.notify(cleanup_notice, level="warning")
+
+        await settle(staged_runtime.emit_session_start("reload"))
 
         return CodingReloadSummary(
             skills=_category_summary(before_skills, _skill_signatures(resources.skills)),
@@ -2378,6 +2409,7 @@ class CodingSession:
                 cwd=record.cwd,
                 storage=await manager.open_storage(record.id),
                 telemetry=await manager.telemetry(),
+                host_services=await manager.host_services(),
                 system=self._config.system,
                 custom_system_prompt=self._config.custom_system_prompt,
                 append_system_prompt=self._config.append_system_prompt,
@@ -2552,8 +2584,8 @@ class CodingSession:
     ) -> None:
         """Adopt a replacement session's state and re-bind the extension runtime.
 
-        The extension runtime is long-lived and shared with the replacement; it
-        must be re-bound to this outer session object because later state
+        The replacement owns a fresh runtime, which is rebound to this outer
+        session object because later state
         (transcript persistence, parent ids) mutates here, not on the discarded
         replacement instance.
         """
@@ -2575,7 +2607,12 @@ class CodingSession:
             # through every cancellable/erroring pre-publication seam.
             await old_runtime.emit_session_shutdown(reason)
             old_runtime.clear_ui_status()
-            await replacement._extension_runtime.emit_session_start(reason)
+            await replacement._extension_runtime.publish_host_services(
+                expected_generation=(
+                    old_runtime._generation.id
+                    if replacement.session_id == self.session_id else None
+                )
+            )
             replacement._commit_project_trust_resolution()
             replacement._session_start_pending = False
         except BaseException:
@@ -2643,8 +2680,14 @@ class CodingSession:
         # Adoption is already committed. Finish outgoing cleanup under a
         # shielded owner and contain cancellation rather than reporting that
         # the requested destination failed to replace the source session.
-        await _finish_adopted_runtime_close(old_runtime)
+        cleanup_notice = await _finish_adopted_runtime_close(old_runtime)
+        if cleanup_notice:
+            self._resource_diagnostics += (
+                ResourceDiagnostic(kind="extension", message=cleanup_notice, severity="error"),
+            )
+            self._extension_runtime.ui.notify(cleanup_notice, level="warning")
         await old_storage.aclose()
+        await settle(self._extension_runtime.emit_session_start(reason))
 
     async def compact_detailed(self, instructions: str | None = None) -> ManualCompactionResult:
         """Compact older context while preserving a real recent-entry boundary."""
@@ -2734,7 +2777,12 @@ class CodingSession:
         # A runtime may already be synchronously retired by replacement. Close
         # still owns the async drain/containment step and must never skip it.
         try:
-            await self._extension_runtime.aclose()
+            result = await self._extension_runtime.aclose()
+            if not result.drained:
+                raise RuntimeError(
+                    f"Extension cleanup is incomplete: {result.contained_managed_tasks} tasks, "
+                    f"{result.contained_discovery_tasks} provider callbacks"
+                )
         except BaseException as exc:
             if error is None:
                 error = exc

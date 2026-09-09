@@ -27,7 +27,7 @@ async def setup(database, root):
         token=token,
         expected_head=None,
     )
-    ext = ExtensionToken("s", "experience", "host", 1)
+    ext = ExtensionToken("s", "experience", "host", "generation-1")
     await activate_extension(database, ext)
     artifacts = ArtifactStore(root / "artifacts")
     ref = await artifacts.put(b"verified script")
@@ -62,7 +62,7 @@ async def test_live_wal_backup_restores_history_resources_and_fences(tmp_path):
         )
         assert json.loads(guard)["requires_reconciliation"] is True
         await sessions.claim("s", owner_id="new-host", run_id="new-run")
-        ext = ExtensionToken("s", "experience", "new-host", 1)
+        ext = ExtensionToken("s", "experience", "new-host", "generation-1")
         await activate_extension(database, ext)
         restored_artifacts = ArtifactStore(tmp_path / "restored" / "artifacts")
         resources = NamespaceResources(database, ext, "local/project", restored_artifacts)

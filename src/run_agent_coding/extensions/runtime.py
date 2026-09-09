@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -56,17 +55,17 @@ from run_agent_coding.extensions.loader import (
     ExtensionSourceMetadata,
     LoadedExtension,
     load_extensions,
-    unload_extension_modules,
 )
 from run_agent_coding.extensions.provider_registry import (
     DynamicProviderRegistry,
-    ProviderRegistryCloseResult,
 )
 from run_agent_coding.extensions.providers import CredentialReader, DynamicProvider
+from run_agent_coding.host.contracts import HostServices, HostServicesRegistry, TaskHandler
 from run_agent_coding.paths import RunAgentPaths
 from run_agent_coding.project_trust import ExtensionTrustResult, ProjectTrustEvent
 from run_agent_coding.provider_config import ProviderConfig
 from run_agent_coding.resources import ResourceDiagnostic, RunAgentResourcePaths
+from run_agent_coding.storage.settle import settle
 from run_agent_coding.system_prompt import PromptSection
 from run_agent_core.events import AgentEvent, AgentStartEvent
 from run_agent_core.events import TurnEndEvent as AgentTurnEndEvent
@@ -93,6 +92,9 @@ class BoundSession(Protocol):
 
     @property
     def telemetry(self) -> TelemetrySink: ...
+
+    @property
+    def host_services(self) -> HostServicesRegistry: ...
 
     @property
     def model(self) -> str: ...
@@ -176,6 +178,13 @@ class InputHookOutcome:
     message: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class RuntimeCloseResult:
+    drained: bool
+    contained_discovery_tasks: int = 0
+    contained_managed_tasks: int = 0
+
+
 class ExtensionRuntime:
     """Owns loaded extensions and dispatches events between them and a session.
 
@@ -208,7 +217,6 @@ class ExtensionRuntime:
             credentials=credentials,
             environment=environment,
         )
-        self._retired_provider_registries: list[DynamicProviderRegistry] = []
         self._extensions: list[RegisteredExtension] = []
         self._tools: dict[str, RegisteredExtensionTool] = {}
         self._commands: dict[str, ExtensionCommand] = {}
@@ -223,6 +231,9 @@ class ExtensionRuntime:
         self._turn_requested: TurnRequestedCallback | None = None
         self._harness_unsubscribe: Callable[[], None] | None = None
         self._extension_turn_index = 0
+        self._host_services: Mapping[str, HostServices] = {}
+        self._host_binding: tuple[HostServicesRegistry, str, str] | None = None
+        self._task_handlers: dict[str, dict[str, TaskHandler]] = {}
 
     # -- loading -----------------------------------------------------------
 
@@ -262,6 +273,8 @@ class ExtensionRuntime:
         # cancellation of generation-owned provider work.
         self._provider_registry.retire()
         self._generation.invalidate()
+        self._host_services = {}
+        self._task_handlers.clear()
         if self._harness_unsubscribe is not None:
             self._harness_unsubscribe()
             self._harness_unsubscribe = None
@@ -275,68 +288,35 @@ class ExtensionRuntime:
         self._turn_requested = None
         self._session = None
 
-    async def aclose(self) -> ProviderRegistryCloseResult:
+    async def aclose(self) -> RuntimeCloseResult:
         """Retire this generation and report drain or bounded containment."""
         self.retire()
-        provider_registries = (*self._retired_provider_registries, self._provider_registry)
+        binding_error: BaseException | None = None
+        managed_pending = 0
+        if self._host_binding is not None:
+            registry, session_id, generation = self._host_binding
+            try:
+                managed_pending, _ = await settle(registry.retire(session_id, generation))
+            except BaseException as exc:
+                binding_error = exc
+            else:
+                if not managed_pending:
+                    self._host_binding = None
         try:
-            provider_results = await asyncio.gather(
-                *(registry.aclose() for registry in provider_registries)
-            )
-            self._retired_provider_registries = [
-                registry
-                for registry, result in zip(provider_registries, provider_results, strict=True)
-                if not result.drained and registry is not self._provider_registry
-            ]
-            contained = sum(result.contained_discovery_tasks for result in provider_results)
-            return ProviderRegistryCloseResult(
-                drained=contained == 0,
+            provider_result = await self._provider_registry.aclose()
+            contained = provider_result.contained_discovery_tasks
+            if binding_error is not None:
+                raise binding_error
+            return RuntimeCloseResult(
+                drained=contained == 0 and managed_pending == 0,
                 contained_discovery_tasks=contained,
+                contained_managed_tasks=managed_pending,
             )
         finally:
             self._generation.invalidate()
             if self._harness_unsubscribe is not None:
                 self._harness_unsubscribe()
                 self._harness_unsubscribe = None
-
-    def reset_for_reload(self) -> None:
-        """Drop all registrations and imported modules ahead of a re-load.
-
-        Also invalidates the current extension generation (Pi's ``invalidate``
-        parity): any extension API object, context, or ui facade captured before
-        the reload — including one held by a still-running background task —
-        raises :class:`ExtensionError` on its next use instead of acting
-        against the fresh registration set. Session rebinding does not come
-        through here and never invalidates.
-        """
-        # Host-side extension UI (slot widgets, main views, key interceptors)
-        # belongs to the outgoing generation. Tear it down while that generation
-        # is still active so host cleanup triggered by component disposal can
-        # safely use its API; only then make every captured API/context stale.
-        self.clear_ui_status()
-        self._provider_registry.retire()
-        self._retired_provider_registries.append(self._provider_registry)
-        self._generation.invalidate()
-        self._generation = ExtensionGeneration()
-        self._provider_registry = DynamicProviderRegistry(
-            self._durable_providers,
-            generation_id=self._generation.id,
-            credentials=self._provider_credentials,
-            environment=self._provider_environment,
-        )
-        if self._harness_unsubscribe is not None:
-            self._harness_unsubscribe()
-            self._harness_unsubscribe = None
-        self._extensions.clear()
-        self._tools.clear()
-        self._commands.clear()
-        self._prompt_guidelines.clear()
-        self._prompt_sections.clear()
-        self._message_renderers.clear()
-        self._renderer_failures_reported.clear()
-        self._load_diagnostics.clear()
-        self._runtime_diagnostics.clear()
-        unload_extension_modules()
 
     def _setup_extension(self, extension: LoadedExtension) -> None:
         source_id = extension.source_id
@@ -353,7 +333,7 @@ class ExtensionRuntime:
         api = ExtensionAPI(
             self,
             extension.name,
-            self._generation,
+            ExtensionGeneration(parent=self._generation),
             source_id=source_id,
         )
         registered = RegisteredExtension(
@@ -367,6 +347,7 @@ class ExtensionRuntime:
         try:
             extension.setup(api)
         except Exception as exc:  # noqa: BLE001 - extensions are an isolation boundary
+            api._generation.invalidate("Extension setup failed; this source is inactive")
             self._extensions.remove(registered)
             self._remove_registrations(source_id)
             self._load_diagnostics.append(
@@ -380,6 +361,7 @@ class ExtensionRuntime:
             )
 
     def _remove_registrations(self, source_id: str) -> None:
+        self._task_handlers.pop(source_id, None)
         self._ui.clear_status(source_id)
         self._tools = {
             name: registration
@@ -409,6 +391,16 @@ class ExtensionRuntime:
         self._provider_registry.unregister_source(source_id)
 
     # -- registration (called through ExtensionAPI) -------------------------
+
+    def register_task_handler(self, source_id: str, name: str, handler: TaskHandler) -> None:
+        if self._host_binding is not None:
+            raise ExtensionError("Task handlers must be declared during setup")
+        if not name or len(name.encode()) > 128:
+            raise ExtensionError("Invalid task handler name")
+        handlers = self._task_handlers.setdefault(source_id, {})
+        if name in handlers:
+            raise ExtensionError(f"Duplicate task handler: {name}")
+        handlers[name] = handler
 
     def register_provider(self, source_id: str, provider: DynamicProvider) -> None:
         """Register or atomically replace one exact extension source layer."""
@@ -738,6 +730,41 @@ class ExtensionRuntime:
         """
         self._turn_requested = callback
 
+    async def publish_host_services(self, *, expected_generation: str | None = None) -> bool:
+        """Commit all source bindings, then publish the corresponding typed facades.
+
+        Return cancellation at the commit boundary for the host to settle. No
+        callbacks or extension work run while these bindings are being staged.
+        """
+        self._generation.assert_active()
+        if self._host_binding is not None:
+            return False
+        session = self.session_view
+        registry = session.host_services
+        session_id = session.session_id
+        if session_id is None:
+            raise ExtensionError("Host services require a persistent session identity")
+        services, cancelled = await settle(
+            registry.publish(
+                session_id,
+                self._generation.id,
+                tuple(extension.source_id for extension in self._extensions),
+                self._generation.assert_active,
+                expected_generation=expected_generation,
+                handlers=self._task_handlers,
+            )
+        )
+        self._host_binding = registry, session_id, self._generation.id
+        self._host_services = services
+        return cancelled
+
+    def host_services_for_source(self, source_id: str) -> HostServices:
+        self._generation.assert_active()
+        try:
+            return self._host_services[source_id]
+        except KeyError as exc:
+            raise ExtensionError("Host services are available after session activation") from exc
+
     @property
     def ui(self) -> UiBridge:
         """Return the active UI bridge."""
@@ -985,22 +1012,28 @@ class ExtensionRuntime:
         self, command: ExtensionCommand
     ) -> Callable[[CommandContext], CommandResult]:
         def handler(context: CommandContext) -> CommandResult:
-            extension_context = ExtensionCommandContext(
-                name=command.name,
-                args=context.args,
-                api=self._api_for(command.source_id),
+            return CommandResult(
+                handled=True,
+                extension_command=command.name,
+                extension_arguments=context.args,
             )
-            try:
-                message = command.handler(context.args, extension_context)
-            except Exception as exc:  # noqa: BLE001 - extensions are an isolation boundary
-                self._record_runtime_failure(command.extension, f"command:/{command.name}", exc)
-                return CommandResult(
-                    handled=True,
-                    message=f"Extension command /{command.name} failed: {exc}",
-                )
-            return CommandResult(handled=True, message=message)
 
         return handler
+
+    async def execute_command(self, name: str, args: str) -> str | None:
+        self._generation.assert_active()
+        command = self._commands[name]
+        context = ExtensionCommandContext(
+            name=name, args=args, api=self._api_for(command.source_id)
+        )
+        try:
+            message = await _resolve(command.handler(args, context))
+            if message is not None and not isinstance(message, str):
+                raise TypeError("Extension commands must return text or None")
+            return message
+        except Exception as exc:
+            self._record_runtime_failure(command.extension, f"command:/{command.name}", exc)
+            return f"Extension command /{command.name} failed: {exc}"
 
     # -- event dispatch -----------------------------------------------------------
 

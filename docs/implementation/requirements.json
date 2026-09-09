@@ -63,14 +63,20 @@
       "requirement": "在 Coding/host 增加轻量 HostServices 协议，提供本地默认组合；不新增 Runtime 层，不强制启动 Gateway。",
       "status": "in_progress",
       "evidence": [
-        "src/run_agent_coding/host/contracts.py"
+        "src/run_agent_coding/host/contracts.py",
+        "docs/implementation/checkpoint-04.md",
+        "docs/implementation/host-services-tests.xml"
       ]
     },
     {
       "id": "P1-2",
       "requirement": "将后台任务注册、提交、句柄和清理纳入现有 source_id/generation。",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "docs/implementation/checkpoint-04.md",
+        "docs/implementation/host-services-tests.xml",
+        "docs/implementation/distribution-check-04.json"
+      ]
     },
     {
       "id": "P1-3",
@@ -96,8 +102,8 @@
     {
       "id": "P1-6",
       "requirement": "将保留的本项目扩展直接更新到新契约，完成 A01—A05 的适用部分，不保留旧 API 适配。",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": ["docs/implementation/checkpoint-04.md", "docs/implementation/host-services-tests.xml"]
     },
     {
       "id": "P1-7",

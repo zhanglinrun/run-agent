@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 
 from run_agent_core.types import JSONValue
 
@@ -14,7 +14,7 @@ class ExtensionToken:
     session_id: str
     source_id: str
     owner_id: str
-    generation: int
+    generation: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,3 +84,79 @@ class ResourceService(Protocol):
     async def snapshot(self) -> dict[str, str]: ...
 
     async def advance_head(self, change: HeadChange) -> None: ...
+
+
+class ArtifactService(Protocol):
+    async def put(self, content: bytes) -> ArtifactRef: ...
+
+    async def read(self, ref: ArtifactRef) -> bytes: ...
+
+
+ServiceScope = Literal["session", "project", "user"]
+
+
+@dataclass(frozen=True, slots=True)
+class ScopedServices:
+    state: StateService
+    resources: ResourceService
+    artifacts: ArtifactService
+
+
+class HostServices(Protocol):
+    @property
+    def tasks(self) -> TaskService: ...
+
+    def scope(self, scope: ServiceScope = "session") -> ScopedServices:
+        """Choose one host-bound scope; identities cannot be supplied by tools."""
+        ...
+
+
+class HostServicesRegistry(Protocol):
+    async def publish(
+        self,
+        session_id: str,
+        generation: str,
+        sources: Sequence[str],
+        assert_active: Callable[[], None],
+        *,
+        expected_generation: str | None = None,
+        handlers: Mapping[str, Mapping[str, TaskHandler]] | None = None,
+    ) -> Mapping[str, HostServices]: ...
+
+    async def retire(self, session_id: str, generation: str) -> int:
+        """Revoke writes and drain tasks; return the number still cancelling."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class TaskSpec:
+    handler: str
+    payload: JSONValue
+    snapshot_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TaskInfo:
+    task_id: str
+    handler: str
+    status: str
+    result: JSONValue = None
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TaskContext:
+    task_id: str
+    snapshot_id: str | None
+    services: HostServices
+
+
+TaskHandler = Callable[[JSONValue, TaskContext], Awaitable[JSONValue]]
+
+
+class TaskService(Protocol):
+    async def submit(self, spec: TaskSpec) -> str: ...
+
+    async def status(self, task_id: str) -> TaskInfo: ...
+
+    async def cancel(self, task_id: str) -> TaskInfo: ...

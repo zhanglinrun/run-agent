@@ -1,5 +1,5 @@
 PRAGMA application_id = 1381322305;
-PRAGMA user_version = 3;
+PRAGMA user_version = 4;
 
 CREATE TABLE projects (
     project_id TEXT PRIMARY KEY,
@@ -94,7 +94,7 @@ CREATE TABLE extension_owners (
     session_id TEXT NOT NULL REFERENCES sessions(session_id),
     source_id TEXT NOT NULL,
     owner_id TEXT NOT NULL,
-    generation INTEGER NOT NULL,
+    generation TEXT NOT NULL,
     active INTEGER NOT NULL CHECK(active IN (0, 1)),
     PRIMARY KEY(session_id, source_id)
 );
@@ -144,7 +144,7 @@ CREATE TABLE resource_publications (
     evidence_json TEXT NOT NULL CHECK(json_valid(evidence_json)),
     session_id TEXT NOT NULL,
     owner_id TEXT NOT NULL,
-    generation INTEGER NOT NULL,
+    generation TEXT NOT NULL,
     created_at REAL NOT NULL,
     FOREIGN KEY(source_id, scope, resource_key, version)
         REFERENCES resource_versions(source_id, scope, resource_key, version)
@@ -181,3 +181,20 @@ CREATE TABLE observation_health (
     failed INTEGER NOT NULL CHECK(failed >= 0),
     updated_at REAL NOT NULL
 );
+
+CREATE TABLE extension_tasks (
+    task_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    source_id TEXT NOT NULL,
+    owner_id TEXT NOT NULL,
+    generation TEXT NOT NULL,
+    handler TEXT NOT NULL,
+    payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+    snapshot_id TEXT,
+    status TEXT NOT NULL CHECK(status IN ('queued','running','cancelling','cancelled','succeeded','failed','interrupted')),
+    result_json TEXT CHECK(result_json IS NULL OR json_valid(result_json)),
+    error TEXT,
+    created_at REAL NOT NULL,
+    finished_at REAL
+);
+CREATE INDEX extension_tasks_owner ON extension_tasks(session_id,source_id,owner_id,generation,status);

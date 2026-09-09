@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from time import time
 from uuid import uuid4
@@ -38,9 +38,14 @@ def assert_extension(connection: sqlite3.Connection, token: ExtensionToken) -> N
         raise ExtensionRetired(f"Extension instance is no longer active: {token.source_id}")
 
 
-async def activate_extension(database: SqliteDatabase, token: ExtensionToken) -> None:
+async def activate_extension(
+    database: SqliteDatabase,
+    token: ExtensionToken,
+    *,
+    expected_generation: str | None = None,
+) -> None:
     """Host-only binding, reusing the extension runtime's existing generation."""
-    if token.generation < 0 or not token.owner_id or not token.source_id:
+    if not token.generation or not token.owner_id or not token.source_id:
         raise ValueError("Invalid extension owner")
 
     def activate(connection: sqlite3.Connection) -> None:
@@ -62,10 +67,7 @@ async def activate_extension(database: SqliteDatabase, token: ExtensionToken) ->
         if (
             previous is not None
             and previous["owner_id"] == token.owner_id
-            and (
-                token.generation < previous["generation"]
-                or (token.generation == previous["generation"] and not previous["active"])
-            )
+            and (previous["generation"] != expected_generation or not previous["active"])
         ):
             raise ExtensionRetired("A retired generation cannot be reactivated")
         connection.execute(
@@ -93,13 +95,21 @@ async def retire_extension(database: SqliteDatabase, token: ExtensionToken) -> N
 class NamespaceState:
     """The host supplies scope and source; model tool arguments cannot switch them."""
 
-    def __init__(self, database: SqliteDatabase, token: ExtensionToken, scope: str) -> None:
+    def __init__(
+        self,
+        database: SqliteDatabase,
+        token: ExtensionToken,
+        scope: str,
+        assert_active: Callable[[], None] = lambda: None,
+    ) -> None:
         self.database = database
         self.token = token
         self.scope = scope
+        self.assert_active = assert_active
 
     async def get(self, key: str) -> StateValue | None:
         def get(connection: sqlite3.Connection) -> StateValue | None:
+            self.assert_active()
             assert_extension(connection, self.token)
             row = connection.execute(
                 "SELECT * FROM extension_state WHERE source_id=? AND scope=? AND key=?",
@@ -118,6 +128,7 @@ class NamespaceState:
             raise ValueError("State page size must be between 1 and 1000")
 
         def read(connection: sqlite3.Connection) -> list[StateValue]:
+            self.assert_active()
             assert_extension(connection, self.token)
             rows = connection.execute(
                 """SELECT * FROM extension_state WHERE source_id=? AND scope=?
@@ -150,6 +161,7 @@ class NamespaceState:
         frozen_heads = json.loads(canonical_json([asdict(change) for change in heads]))
 
         def apply(connection: sqlite3.Connection) -> None:
+            self.assert_active()
             assert_extension(connection, self.token)
             for change in frozen_states:
                 row = connection.execute(

@@ -124,6 +124,8 @@ class CommandResult:
     thinking_level: str | None = None
     message: str | None = None
     session_name: str | None = None
+    extension_command: str | None = None
+    extension_arguments: str = ""
 
 
 @dataclass(frozen=True, slots=True)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import asdict
 from time import time
 
@@ -25,11 +25,15 @@ class NamespaceResources:
         token: ExtensionToken,
         scope: str,
         artifacts: ArtifactStore,
+        assert_active: Callable[[], None] = lambda: None,
+        artifact_reader: Callable[[ArtifactRef], Awaitable[bytes]] | None = None,
     ) -> None:
         self.database = database
         self.token = token
         self.scope = scope
         self.artifacts = artifacts
+        self.assert_active = assert_active
+        self._read_artifact = artifact_reader or artifacts.read
 
     async def put_immutable(
         self,
@@ -57,9 +61,10 @@ class NamespaceResources:
         version = hashlib.sha256(body.encode()).hexdigest()
         # Files are durable before a database reference can become visible.
         for ref in refs:
-            await self.artifacts.read(ref)
+            await self._read_artifact(ref)
 
         def put(connection: sqlite3.Connection) -> ResourceVersion:
+            self.assert_active()
             assert_extension(connection, self.token)
             connection.execute(
                 "INSERT OR IGNORE INTO resources VALUES (?, ?, ?, NULL)",
@@ -121,6 +126,7 @@ class NamespaceResources:
 
     async def resolve(self, key: str, version: str) -> ResourceVersion:
         def resolve(connection: sqlite3.Connection) -> ResourceVersion:
+            self.assert_active()
             assert_extension(connection, self.token)
             row = connection.execute(
                 """SELECT payload_json FROM resource_versions WHERE source_id=? AND scope=?
@@ -135,6 +141,7 @@ class NamespaceResources:
 
     async def snapshot(self) -> dict[str, str]:
         def snapshot(connection: sqlite3.Connection) -> dict[str, str]:
+            self.assert_active()
             assert_extension(connection, self.token)
             rows = connection.execute(
                 """SELECT resource_key, head_version FROM resources WHERE source_id=? AND scope=?
@@ -146,4 +153,9 @@ class NamespaceResources:
         return await self.database.run(snapshot)
 
     async def advance_head(self, change: HeadChange) -> None:
-        await NamespaceState(self.database, self.token, self.scope).apply_batch(heads=[change])
+        await NamespaceState(
+            self.database,
+            self.token,
+            self.scope,
+            self.assert_active,
+        ).apply_batch(heads=[change])

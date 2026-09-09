@@ -83,6 +83,7 @@ class CodingApplication:
                     model=options.model or record.model,
                     storage=storage,
                     telemetry=await manager.telemetry(),
+                    host_services=await manager.host_services(),
                     cwd=record.cwd,
                     session_id=record.id,
                     session_manager=manager,
@@ -135,6 +136,8 @@ class CodingApplication:
 
     async def command(self, text: str) -> CommandResult:
         """Execute each parsed intent exactly once, on the async application path."""
+        if not self._started:
+            await self.start()
         session = self.session
         if session.is_running:
             if text.strip() == "/stop":
@@ -153,7 +156,11 @@ class CodingApplication:
         result = session.handle_command(text)
         ui = session.extension_runtime.ui
         message = result.message
-        if result.new_session_requested:
+        if result.extension_command is not None:
+            message = await session.extension_runtime.execute_command(
+                result.extension_command, result.extension_arguments,
+            )
+        elif result.new_session_requested:
             message = await session.new_session()
         elif result.resume_session_id is not None:
             message = await session.resume(result.resume_session_id)

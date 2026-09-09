@@ -9,7 +9,7 @@
 - 原始调度与存储性能：`baseline-runtime.json`、`baseline-storage.json`。这些是模拟负载，用于同条件比较，不代表模型能力。
 - 新版目标：Provider / Core / Coding / Gateway；唯一产品命令 `run`；SQLite 权威状态；独立 Gateway；Session 扩展装配经验学习；独立环境验收和证据闭环。
 
-当前检查点：10 项实施任务完成，A08 与 S04 的新版应用行为验收通过。其他完整目标继续开放；详见 `checkpoint-03.md`、`telemetry-tests.xml` 及 `requirements.json`。早期检查点保留为历史记录。
+当前检查点：11 项实施任务完成，A08 与 S04 的新版应用行为验收通过。其他完整目标继续开放；详见 `checkpoint-04.md`、`host-services-tests.xml` 及 `requirements.json`。早期检查点保留为历史记录。
 
 已落地并验证：
 
@@ -35,4 +35,6 @@
 
 检查点 03 已移除诊断、观测和评测的剩余 JSONL，正式评测使用 SQLite application，失败/取消保留可得费用。63 项新版测试、144 个源文件 mypy、Ruff、wheel/sdist 和全新安装通过。
 
-下一阶段补齐 HostServices、受管理扩展任务与资源快照，继续持久网关、experience、独立验收、真实模型样本与消融。Outbox 尚未实现，模拟模型测试不代表真实编码能力。
+检查点 04 接通 HostServices 的作用域、事务发布和本地受管理任务；观测扩展可异步导出报告。75 项新版测试、146 个源文件 mypy、Ruff 和干净安装通过。
+
+下一阶段补齐资源快照、Gateway 持久任务、experience、独立验收、真实模型样本与消融。Outbox 尚未实现，模拟模型测试不代表真实编码能力。

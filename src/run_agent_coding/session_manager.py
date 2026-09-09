@@ -9,7 +9,9 @@ from typing import Literal
 from uuid import uuid4
 
 from run_agent_coding.paths import RunAgentPaths
+from run_agent_coding.storage.artifacts import ArtifactStore
 from run_agent_coding.storage.handle import OutcomeCommitter, SqliteSessionHandle
+from run_agent_coding.storage.host import SqliteHostServices
 from run_agent_coding.storage.sessions import SessionRecord, SqliteSessionRepository
 from run_agent_coding.storage.settle import settle
 from run_agent_coding.storage.sqlite import SqliteDatabase
@@ -88,6 +90,7 @@ class SessionManager:
         self._handles: dict[str, SqliteSessionHandle] = {}
         self._closed = False
         self._telemetry: SqliteTelemetrySink | None = None
+        self._services: SqliteHostServices | None = None
         self._close_task: asyncio.Task[None] | None = None
 
     async def repository(self) -> SqliteSessionRepository:
@@ -97,6 +100,16 @@ class SessionManager:
             if self._database is None:
                 self._database = await SqliteDatabase.open(self.paths.database_path)
             return SqliteSessionRepository(self._database)
+
+    async def host_services(self) -> SqliteHostServices:
+        repository = await self.repository()
+        if self._services is None:
+            self._services = SqliteHostServices(
+                repository.database,
+                ArtifactStore(self.paths.home / "artifacts"),
+                self.owner_id,
+            )
+        return self._services
 
     async def create_session(
         self,
@@ -239,10 +252,18 @@ class SessionManager:
             self._closed = True
             handles = tuple(self._handles.values())
         try:
+            task_error: BaseException | None = None
+            if self._services is not None:
+                try:
+                    await self._services.tasks.aclose()
+                except BaseException as exc:
+                    task_error = exc
             outcomes = await asyncio.gather(
                 *(handle.aclose() for handle in handles), return_exceptions=True
             )
             errors = [item for item in outcomes if isinstance(item, BaseException)]
+            if task_error is not None:
+                errors.insert(0, task_error)
             if errors:
                 raise errors[0]
         finally:

@@ -26,7 +26,7 @@ async def resources(tmp_path):
             cwd=tmp_path, principal_id="alice", model="test", session_id="s"
         )
         await sessions.claim("s", owner_id="host", run_id="r")
-        token = ExtensionToken("s", "experience", "host", 1)
+        token = ExtensionToken("s", "experience", "host", "generation-1")
         await activate_extension(database, token)
         artifacts = ArtifactStore(tmp_path / "artifacts")
         state = NamespaceState(database, token, "alice/project-a")
@@ -54,7 +54,7 @@ async def test_source_scope_and_principal_isolation(resources):
     await state.compare_and_set(StateChange("fact", 0, "project-a fact"))
     for scope in ["alice/project-b", "bob/project-a"]:
         assert await NamespaceState(database, token, scope).get("fact") is None
-    second = ExtensionToken("s", "observability", "host", 1)
+    second = ExtensionToken("s", "observability", "host", "generation-1")
     await activate_extension(database, second)
     assert await NamespaceState(database, second, "alice/project-a").get("fact") is None
     assert [item.key for item in await state.list(prefix="fa")] == ["fact"]
@@ -64,8 +64,8 @@ async def test_source_scope_and_principal_isolation(resources):
 async def test_reload_retired_worker_cannot_write_or_publish(resources):
     database, token, state, versions, artifacts = resources
     candidate = await versions.put_immutable("skill", "Check output.")
-    replacement = ExtensionToken("s", "experience", "host", 2)
-    await activate_extension(database, replacement)
+    replacement = ExtensionToken("s", "experience", "host", "generation-2")
+    await activate_extension(database, replacement, expected_generation=token.generation)
     with pytest.raises(ExtensionRetired):
         await state.compare_and_set(StateChange("late", 0, "old worker"))
     with pytest.raises(ExtensionRetired):
@@ -87,7 +87,7 @@ async def test_new_host_invalidates_old_namespace_even_before_rebinding(resource
     with pytest.raises(ExtensionRetired):
         await state.compare_and_set(StateChange("late", 0, "old host"))
     with pytest.raises(ExtensionRetired):
-        await activate_extension(database, ExtensionToken("s", token.source_id, "host", 100))
+        await activate_extension(database, ExtensionToken("s", token.source_id, "host", "generation-100"))
 
 
 async def test_resource_snapshot_resolves_frozen_content_after_publish_and_rollback(resources):
@@ -172,7 +172,7 @@ async def test_same_scope_persists_across_sessions(resources, tmp_path):
     sessions = SqliteSessionRepository(database)
     await sessions.create_session(cwd=tmp_path, principal_id="alice", model="test", session_id="s2")
     await sessions.claim("s2", owner_id="host2", run_id="r2")
-    token = ExtensionToken("s2", "experience", "host2", 1)
+    token = ExtensionToken("s2", "experience", "host2", "generation-1")
     await activate_extension(database, token)
     assert (
         await NamespaceState(database, token, "alice/project-a").get("preference")

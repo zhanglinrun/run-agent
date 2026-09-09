@@ -18,6 +18,7 @@ from run_agent_core.session.entries import MessageEntry
 from run_agent_core.messages import UserMessage
 from run_agent_coding.application import CodingApplication, ApplicationOptions
 from run_agent_coding.paths import RunAgentPaths
+from run_agent_coding.host.contracts import StateChange
 from run_agent_core.messages import AssistantMessage, TextContent
 from run_agent_core.provider_events import AssistantDoneEvent
 scripts = {e.name:e.value for e in distribution('run-agent-harness').entry_points
@@ -41,13 +42,22 @@ async def check():
             yield AssistantDoneEvent(reason='stop', message=AssistantMessage(
                 content=[TextContent(text='installed-wheel')], model='test', stop_reason='stop'))
     paths = RunAgentPaths(home=pathlib.Path('application'), agents_home=pathlib.Path('agents'))
+    extension = pathlib.Path('installed_extension.py').resolve()
+    extension.write_text('def setup(api): pass', encoding='utf-8')
     options = ApplicationOptions(cwd=pathlib.Path.cwd(), paths=paths, model='test',
-                                 extensions_enabled=False)
+                                 extensions_enabled=False, extension_paths=(extension,))
     async with await CodingApplication.open(options, provider=Provider()) as app:
         events = [event async for event in app.prompt('persist installed session')]
         assert events[-1].status == 'succeeded'
         identity = app.session.session_id
         head = events[-1].head_id
+        runtime = app.session.extension_runtime
+        state = runtime._extensions[0].api.context.services.scope().state
+        await state.compare_and_set(StateChange('installed', 0, True))
+        await app.command('/reload')
+        runtime = app.session.extension_runtime
+        current_state = runtime._extensions[0].api.context.services.scope().state
+        assert (await current_state.get('installed')).value
     from dataclasses import replace
     reopened = await CodingApplication.open(replace(options, resume=identity), provider=Provider())
     async with reopened as app:
@@ -58,7 +68,8 @@ asyncio.run(check())
 print(json.dumps({'entry_module':run_agent_entry.__file__, 'scripts':scripts,
                   'schema_initialization_and_reopen':True,
                   'application_completion_and_resume':True,
-                  'sqlite_telemetry':True, 'no_jsonl_output':True}))
+                  'sqlite_telemetry':True, 'no_jsonl_output':True,
+                  'host_services_and_reload':True}))
 """
 
 
