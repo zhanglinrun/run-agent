@@ -1,0 +1,47 @@
+{
+  "source_commit": "ebf219d250f9d2b63984cddf7d8ffdd57c9a466b",
+  "workload": "Existing runtime_bench: synthetic runner with sleep(0); no LLM.",
+  "summary": {
+    "scheduler": {
+      "requests": 10000,
+      "accepted": 10000,
+      "completed": 10000,
+      "missing": 0,
+      "duplicates": 0,
+      "failed": 0,
+      "session_order_violations": 0,
+      "acceptance_rate": 1.0,
+      "max_active": 40,
+      "wall_ms": 493.0462000047555,
+      "throughput_requests_per_second": 20282.074985880732,
+      "queue_p50_ms": 421.99999999138527,
+      "queue_p95_ms": 500.0,
+      "end_to_end_p50_ms": 421.99999999138527,
+      "end_to_end_p95_ms": 500.0
+    },
+    "tools": {
+      "kind": "synthetic_async_read",
+      "calls_per_batch": 8,
+      "repeats": 3,
+      "sequential_p50_ms": 248.5844999901019,
+      "sequential_p95_ms": 249.54129999969155,
+      "parallel_p50_ms": 30.955100010032766,
+      "parallel_p95_ms": 32.10240000043996,
+      "median_latency_reduction": 0.8754745367821994,
+      "order_violations": 0,
+      "sequential_max_active": 1,
+      "parallel_max_active": 8
+    },
+    "trace": {
+      "requests": 3,
+      "fsync": true,
+      "overhead_p50_ms": 34.8770999989938,
+      "overhead_p95_ms": 44.58889999659732,
+      "mean_bytes_per_request": 3365.0,
+      "mean_spans_per_request": 13.0
+    }
+  },
+  "manifest_digest": "db9e5c0b980780bede9adcc71cf1f7d79d2073a83accda828b076fabf96c0039",
+  "inventory_digest": "3428f0a7ef5188c659d476f701d015692dd0a4d0bce71a8d1f660848d39acca6",
+  "report_digest": "7ce5c0d6c0471b802a0703e75192361478d67d84fb3a256041d73ff7d163b726"
+}

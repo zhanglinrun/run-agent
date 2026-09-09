@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from inspect import isawaitable
 
-from run_agent_coding import CodingSession
+from run_agent_coding.session import CodingSession
 from run_agent_core.events import MessageEndEvent
 from run_agent_core.messages import AssistantMessage
 from run_agent_gateway.models import TurnRequest, TurnResult

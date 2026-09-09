@@ -18,5 +18,5 @@ USER runagent
 
 VOLUME ["/home/runagent/.run"]
 
-ENTRYPOINT ["run-agent-gateway"]
+ENTRYPOINT ["run", "gateway"]
 CMD ["--extension", "/app/examples/gateway_extensions/feishu.py", "--cwd", "/workspace"]

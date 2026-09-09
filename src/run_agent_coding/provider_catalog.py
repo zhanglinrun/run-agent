@@ -93,19 +93,16 @@ class ProviderCatalogEntry:
     auth_methods: tuple[AuthMethod, ...] = ("api_key",)
 
 
-def _load_builtin_catalog() -> tuple[ProviderCatalogEntry, ...]:
+def builtin_provider_catalog() -> tuple[ProviderCatalogEntry, ...]:
     # Imported lazily: catalog_loader imports ProviderCatalogEntry from this module.
     from run_agent_coding.catalog_loader import builtin_catalog
 
     return builtin_catalog()
 
 
-BUILTIN_PROVIDER_CATALOG: tuple[ProviderCatalogEntry, ...] = _load_builtin_catalog()
-
-
 def builtin_provider_entry(name: str) -> ProviderCatalogEntry | None:
     """Return a built-in catalog entry by provider name."""
-    for entry in BUILTIN_PROVIDER_CATALOG:
+    for entry in builtin_provider_catalog():
         if entry.name == name:
             return entry
     return None

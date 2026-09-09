@@ -1,0 +1,39 @@
+{
+  "source_commit": "ebf219d250f9d2b63984cddf7d8ffdd57c9a466b",
+  "samples": [
+    {
+      "entries": 1000,
+      "populate_ms": 6.89760000386741,
+      "append_ms": [
+        12.234199995873496,
+        11.597200005780905,
+        11.099499999545515
+      ],
+      "warm_read_ms": 10.76979999197647,
+      "bytes": 476596
+    },
+    {
+      "entries": 10000,
+      "populate_ms": 31.56999999191612,
+      "append_ms": [
+        107.22149998764507,
+        111.77450000832323,
+        76.02659999975003
+      ],
+      "warm_read_ms": 102.21119999187067,
+      "bytes": 4794073
+    },
+    {
+      "entries": 100000,
+      "populate_ms": 351.11449999385513,
+      "append_ms": [
+        1328.7397999956738,
+        1167.2765999974217,
+        1166.212900003302
+      ],
+      "warm_read_ms": 893.998500003363,
+      "bytes": 48237350
+    }
+  ],
+  "conditions": "Single process; fsync on every append; sequential parent chain; batch populate, 3 append samples, warm read; Windows local filesystem. No claim about cold cache, branches or model performance."
+}

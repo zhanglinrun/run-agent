@@ -51,7 +51,7 @@ async def run_gateway(args: argparse.Namespace) -> None:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="run-agent-gateway",
+        prog="run gateway",
         description="Run the session-aware Run Agent gateway with trusted adapter extensions.",
     )
     parser.add_argument("--extension", type=Path, action="append", default=[], required=True)

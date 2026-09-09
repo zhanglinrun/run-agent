@@ -2,7 +2,7 @@
 
 ## 项目简介
 
-Run Agent 是一套面向多轮复杂任务的本地优先 Agent 基础设施：按 Pi 源码的真实边界收敛为小核心、组合式 `CodingSession` 与普通文件系统扩展。核心只处理消息、模型流与工具调用；Mem0、MCP、计划模式、权限、验证与链路追踪均不硬编码进 Session，而是通过统一 `setup(api)` 契约按需加载。
+Run Agent 是一套面向多轮复杂任务的本地优先 Agent 基础设施：按 Pi 源码的真实边界收敛为小核心、组合式 `CodingSession` 与普通文件系统扩展。核心只处理消息、模型流与工具调用；MCP、计划模式、权限、验证与链路追踪均不硬编码进 Session，而是通过统一 `setup(api)` 契约按需加载。
 
 平台同时提供会话级 Gateway（同会话 FIFO、跨会话并行）、物理调用账本与可离线重建的 Run Agent Bench，适合作为「Agent 运行时边界 + 可复现评测」的一体化工程实践。
 
@@ -25,7 +25,7 @@ Run Agent 是一套面向多轮复杂任务的本地优先 Agent 基础设施：
 - **Gateway（`run_agent_gateway`）**：同会话 FIFO、跨会话并行、前后台并发隔离、持久会话池、版本化 adapter
 - **Observability（`run_agent_observability`）**：逻辑调用 ↔ 物理 HTTP 尝试账本，provider / tool / turn / agent spans
 - **Evals（`run_agent_evals`）**：隔离工作区、冻结 manifest、inventory 凭证、离线重建、runtime 基准、候选上线门禁
-- **Extensions（`extensions/`）**：Mem0、MCP、Plan、Permission、Verification、Trace Recorder；普通 `setup(api)`，不进核心 wheel
+- **Extensions（`extensions/`）**：MCP、Plan、Permission、Verification、Trace Recorder；普通 `setup(api)`，不进核心 wheel
 
 ### 请求链路
 
@@ -40,7 +40,7 @@ flowchart LR
   HARN --> TOOL[Tool Batch]
   HARN --> TREE[JSONL Session Tree]
   CS -. optional .-> EXT[extensions/*]
-  EXT --> MEM[Mem0 / MCP / Plan / Permission / Verify / Trace]
+  EXT --> MEM[MCP / Plan / Permission / Verify / Trace]
 ```
 
 ### 模块结构
@@ -59,7 +59,7 @@ run-agent/
 │   ├── run_agent_observability/   # 调用账本与 span 原语
 │   └── run_agent_evals/           # Campaign、runtime bench、PromotionGate
 ├── extensions/                    # 正式可选扩展（不随 Session 自动加载）
-│   ├── mem0/ · mcp/ · observability/
+│   ├── mcp/ · observability/
 │   ├── permission_policy/ · plan_mode/ · verification/
 ├── examples/
 │   ├── extensions/                # hello_tool / prompt_section / sidebar_status
@@ -84,7 +84,7 @@ run-agent/
 ### 2. 普通文件系统扩展
 
 - **统一契约**：同步 `setup(api)`；失败原子回滚；reload 后旧 API generation 失效
-- **官方可选集**：Mem0 记忆、MCP Streamable HTTP、Plan 只读策略、Permission 变更策略、Verification、JSONL Trace
+- **官方可选集**：MCP Streamable HTTP、Plan 只读策略、Permission 变更策略、Verification、JSONL Trace
 - **安装发现**：`run-agent install` 装到 `~/.run/extensions`；项目 `.run/extensions` 需 `--project-extensions` + 审批
 
 ### 3. Gateway 多会话宿主
@@ -133,7 +133,7 @@ run-agent/
 
 ### 1. 边界先于功能堆叠
 
-对照 Pi：核心 loop 只理解消息、provider 事件、工具与取消；Mem0 / MCP / Plan / Permission / Verify / Trace 全部是可卸载扩展。Gateway 因拥有多会话与全局并发额度，不作为 Session 内扩展下沉。
+对照 Pi：核心 loop 只理解消息、provider 事件、工具与取消；MCP / Plan / Permission / Verify / Trace 全部是可卸载扩展。Gateway 因拥有多会话与全局并发额度，不作为 Session 内扩展下沉。
 
 ### 2. 同会话有序、跨会话并行
 
@@ -153,7 +153,7 @@ Campaign 冻结仓库状态与内容凭证，离线重建会校验 manifest、tr
 - **虚拟环境**：项目根目录下的 `.venv`
 - **操作系统**：Windows / macOS / Linux（文档命令以 PowerShell 为例）
 - **（可选）LLM 网关**：OpenAI-compatible 或 Anthropic-compatible
-- **（可选）Mem0 / MCP**：仅在加载对应扩展时需要
+- **（可选）MCP**：仅在加载对应扩展时需要
 
 ## 快速开始
 
@@ -184,7 +184,6 @@ Copy-Item .env.example .env
 | `MODEL` | 默认模型 ID |
 | `REASONING_EFFORT` | 推理强度（如 `high`） |
 | `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | 飞书自建应用凭证 |
-| `MEM0_API_KEY` 等 | 仅在加载 Mem0 扩展后生效 |
 
 显式 `--model` / `--thinking` 与进程环境变量优先于 `.env`。CLI、Gateway、评测共用同一回退规则。
 
@@ -213,7 +212,6 @@ Copy-Item .env.example .env
 安装可信扩展供后续自动发现：
 
 ```powershell
-.\.venv\Scripts\run-agent.exe install extensions/mem0
 .\.venv\Scripts\run-agent.exe install extensions/permission_policy
 ```
 
@@ -261,7 +259,7 @@ FEISHU_APP_SECRET=xxx
 群聊默认要求 @机器人，私聊可直接发送。完整说明见
 [`examples/gateway_extensions/README.md`](examples/gateway_extensions/README.md)。
 在当前聊天发送 `/new`（群聊中需 @机器人）可以新建 CodingSession；旧上下文保留在
-会话存储中，Mem0 长期记忆不会被清除。
+会话存储中。
 
 ### 5. 评测与基准
 
@@ -318,7 +316,7 @@ FEISHU_APP_SECRET=xxx
 - 需要隔离时使用 OS sandbox、容器、受限凭证与网络策略；本项目信任模型不等于沙箱
 - 生产渠道 adapter 自行持有渠道凭证与 SDK 生命周期；Agent 会话与调度留在 Gateway host
 - 评测产物默认落在被忽略的 `.run/`；对外分享只发布 digest 与报告摘要，避免泄漏会话内容
-- 轮换 LLM / Mem0 / MCP 密钥；不要把项目扩展目录当作不可信代码自动执行源
+- 轮换 LLM / MCP 密钥；不要把项目扩展目录当作不可信代码自动执行源
 
 ### Docker 部署飞书 Gateway
 

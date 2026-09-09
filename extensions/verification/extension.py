@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from run_agent_coding import create_bash_tool
 from run_agent_coding.extensions import ExtensionAPI
+from run_agent_coding.tools import create_bash_tool
 from run_agent_core.tools import (
     AgentTool,
     AgentToolResult,

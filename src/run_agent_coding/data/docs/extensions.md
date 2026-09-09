@@ -155,7 +155,6 @@ same for these hooks as for other extension registrations.
 
 The repository's top-level `extensions/` directory contains:
 
-- `mem0`: remote Mem0-backed durable `memory` tool;
 - `mcp`: MCP Streamable HTTP bridge tool;
 - `observability`: per-session JSONL span recorder and `/trace`;
 - `permission_policy`: mutating-tool policy hook;
@@ -166,7 +165,6 @@ None is loaded automatically or included as a core wheel package. Load one with
 `-e extensions/<name>` or install it with
 `run-agent install extensions/<name>`.
 
-Mem0 requires `MEM0_API_KEY` and never falls back to a local JSON memory store.
 MCP reads the `RUN_AGENT_MCP_SERVERS` JSON object. Permission policy reads
 `RUN_AGENT_PERMISSION_MODE=allow|guarded|ask|deny`. Missing extensions contribute
 no corresponding tools or policy.

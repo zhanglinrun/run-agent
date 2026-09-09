@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "run-agent-harness"
 version = "0.5.0"
-description = "A Pi-style Python agent harness with extensions, JSONL sessions, gateway scheduling, and reproducible evaluation."
+description = "An extensible local agent harness with interactive coding, persistent sessions, gateway scheduling, and evaluation."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -36,12 +36,11 @@ dev = [
 ]
 
 [project.scripts]
-run-agent = "run_agent_coding.cli:app"
-run-agent-gateway = "run_agent_gateway.cli:main"
-run-agent-bench = "run_agent_evals.cli:main"
+run = "run_agent_entry:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/run_agent_ai", "src/run_agent_core", "src/run_agent_coding", "src/run_agent_gateway", "src/run_agent_observability", "src/run_agent_evals"]
+only-include = ["src/run_agent_entry.py", "src/run_agent_ai", "src/run_agent_core", "src/run_agent_coding", "src/run_agent_gateway", "src/run_agent_observability", "src/run_agent_evals"]
+sources = ["src"]
 
 [tool.ruff]
 line-length = 100

@@ -7,8 +7,6 @@ services:
     command:
       - --extension
       - /app/examples/gateway_extensions/feishu.py
-      - --agent-extension
-      - /app/extensions/mem0
       - --cwd
       - /workspace
     volumes:

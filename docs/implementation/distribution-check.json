@@ -1,0 +1,45 @@
+{
+  "entry_module": "E:\\pythonProject\\run-agent\\.run\\redesign\\install-env\\Lib\\site-packages\\run_agent_entry.py",
+  "scripts": {
+    "run": "run_agent_entry:main"
+  },
+  "schema_initialization_and_reopen": true,
+  "launcher": "E:\\pythonProject\\run-agent\\.run\\redesign\\install-env\\Scripts\\run.exe",
+  "commands": [
+    {
+      "args": [
+        "--version"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "740af65a6467785feb1d0e75a9c60e8a57a43ceabca093f7543d0a2d167d1346",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "--help"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "89171b79e3e34ec9e88503c0b28965c3468faa9f2bd5d7c76c5e6ade4d02821b",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "gateway",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "7b37d833db77a1bb6512deff267999ad7232f32f8904e8a06171b84e1e7f95a1",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "bench",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "4efe36c9f76b241df389e9f90e96eadc22b3ef8829dd757cabc8077a25ed67d0",
+      "stderr": ""
+    }
+  ],
+  "scope": "Wheel import, schema, persistence, command routing; interactive and model execution are separate gates."
+}

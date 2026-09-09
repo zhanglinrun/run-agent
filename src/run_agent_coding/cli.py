@@ -70,7 +70,7 @@ from run_agent_coding.session_manager import (
 from run_agent_coding.session_preparation import prepare_coding_session
 from run_agent_coding.shell_config import load_shell_settings
 from run_agent_coding.thinking import THINKING_LEVELS, ThinkingLevel, normalize_thinking_level
-from run_agent_coding.tui import run_tui_app
+from run_agent_coding.tui.app import run_tui_app
 from run_agent_coding.update_check import (
     UpdateNotice,
     startup_release_notes_notice,
@@ -106,21 +106,25 @@ def _force_utf8_streams() -> None:
 _force_utf8_streams()
 
 app = typer.Typer(
-    name="run-agent",
+    name="run",
     help="Run Agent coding-agent harness.",
     epilog="""Commands:
 
-  run-agent install SOURCE [--force] - Install a trusted local or Git extension.
+  run gateway - Start the independent gateway host.
 
-  run-agent update - Upgrade Run Agent.
+  run bench - Run evaluations and inspect their evidence.
 
-  run-agent sessions - List indexed sessions.
+  run install SOURCE [--force] - Install a trusted local or Git extension.
 
-  run-agent export REF [DEST] - Export a session as HTML or JSONL.
+  run update - Upgrade Run Agent.
 
-  run-agent providers - List configured model providers.
+  run sessions - List indexed sessions.
 
-  run-agent setup - Configure an OpenAI-compatible provider.
+  run export REF [DEST] - Export a session as HTML or JSONL.
+
+  run providers - List configured model providers.
+
+  run setup - Configure an OpenAI-compatible provider.
 """,
     add_completion=False,
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
@@ -140,13 +144,13 @@ def install_command(args: list[str]) -> None:
         if arg == "--force":
             force = True
         elif arg.startswith("-"):
-            raise typer.BadParameter(f"Unknown option for `run-agent install`: {arg}")
+            raise typer.BadParameter(f"Unknown option for `run install`: {arg}")
         elif source is None:
             source = arg
         else:
-            raise typer.BadParameter("Usage: run-agent install <source> [--force]")
+            raise typer.BadParameter("Usage: run install <source> [--force]")
     if source is None:
-        raise typer.BadParameter("Usage: run-agent install <source> [--force]")
+        raise typer.BadParameter("Usage: run install <source> [--force]")
 
     typer.echo(
         "Warning: extensions execute arbitrary Python with your user permissions. "
@@ -240,28 +244,28 @@ def main(
     ] = None,
     setup_base_url: Annotated[
         str,
-        typer.Option("--base-url", help="OpenAI-compatible base URL for `run-agent setup`."),
+        typer.Option("--base-url", help="OpenAI-compatible base URL for `run setup`."),
     ] = DEFAULT_OPENAI_COMPATIBLE_BASE_URL,
     setup_api_key_env: Annotated[
         str,
-        typer.Option("--api-key-env", help="API key environment variable for `run-agent setup`."),
+        typer.Option("--api-key-env", help="API key environment variable for `run setup`."),
     ] = "OPENAI_API_KEY",
     setup_timeout_seconds: Annotated[
         float,
         typer.Option(
             "--timeout-seconds",
-            help="HTTP timeout in seconds for `run-agent setup` provider requests.",
+            help="HTTP timeout in seconds for `run setup` provider requests.",
         ),
     ] = DEFAULT_OPENAI_COMPATIBLE_TIMEOUT_SECONDS,
     setup_max_retries: Annotated[
         int,
-        typer.Option("--max-retries", help="Provider retry count for `run-agent setup`."),
+        typer.Option("--max-retries", help="Provider retry count for `run setup`."),
     ] = DEFAULT_OPENAI_COMPATIBLE_MAX_RETRIES,
     setup_max_retry_delay_seconds: Annotated[
         float,
         typer.Option(
             "--max-retry-delay-seconds",
-            help="Provider retry delay in seconds for `run-agent setup`.",
+            help="Provider retry delay in seconds for `run setup`.",
         ),
     ] = DEFAULT_OPENAI_COMPATIBLE_MAX_RETRY_DELAY_SECONDS,
     setup_default: Annotated[
@@ -354,7 +358,7 @@ def main(
         bool,
         typer.Option(
             "--export",
-            help="Export the given session id or JSONL path (mirrors `run-agent export`).",
+            help="Export the given session id or JSONL path (mirrors `run export`).",
         ),
     ] = False,
     no_extensions: Annotated[
@@ -385,7 +389,7 @@ def main(
     ] = False,
     models: Annotated[
         bool,
-        typer.Option("--models", help="With `run-agent update`, refresh model catalogs only."),
+        typer.Option("--models", help="With `run update`, refresh model catalogs only."),
     ] = False,
 ) -> None:
     """Run the Run Agent CLI."""
@@ -395,7 +399,7 @@ def main(
     thinking = thinking or environ.get("REASONING_EFFORT") or None
     current_version = _current_version()
     if version:
-        typer.echo(f"run-agent {current_version}")
+        typer.echo(f"run {current_version}")
         raise typer.Exit()
 
     if ctx.invoked_subcommand is not None:
@@ -409,7 +413,7 @@ def main(
 
     if resume is not None:
         raise typer.BadParameter(
-            f"--resume was renamed to --session. Use `run-agent --session {resume}` instead."
+            f"--resume was renamed to --session. Use `run --session {resume}` instead."
         )
 
     if session is not None and new_session:
@@ -420,12 +424,12 @@ def main(
     if prompt_option is not None:
         raise typer.BadParameter(
             "--prompt was removed. Pass the prompt positionally and use --print, e.g. "
-            f'`run-agent --print "{prompt_option}"`.'
+            f'`run --print "{prompt_option}"`.'
         )
 
     if output is not None:
         raise typer.BadParameter(
-            f"--output was renamed to --mode. Use `run-agent --mode {output.value}` instead."
+            f"--output was renamed to --mode. Use `run --mode {output.value}` instead."
         )
 
     if extension_legacy is not None:
@@ -460,7 +464,7 @@ def main(
     if not rpc_requested and not print_requested and not export and command == "update":
         positional_models = positional_args[1:] == ["--models"]
         if len(positional_args) != 1 and not positional_models:
-            raise typer.BadParameter("Usage: run-agent update [--models]")
+            raise typer.BadParameter("Usage: run update [--models]")
         if models or positional_models:
             update_models_command()
         else:
@@ -468,7 +472,7 @@ def main(
         raise typer.Exit()
 
     if models:
-        raise typer.BadParameter("--models is only supported with `run-agent update`")
+        raise typer.BadParameter("--models is only supported with `run update`")
 
     if not rpc_requested and not print_requested and not export and command == "install":
         install_command(positional_args[1:])
@@ -586,13 +590,13 @@ def main(
         except (RuntimeError, ValueError) as exc:
             raise typer.BadParameter(str(exc)) from exc
         if resumable_session_id is not None:
-            typer.echo(f"To resume this session: run-agent --session {resumable_session_id}")
+            typer.echo(f"To resume this session: run --session {resumable_session_id}")
         raise typer.Exit()
 
     prompt = _merge_stdin_prompt(initial_prompt or "")
     if not prompt:
         raise typer.BadParameter(
-            'Usage: run-agent --print "<prompt>" (or --mode text|json|transcript "<prompt>"); '
+            'Usage: run --print "<prompt>" (or --mode text|json|transcript "<prompt>"); '
             "a prompt can also be piped in via stdin"
         )
 
@@ -749,7 +753,7 @@ async def export_session_command(
 
 
 def _run_export_cli(args: list[str]) -> None:
-    """Run `run-agent export`/`run-agent --export` and exit."""
+    """Run `run export`/`run --export` and exit."""
     try:
         session_ref, output_path, export_format = _parse_export_cli_args(args)
     except RuntimeError as exc:
@@ -803,7 +807,7 @@ def _resolve_append_system_prompts(values: tuple[str, ...] | list[str]) -> str |
 def _merge_stdin_prompt(prompt: str) -> str:
     """Merge piped stdin content into a print-mode prompt, mirroring Pi.
 
-    When stdin is not a terminal (e.g. `cat file | run-agent -p "..."`), its
+    When stdin is not a terminal (e.g. `cat file | run -p "..."`), its
     contents are prepended to the prompt text.
     """
     stdin = sys.stdin
@@ -828,7 +832,7 @@ def _merge_stdin_prompt(prompt: str) -> str:
 def _parse_export_cli_args(args: list[str]) -> tuple[str, Path | None, str | None]:
     if not args:
         raise RuntimeError(
-            "Usage: run-agent export <session-id-or-jsonl> [--format html|jsonl] [output]"
+            "Usage: run export <session-id-or-jsonl> [--format html|jsonl] [output]"
         )
     session_ref = args[0]
     output_path: Path | None = None
@@ -840,7 +844,7 @@ def _parse_export_cli_args(args: list[str]) -> tuple[str, Path | None, str | Non
             index += 1
             if index >= len(args):
                 raise RuntimeError(
-                    "Usage: run-agent export <session-id-or-jsonl> [--format html|jsonl] [output]"
+                    "Usage: run export <session-id-or-jsonl> [--format html|jsonl] [output]"
                 )
             export_format = args[index]
         elif arg.startswith("--format="):
@@ -851,7 +855,7 @@ def _parse_export_cli_args(args: list[str]) -> tuple[str, Path | None, str | Non
             output_path = Path(arg).expanduser()
         else:
             raise RuntimeError(
-                "Usage: run-agent export <session-id-or-jsonl> [--format html|jsonl] [output]"
+                "Usage: run export <session-id-or-jsonl> [--format html|jsonl] [output]"
             )
         index += 1
     return session_ref, output_path, export_format

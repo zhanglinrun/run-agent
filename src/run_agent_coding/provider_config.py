@@ -32,12 +32,12 @@ from run_agent_coding.credentials import FileCredentialStore, credentials_path
 from run_agent_coding.oauth_registry import get_oauth_provider
 from run_agent_coding.paths import RunAgentPaths
 from run_agent_coding.provider_catalog import (
-    BUILTIN_PROVIDER_CATALOG,
     ModelCatalogMetadata,
     ModelCostTier,
     ProviderApi,
     ProviderCatalogEntry,
     ProviderKind,
+    builtin_provider_catalog,
 )
 from run_agent_coding.thinking import (
     DEFAULT_THINKING_LEVEL,
@@ -386,13 +386,13 @@ class ProviderSelection:
 def builtin_provider_configs() -> tuple[ProviderConfig, ...]:
     """Return Run Agent's built-in provider configs."""
     return tuple(
-        provider_config_from_catalog_entry(entry.name) for entry in BUILTIN_PROVIDER_CATALOG
+        provider_config_from_catalog_entry(entry.name) for entry in builtin_provider_catalog()
     )
 
 
 def provider_config_from_catalog_entry(name: str) -> ProviderConfig:
     """Create a durable provider config from a built-in catalog entry."""
-    for entry in BUILTIN_PROVIDER_CATALOG:
+    for entry in builtin_provider_catalog():
         if entry.name == name:
             return provider_config_from_entry(entry)
     raise ProviderConfigError(f"Unknown built-in provider: {name}")
@@ -688,7 +688,7 @@ def upsert_provider(
 ) -> ProviderSettings:
     """Return settings with a provider added or replaced."""
     providers_by_name = {item.name: item for item in settings.providers}
-    builtin_names = {entry.name for entry in BUILTIN_PROVIDER_CATALOG}
+    builtin_names = {entry.name for entry in builtin_provider_catalog()}
     if provider.name in providers_by_name and provider.name in builtin_names:
         provider = _merge_provider_config(providers_by_name[provider.name], provider)
     providers_by_name[provider.name] = provider
@@ -827,7 +827,7 @@ def _append_catalog_providers(
 ) -> tuple[ProviderConfig, ...]:
     """Append catalog providers: user-catalog ones always, builtins when credentialed."""
     credential_store = FileCredentialStore(credentials_path(paths) if paths else None)
-    builtin_names = {entry.name for entry in BUILTIN_PROVIDER_CATALOG}
+    builtin_names = {entry.name for entry in builtin_provider_catalog()}
     provider_names = {provider.name for provider in providers}
     appended = list(providers)
     for provider in catalog_configs.values():

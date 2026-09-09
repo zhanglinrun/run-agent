@@ -75,8 +75,8 @@ from run_agent_coding.oauth_types import (
 from run_agent_coding.project_trust import ProjectTrustRequest, TrustChoice, TrustOverride
 from run_agent_coding.prompt_templates import PromptTemplate
 from run_agent_coding.provider_catalog import (
-    BUILTIN_PROVIDER_CATALOG,
     ProviderCatalogEntry,
+    builtin_provider_catalog,
     builtin_provider_entry,
 )
 from run_agent_coding.provider_config import (
@@ -5844,9 +5844,9 @@ class RunAgentTuiApp(App[None]):
         if method is None:
             return
         if method == "subscription":
-            providers = _subscription_login_providers(BUILTIN_PROVIDER_CATALOG)
+            providers = _subscription_login_providers(builtin_provider_catalog())
         elif method == "api-key":
-            providers = _api_key_login_providers(BUILTIN_PROVIDER_CATALOG)
+            providers = _api_key_login_providers(builtin_provider_catalog())
         elif method == "custom":
             self._open_custom_provider_login()
             return
@@ -6039,7 +6039,7 @@ class RunAgentTuiApp(App[None]):
         self._refresh()
 
     def _open_logout_picker(self) -> None:
-        providers = _stored_credential_providers(BUILTIN_PROVIDER_CATALOG)
+        providers = _stored_credential_providers(builtin_provider_catalog())
         if not providers:
             self._notify(NO_STORED_CREDENTIALS_MESSAGE, severity="warning")
             return

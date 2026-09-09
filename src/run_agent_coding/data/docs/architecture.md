@@ -48,7 +48,7 @@ CLI / TUI / Gateway / Evaluation
 ```
 
 The core loop only understands messages, provider events, tool definitions, and
-cancellation. It does not branch on Mem0, MCP, planning, permissions, verification,
+cancellation. It does not branch on MCP, planning, permissions, verification,
 or tracing.
 
 The default CodingSession exposes `read`, `write`, `edit`, and `bash`. Read is
@@ -92,7 +92,7 @@ allowing different files to be modified concurrently. Run Agent's compaction
 currently uses one summary request for an older prefix; Pi's separate history
 and split-turn-prefix summarization is not implemented here.
 
-Compaction and Skill/resource discovery belong to CodingSession. Mem0, MCP,
+Compaction and Skill/resource discovery belong to CodingSession. MCP,
 planning, permission policy, verification, and session tracing are optional
 extensions. The portable loop contains no product-specific branching for them.
 
@@ -102,7 +102,7 @@ Providers are supplied through durable configuration or explicit filesystem
 extensions. Other optional product capabilities are explicit filesystem or Gateway
 extensions.
 
-Mem0, MCP, Plan, Permission, Verification, and the session Trace Recorder live in
+MCP, Plan, Permission, Verification, and the session Trace Recorder live in
 the repository's top-level `extensions/` directory. They are ordinary trusted
 Python extensions loaded from an explicit path, the user extension directory, or
 an approved project extension directory. When unloaded, they add no tools, hooks,

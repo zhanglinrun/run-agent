@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Protocol
 
 from run_agent_coding.prompt_templates import PromptTemplate
-from run_agent_coding.provider_catalog import BUILTIN_PROVIDER_CATALOG, builtin_provider_entry
+from run_agent_coding.provider_catalog import builtin_provider_catalog, builtin_provider_entry
 from run_agent_coding.reload import CodingReloadSummary, ReloadCategorySummary
 from run_agent_coding.resources import ResourceDiagnostic
 from run_agent_coding.session_manager import (
@@ -751,7 +751,7 @@ def _login_command(context: CommandContext) -> CommandResult:
         if entry is None:
             providers = ", ".join(
                 [
-                    *(entry.name for entry in BUILTIN_PROVIDER_CATALOG),
+                    *(entry.name for entry in builtin_provider_catalog()),
                     *LOGIN_PROVIDER_ALIASES,
                 ]
             )
@@ -775,7 +775,7 @@ def _logout_command(context: CommandContext) -> CommandResult:
     if provider_name:
         entry = builtin_provider_entry(provider_name)
         if entry is None:
-            providers = ", ".join(entry.name for entry in BUILTIN_PROVIDER_CATALOG)
+            providers = ", ".join(entry.name for entry in builtin_provider_catalog())
             return CommandResult(
                 handled=True,
                 message=(

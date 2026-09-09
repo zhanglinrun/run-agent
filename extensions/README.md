@@ -5,7 +5,6 @@ the core session automatically.
 
 | Directory | Registration |
 | --- | --- |
-| `mem0` | Mem0-backed `memory` tool |
 | `mcp` | MCP Streamable HTTP bridge tool |
 | `observability` | Per-session JSONL span recorder and `/trace` |
 | `permission_policy` | Mutating-tool policy hook |
@@ -15,20 +14,19 @@ the core session automatically.
 Load one directly while developing:
 
 ```powershell
-.\.venv\Scripts\run-agent.exe -e extensions/mem0 --print "Remember the package manager"
+.\.venv\Scripts\run.exe -e extensions/plan_mode --print "Plan the repository changes"
 ```
 
 Install a trusted extension for normal user-level discovery:
 
 ```powershell
-.\.venv\Scripts\run-agent.exe install extensions/mem0
-.\.venv\Scripts\run-agent.exe install extensions/permission_policy
+.\.venv\Scripts\run.exe install extensions/permission_policy
 ```
 
 Load the directory explicitly to exercise the complete official set:
 
 ```powershell
-.\.venv\Scripts\run-agent.exe -e extensions
+.\.venv\Scripts\run.exe -e extensions
 ```
 
 Extensions execute with the current user's OS permissions. Installation is a trust decision, not a

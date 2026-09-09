@@ -97,7 +97,7 @@ def _runtime_rebuild(args: argparse.Namespace) -> int:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="run-agent-bench",
+        prog="run bench",
         description="Run or rebuild evidence-backed Run Agent evaluation campaigns.",
     )
     commands = parser.add_subparsers(dest="command", required=True)
