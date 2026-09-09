@@ -76,6 +76,7 @@ from run_agent_core.messages import AgentMessage, CustomMessage, TextContent, To
 from run_agent_core.provider import CancellationToken
 from run_agent_core.tools import AgentTool, AgentToolResult
 from run_agent_core.types import JSONValue
+from run_agent_observability.sink import TelemetrySink
 
 # Host callback that delivers a message through the frontend's serialized run
 # path when the session is idle. Carries the same presentation metadata as a
@@ -89,6 +90,9 @@ class BoundSession(Protocol):
 
     @property
     def cwd(self) -> Path: ...
+
+    @property
+    def telemetry(self) -> TelemetrySink: ...
 
     @property
     def model(self) -> str: ...

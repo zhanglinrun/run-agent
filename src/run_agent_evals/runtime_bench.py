@@ -16,6 +16,8 @@ from time import perf_counter
 from typing import Any
 
 from run_agent_ai.fake import FakeProvider
+from run_agent_coding.storage.sqlite import SqliteDatabase
+from run_agent_coding.storage.telemetry import SqliteTelemetrySink
 from run_agent_core.events import AgentEvent, MessageEndEvent
 from run_agent_core.loop import run_agent_loop
 from run_agent_core.messages import (
@@ -245,36 +247,49 @@ async def _trace_samples(
     root: Path,
     config: RuntimeBenchmarkConfig,
 ) -> tuple[dict[str, Any], tuple[Path, ...]]:
-    trace_dir = root / "traces"
+    path = root / "traces.sqlite3"
     baselines: list[float] = []
     traced: list[float] = []
-    paths: list[Path] = []
-    for index in range(config.trace_repeats):
-        baseline = await _measure_tool_batch(config.tool_calls, 0.0, "parallel")
-        path = trace_dir / f"request-{index:03d}.jsonl"
-        recorder = TraceRecorder(path, session_id=f"benchmark-{index}")
-        measured = await _measure_tool_batch(
-            config.tool_calls,
-            0.0,
-            "parallel",
-            listener=recorder,
-        )
-        baselines.append(float(baseline["duration_ms"]))
-        traced.append(float(measured["duration_ms"]))
-        paths.append(path)
+    span_counts: list[int] = []
+    payload_bytes: list[int] = []
+    async with await SqliteDatabase.open(path) as database:
+        sink = SqliteTelemetrySink(database)
+        try:
+            for index in range(config.trace_repeats):
+                baseline = await _measure_tool_batch(config.tool_calls, 0.0, "parallel")
+                recorder = TraceRecorder(
+                    sink,
+                    stream=f"request:{index}",
+                    session_id=f"benchmark-{index}",
+                )
+                started = perf_counter()
+                await _measure_tool_batch(config.tool_calls, 0.0, "parallel", listener=recorder)
+                await sink.flush()
+                # Include the durable SQLite commit, not just queue admission.
+                traced.append((perf_counter() - started) * 1000)
+                baselines.append(float(baseline["duration_ms"]))
+                records = await recorder.read_all()
+                span_counts.append(len(records))
+                payload_bytes.append(sum(len(json.dumps(row).encode("utf-8")) for row in records))
+            if sink.dropped or sink.failed:
+                raise RuntimeError("Benchmark observation capture was incomplete")
+        finally:
+            await sink.aclose()
     return (
         {
-            "fsync": True,
+            "storage": "sqlite_wal_full",
+            "durable_flush_included": True,
             "baseline_duration_ms": baselines,
             "traced_duration_ms": traced,
             "overhead_ms": [
-                max(0.0, traced_value - baseline)
+                traced_value - baseline
                 for baseline, traced_value in zip(baselines, traced, strict=True)
             ],
-            "file_bytes": [path.stat().st_size for path in paths],
-            "span_counts": [len(TraceRecorder(path, fsync=False).read_all()) for path in paths],
+            "database_bytes": path.stat().st_size,
+            "payload_bytes": payload_bytes,
+            "span_counts": span_counts,
         },
-        tuple(paths),
+        (path,),
     )
 
 
@@ -399,7 +414,7 @@ def _summarize_samples(samples: Mapping[str, Any]) -> dict[str, Any]:
 
     trace = _mapping(samples, "trace")
     overhead = [float(value) for value in _sequence(trace, "overhead_ms")]
-    file_bytes = [int(value) for value in _sequence(trace, "file_bytes")]
+    payload_bytes = [int(value) for value in _sequence(trace, "payload_bytes")]
     span_counts = [int(value) for value in _sequence(trace, "span_counts")]
     return {
         "scheduler": {
@@ -446,10 +461,14 @@ def _summarize_samples(samples: Mapping[str, Any]) -> dict[str, Any]:
         },
         "trace": {
             "requests": len(overhead),
-            "fsync": bool(trace.get("fsync", False)),
+            "storage": trace.get("storage"),
+            "durable_flush_included": bool(trace.get("durable_flush_included", False)),
             "overhead_p50_ms": percentile(overhead, 0.50),
             "overhead_p95_ms": percentile(overhead, 0.95),
-            "mean_bytes_per_request": sum(file_bytes) / len(file_bytes) if file_bytes else 0.0,
+            "mean_payload_bytes_per_request": (
+                sum(payload_bytes) / len(payload_bytes) if payload_bytes else 0.0
+            ),
+            "database_bytes": trace.get("database_bytes"),
             "mean_spans_per_request": sum(span_counts) / len(span_counts) if span_counts else 0.0,
         },
     }
@@ -468,7 +487,7 @@ def _manifest_payload(config: RuntimeBenchmarkConfig) -> dict[str, Any]:
         "methodology": {
             "scheduler": "production TurnScheduler with an asyncio-yielding deterministic runner",
             "tools": "production agent loop with a synthetic fixed-delay async read tool",
-            "trace": "production TraceRecorder with fsync enabled, paired against an untraced loop",
+            "trace": "SQLite TraceRecorder including durable flush, paired with an untraced loop",
         },
     }
     payload["manifest_digest"] = _canonical_digest(payload)

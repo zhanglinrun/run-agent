@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol
 from uuid import uuid4
@@ -12,6 +13,7 @@ from uuid import uuid4
 from run_agent_core.messages import AgentMessage, CustomMessage, ToolResultMessage
 from run_agent_core.tools import AgentTool, AgentToolResult
 from run_agent_core.types import JSONValue
+from run_agent_observability.sink import ScopedTelemetrySink, TelemetrySink
 
 if TYPE_CHECKING:
     from run_agent_coding.extensions.providers import DynamicProvider
@@ -538,6 +540,7 @@ class ExtensionContext:
     ) -> None:
         self._runtime = runtime
         self._generation = generation if generation is not None else ExtensionGeneration()
+        self._source_id = source_id
         self._ui = ExtensionUi(runtime, self._generation, source_id=source_id)
 
     @property
@@ -545,6 +548,14 @@ class ExtensionContext:
         """Return the session working directory."""
         self._generation.assert_active()
         return self._runtime.session_view.cwd
+
+    @property
+    def telemetry(self) -> TelemetrySink:
+        """The host's observation sink; extensions do not open database connections."""
+        self._generation.assert_active()
+        session = self._runtime.session_view
+        prefix = sha256(f"{session.session_id}\0{self._source_id}".encode()).hexdigest() + ":"
+        return ScopedTelemetrySink(session.telemetry, prefix, self._generation.assert_active)
 
     @property
     def paths(self) -> RunAgentPaths:

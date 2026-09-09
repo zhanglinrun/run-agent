@@ -161,6 +161,7 @@ from run_agent_core.session.tree import SessionTreeError, path_to_entry
 from run_agent_core.tool_history import ToolHistoryRepair, repair_tool_history
 from run_agent_core.tools import AgentTool, AgentToolResult
 from run_agent_core.types import JSONValue
+from run_agent_observability.sink import TelemetrySink
 
 StreamingBehavior = Literal["steer", "follow_up"]
 SESSION_NAME_SYSTEM_PROMPT = (
@@ -320,6 +321,7 @@ class CodingSessionConfig:
     model: str
     storage: SessionStorage
     cwd: Path
+    telemetry: TelemetrySink
     system: str | None = None
     custom_system_prompt: str | None = None
     append_system_prompt: str | None = None
@@ -339,6 +341,7 @@ class CodingSessionConfig:
     runtime_provider_config: ProviderConfig | None = None
     dynamic_provider: DynamicProvider | None = None
     owns_initial_provider: bool = False
+    provider_transform: Callable[[ModelProvider, str], ModelProvider] | None = None
     auto_compact_token_threshold: int | None = None
     auto_compact_enabled: bool = True
     thinking_level: ThinkingLevel = DEFAULT_THINKING_LEVEL
@@ -454,7 +457,7 @@ class CodingSession:
         self._context_usage_cache: ContextUsageEstimate | None = None
         self._owned_providers: list[ClosableModelProvider] = []
         self._close_task: asyncio.Task[None] | None = None
-        self._diagnostic_logger = AgentCallDiagnosticLogger.from_paths(self._resource_paths.paths)
+        self._diagnostic_logger = AgentCallDiagnosticLogger(config.telemetry)
         self._credential_store = FileCredentialStore(
             credentials_path(self._resource_paths.paths) if self._resource_paths.paths else None
         )
@@ -720,6 +723,10 @@ class CodingSession:
                 )
                 entries = list(pending_initial_entries)
                 state = SessionState.from_entries(entries, leaf_id=entries[-1].id)
+        assert config.provider is not None
+        config = replace(
+            config, provider=_instrument_provider(config, config.provider, config.provider_name)
+        )
         assert config.provider is not None
         active_model = _runtime_model_for_state(config, state)
         image_support = ImageSupportState(
@@ -1096,6 +1103,10 @@ class CodingSession:
     def storage(self) -> SessionStorage:
         """Return the backing session storage."""
         return self._config.storage
+
+    @property
+    def telemetry(self) -> TelemetrySink:
+        return self._config.telemetry
 
     async def export(self, destination: Path | None = None, *, format: str | None = None) -> Path:
         if format not in {None, "html"}:
@@ -1546,6 +1557,10 @@ class CodingSession:
                     selected_config, choice.model
                 )
 
+            candidate = cast(
+                ClosableModelProvider,
+                _instrument_provider(self._config, candidate, choice.provider_name),
+            )
             entry = ModelChangeEntry(
                 parent_id=self._last_parent_id,
                 model=choice.model,
@@ -1718,6 +1733,9 @@ class CodingSession:
             )
         except RuntimeError as exc:
             raise ProviderConfigError(str(exc)) from exc
+        provider = cast(
+            ClosableModelProvider, _instrument_provider(self._config, provider, provider_name)
+        )
         self._owned_providers.append(provider)
         self._harness.config.provider = provider
         self._provider_name = provider_config.name
@@ -2020,7 +2038,10 @@ class CodingSession:
             )
         except RuntimeError as exc:
             raise ProviderConfigError(str(exc)) from exc
-        return provider, provider_config
+        return cast(
+            ClosableModelProvider,
+            _instrument_provider(self._config, provider, provider_config.name),
+        ), provider_config
 
     def _activate_runtime_provider(
         self,
@@ -2356,6 +2377,7 @@ class CodingSession:
                 model=model,
                 cwd=record.cwd,
                 storage=await manager.open_storage(record.id),
+                telemetry=await manager.telemetry(),
                 system=self._config.system,
                 custom_system_prompt=self._config.custom_system_prompt,
                 append_system_prompt=self._config.append_system_prompt,
@@ -3913,6 +3935,13 @@ def _messages_after_entry_on_active_path(
     return tuple(
         entry.message for entry in active_path[target_index + 1 :] if entry.type == "message"
     )
+
+
+def _instrument_provider(
+    config: CodingSessionConfig, provider: ModelProvider, name: str,
+) -> ModelProvider:
+    """Apply host instrumentation to every provider activation, including switches."""
+    return config.provider_transform(provider, name) if config.provider_transform else provider
 
 
 @dataclass(frozen=True, slots=True)

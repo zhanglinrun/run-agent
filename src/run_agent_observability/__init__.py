@@ -1,7 +1,6 @@
 """Provider call-ledger and Agent event tracing APIs."""
 
 from run_agent_observability.telemetry import (
-    JsonlRecorder,
     LedgeredProvider,
     ProviderCallLedger,
     ProviderCallSummary,
@@ -13,7 +12,6 @@ from run_agent_observability.telemetry import (
 )
 
 __all__ = [
-    "JsonlRecorder",
     "LedgeredProvider",
     "ProviderCallLedger",
     "ProviderCallSummary",

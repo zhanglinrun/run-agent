@@ -239,8 +239,12 @@
     {
       "id": "P2-9",
       "requirement": "将 ProviderCallLedger、Trace Recorder 及 Eval 的证据读取接到 SQLite sink，删除 JsonlRecorder、旧路径和相关公开导出。",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "docs/implementation/checkpoint-03.md",
+        "docs/implementation/telemetry-tests.xml",
+        "docs/implementation/distribution-check-03.json"
+      ]
     },
     {
       "id": "P3-1",
@@ -755,8 +759,8 @@
       "id": "V02",
       "scenario": "执行超时、模型错误、取消",
       "invariant": "分母、失败证据和全部可得成本不遗漏",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": ["docs/implementation/checkpoint-03.md", "docs/implementation/telemetry-tests.xml"]
     },
     {
       "id": "V03",

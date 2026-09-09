@@ -13,6 +13,7 @@ from importlib.metadata import distribution
 import run_agent_entry
 from run_agent_coding.storage.sqlite import SqliteDatabase
 from run_agent_coding.storage.sessions import SqliteSessionRepository
+from run_agent_coding.storage.telemetry import SqliteTelemetrySink
 from run_agent_core.session.entries import MessageEntry
 from run_agent_core.messages import UserMessage
 from run_agent_coding.application import CodingApplication, ApplicationOptions
@@ -31,6 +32,10 @@ async def check():
                                   token=token, expected_head=None)
     async with await SqliteDatabase.open('state.sqlite3') as db:
         assert (await SqliteSessionRepository(db).get_head('s')).entry_id == 'a'
+        sink = SqliteTelemetrySink(db)
+        await sink.append('accounting', {'cost':0.5})
+        assert (await sink.read('accounting'))[0]['cost'] == 0.5
+        await sink.aclose()
     class Provider:
         async def stream_response(self, **kwargs):
             yield AssistantDoneEvent(reason='stop', message=AssistantMessage(
@@ -48,10 +53,12 @@ async def check():
     async with reopened as app:
         assert (await app.session.storage.get_head()).entry_id == head
     assert not any(name.startswith(('textual', 'run_agent_coding.tui')) for name in sys.modules)
+    assert not list(pathlib.Path.cwd().rglob('*.jsonl'))
 asyncio.run(check())
 print(json.dumps({'entry_module':run_agent_entry.__file__, 'scripts':scripts,
                   'schema_initialization_and_reopen':True,
-                  'application_completion_and_resume':True}))
+                  'application_completion_and_resume':True,
+                  'sqlite_telemetry':True, 'no_jsonl_output':True}))
 """
 
 

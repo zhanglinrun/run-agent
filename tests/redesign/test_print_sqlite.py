@@ -98,6 +98,7 @@ def test_print_pipeline_returns_one_json_and_resumes_sqlite(tmp_path, truncated)
             env=env,
             timeout=15,
         )
+        assert not list(tmp_path.rglob("*.jsonl"))
         if truncated:
             assert first.returncode == 1, first.stdout
             assert json.loads(first.stdout)["status"] == "failed"

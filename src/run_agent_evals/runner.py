@@ -13,6 +13,8 @@ from typing import Protocol
 from uuid import uuid4
 
 from run_agent_evals.models import (
+    ExecutionCancelled,
+    ExecutionFailure,
     ExecutionResult,
     FrozenTask,
     TrialArtifact,
@@ -76,11 +78,15 @@ class EvaluationRunner:
                 and all(result.exit_code == 0 and not result.timed_out for result in verifiers)
                 else "failed"
             )
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as exc:
+            if isinstance(exc, ExecutionCancelled):
+                execution = exc.result
             status = "cancelled"
             error = "trial cancelled"
             raise
         except Exception as exc:  # noqa: BLE001 - executor is an evaluation boundary
+            if isinstance(exc, ExecutionFailure):
+                execution = exc.result
             status = "error"
             error = str(exc) or type(exc).__name__
         finally:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import traceback
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -10,8 +9,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from run_agent_coding.paths import RunAgentPaths
 from run_agent_core.messages import AssistantMessage
+from run_agent_observability.sink import TelemetrySink
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,15 +25,11 @@ class AgentCallDiagnosticContext:
 
 
 class AgentCallDiagnosticLogger:
-    """Append structured JSONL diagnostics for agent-call failures."""
+    """Emit structured diagnostics into the owning host's observation sink."""
 
-    def __init__(self, path: Path) -> None:
-        self.path = path
-
-    @classmethod
-    def from_paths(cls, paths: RunAgentPaths | None = None) -> AgentCallDiagnosticLogger:
-        """Create a logger using Run Agent's default path layout."""
-        return cls((paths or RunAgentPaths()).agent_calls_log_path)
+    def __init__(self, sink: TelemetrySink) -> None:
+        self.sink = sink
+        self.path = sink.path
 
     def log_exception(
         self,
@@ -94,9 +89,7 @@ class AgentCallDiagnosticLogger:
         return self.path
 
     def _append(self, entry: dict[str, Any]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as file:
-            file.write(json.dumps(entry, sort_keys=True) + "\n")
+        self.sink.emit(f"diagnostics:{entry['session_id'] or 'host'}", entry)
 
 
 def new_agent_call_run_id() -> str:

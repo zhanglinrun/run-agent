@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -56,6 +56,7 @@ class CodingApplication:
         provider: ModelProvider | None = None,
         settings: ProviderSettings | None = None,
         committer: OutcomeCommitter | None = None,
+        provider_transform: Callable[[ModelProvider, str], ModelProvider] | None = None,
     ) -> CodingApplication:
         paths = options.paths or (manager.paths if manager is not None else RunAgentPaths())
         owns_manager = manager is None
@@ -78,8 +79,10 @@ class CodingApplication:
             session = await CodingSession.load(
                 CodingSessionConfig(
                     provider=provider,
+                    provider_transform=provider_transform,
                     model=options.model or record.model,
                     storage=storage,
+                    telemetry=await manager.telemetry(),
                     cwd=record.cwd,
                     session_id=record.id,
                     session_manager=manager,

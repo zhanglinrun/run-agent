@@ -6,7 +6,7 @@ the core session automatically.
 | Directory | Registration |
 | --- | --- |
 | `mcp` | MCP Streamable HTTP bridge tool |
-| `observability` | Per-session JSONL span recorder and `/trace` |
+| `observability` | Session-scoped SQLite spans and `/trace` |
 | `permission_policy` | Mutating-tool policy hook |
 | `plan_mode` | Read-only `/plan` policy |
 | `verification` | Structured `verify` tool |

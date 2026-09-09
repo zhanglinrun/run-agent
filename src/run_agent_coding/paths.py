@@ -27,16 +27,6 @@ class RunAgentPaths:
         return self.home / "logs"
 
     @property
-    def traces_dir(self) -> Path:
-        """Return append-only per-session trace storage."""
-        return self.home / "traces"
-
-    @property
-    def agent_calls_log_path(self) -> Path:
-        """Return the JSONL diagnostic log for agent-call failures."""
-        return self.logs_dir / "agent-calls.jsonl"
-
-    @property
     def models_store_path(self) -> Path:
         """Return the persisted remote model-catalog cache path."""
         return self.home / "models-store.json"

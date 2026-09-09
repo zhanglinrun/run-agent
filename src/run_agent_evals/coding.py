@@ -1,35 +1,28 @@
-"""Real CodingSession executor for evaluation campaigns."""
+"""Evaluation executor using the same durable application lifecycle as ``run``."""
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from run_agent_coding.application import ApplicationOptions, CodingApplication
 from run_agent_coding.paths import RunAgentPaths
 from run_agent_coding.project_trust import TrustDefault
-from run_agent_coding.provider_config import (
-    ProviderSettings,
-    load_provider_settings,
-    resolve_provider_selection,
-    resolve_startup_thinking_level,
-)
-from run_agent_coding.provider_runtime import create_model_provider
-from run_agent_coding.resources import RunAgentResourcePaths
-from run_agent_coding.session import CodingSession, CodingSessionConfig
+from run_agent_coding.provider_config import ProviderSettings, load_provider_settings
+from run_agent_coding.session_manager import SessionManager
 from run_agent_coding.session_usage import estimated_request_cost
-from run_agent_coding.shell_config import load_shell_settings
+from run_agent_coding.storage.settle import settle
 from run_agent_coding.thinking import ThinkingLevel
 from run_agent_core.events import MessageEndEvent
 from run_agent_core.messages import AssistantMessage
-from run_agent_core.session import InMemorySessionStorage
-from run_agent_evals.models import ExecutionResult, FrozenTask
+from run_agent_core.provider import ModelProvider
+from run_agent_evals.models import ExecutionCancelled, ExecutionFailure, ExecutionResult, FrozenTask
 from run_agent_observability import ProviderCallLedger, summarize_provider_calls
 
 
 class CodingTaskExecutor:
-    """Execute a frozen task through the same CodingSession used by the CLI and gateway."""
-
     def __init__(
         self,
         state_root: str | Path,
@@ -56,85 +49,94 @@ class CodingTaskExecutor:
         self.trust_default = trust_default
 
     async def execute(self, task: FrozenTask, workspace: Path) -> ExecutionResult:
-        selection = resolve_provider_selection(
-            self.provider_settings,
-            provider_name=self.provider_name,
-            model=self.model,
-        )
-        thinking_level = resolve_startup_thinking_level(
-            selection.provider,
-            selection.model,
-            cli_override=self.thinking_level_override,
-        )
-        raw_provider = create_model_provider(
-            selection.provider,
-            model=selection.model,
-            thinking_level=thinking_level,
-        )
         call_id = uuid4().hex
-        ledger = ProviderCallLedger(self.state_root / "calls" / f"{call_id}.jsonl")
-        provider = ledger.instrument(raw_provider, provider_name=selection.provider.name)
-        resource_paths = RunAgentResourcePaths(
-            root=self.state_root,
-            cwd=workspace,
-            agents_root=None,
-            paths=self.paths,
-            project_resources_enabled=self.trust_default == "always",
-        )
-        shell = load_shell_settings()
-        session: CodingSession | None = None
+        session_id = f"eval-{call_id}"
+        manager = SessionManager(self.paths)
+        ledger: ProviderCallLedger | None = None
+        application: CodingApplication | None = None
         final: AssistantMessage | None = None
+        failure: BaseException | None = None
+        records: list[dict[str, Any]] = []
+        cleanup_errors: list[str] = []
+        provider_name, model = self.provider_name, self.model
         try:
-            session = await CodingSession.load(
-                CodingSessionConfig(
-                    provider=provider,
-                    owns_initial_provider=True,
-                    model=selection.model,
-                    thinking_level=thinking_level or "off",
-                    storage=InMemorySessionStorage(),
+            ledger = ProviderCallLedger(
+                await manager.telemetry(),
+                stream=f"calls:{call_id}",
+                root_id=call_id,
+                session_id=session_id,
+            )
+
+            def instrument(provider: ModelProvider, name: str) -> ModelProvider:
+                assert ledger is not None
+                return ledger.instrument(provider, provider_name=name)
+
+            application = await CodingApplication.open(
+                ApplicationOptions(
                     cwd=workspace,
-                    resource_paths=resource_paths,
-                    session_id=f"eval-{call_id}",
-                    provider_name=selection.provider.name,
-                    provider_settings=self.provider_settings,
-                    runtime_provider_config=selection.provider,
-                    shell_command_prefix=shell.shell_command_prefix,
+                    paths=self.paths,
+                    session_id=session_id,
+                    provider_name=self.provider_name,
+                    model=self.model,
+                    thinking=self.thinking_level_override,
                     extension_paths=self.extension_paths,
                     project_extensions_enabled=self.project_extensions_enabled,
                     trust_default=self.trust_default,
-                )
+                ),
+                manager=manager,
+                settings=self.provider_settings,
+                provider_transform=instrument,
             )
-            async for event in session.prompt(task.prompt):
+            provider_name, model = application.session.provider_name, application.session.model
+            async for event in application.prompt(task.prompt):
                 if isinstance(event, MessageEndEvent) and isinstance(
                     event.message, AssistantMessage
                 ):
                     final = event.message
+            if final is None:
+                raise RuntimeError("coding session produced no assistant response")
+            if final.stop_reason in {"error", "aborted"}:
+                raise RuntimeError(
+                    final.error_message or f"assistant stopped with {final.stop_reason}"
+                )
+        except (Exception, asyncio.CancelledError) as exc:
+            failure = exc
         finally:
-            if session is not None:
-                await session.aclose()
-            else:
-                await provider.aclose()
-            ledger.close()
 
-        if final is None:
-            raise RuntimeError("coding session produced no assistant response")
-        if final.stop_reason in {"error", "aborted"}:
-            raise RuntimeError(final.error_message or f"assistant stopped with {final.stop_reason}")
-        records = ledger.read_all()
+            async def finish() -> None:
+                nonlocal records
+                try:
+                    if application is not None:
+                        await application.aclose()
+                except Exception as exc:
+                    cleanup_errors.append(f"Application close: {type(exc).__name__}: {exc}")
+                try:
+                    if ledger is not None:
+                        records = await ledger.read_all()
+                except Exception as exc:
+                    cleanup_errors.append(f"Accounting flush: {type(exc).__name__}: {exc}")
+                finally:
+                    if ledger is not None:
+                        ledger.close()
+                    try:
+                        await manager.aclose()
+                    except Exception as exc:
+                        cleanup_errors.append(f"Storage close: {type(exc).__name__}: {exc}")
+
+            _, cancelled = await settle(finish())
+            if cancelled:
+                failure = asyncio.CancelledError()
+        if cleanup_errors and failure is None:
+            failure = RuntimeError("; ".join(cleanup_errors))
         efficiency = summarize_provider_calls(records)
-        estimated_cost = _estimated_ledger_cost(records)
-        trace_path = self.paths.traces_dir / f"eval-{call_id}.jsonl"
-        if efficiency.total_cost > 0:
-            cost: float | None = efficiency.total_cost
-            cost_source = "provider_reported"
-        elif estimated_cost is not None:
-            cost = estimated_cost
-            cost_source = "catalog_estimate"
-        else:
-            cost = None
-            cost_source = "unavailable"
-        return ExecutionResult(
-            output=final.text,
+        accounting_complete = ledger is not None and ledger.complete and not cleanup_errors
+        calls = [record for record in records if record.get("type") == "provider_call"]
+        estimates = [_call_cost(record) for record in calls]
+        known_cost = sum(cost for cost, _ in estimates if cost is not None)
+        cost_complete = accounting_complete and all(cost is not None for cost, _ in estimates)
+        sources = {source for _, source in estimates}
+        result = ExecutionResult(
+            output=final.text if final else "",
             metadata={
                 "calls": efficiency.logical_calls,
                 "physical_attempts": efficiency.physical_attempts,
@@ -144,33 +146,44 @@ class CodingTaskExecutor:
                 "cache_read_tokens": efficiency.cache_read_tokens,
                 "cache_write_tokens": efficiency.cache_write_tokens,
                 "cache_write_1h_tokens": efficiency.cache_write_1h_tokens,
-                "cost": cost,
-                "cost_source": cost_source,
-                "provider": selection.provider.name,
-                "model": selection.model,
-                "call_ledger": str(ledger.path),
-                "trace": str(trace_path) if trace_path.is_file() else None,
+                "cost": known_cost if cost_complete else None,
+                "known_cost": known_cost,
+                "cost_source": next(iter(sources)) if len(sources) == 1 else "mixed",
+                "accounting_complete": accounting_complete,
+                "cost_complete": cost_complete,
+                "provider": provider_name,
+                "model": model,
+                "session_id": session_id,
+                "root_id": call_id,
+                "database": str(self.paths.database_path),
+                "call_ledger": str(self.paths.database_path),
+                "call_stream": f"calls:{call_id}",
+                "cleanup_errors": list(cleanup_errors),
             },
         )
+        if isinstance(failure, asyncio.CancelledError):
+            raise ExecutionCancelled(result) from failure
+        if failure is not None:
+            raise ExecutionFailure(str(failure) or type(failure).__name__, result) from failure
+        return result
 
 
-def _estimated_ledger_cost(records: list[dict[str, Any]]) -> float | None:
-    calls = [record for record in records if record.get("type") == "provider_call"]
-    estimates = [
-        estimated_request_cost(
-            str(record.get("provider", "")),
-            str(record.get("model", "")),
-            fresh=int(record.get("input_tokens", 0)),
-            cached=int(record.get("cache_read_tokens", 0)),
-            cache_write=int(record.get("cache_write_tokens", 0)),
-            cache_write_1h=int(record.get("cache_write_1h_tokens", 0)),
-            output=int(record.get("output_tokens", 0)),
-        )
-        for record in calls
-    ]
-    if not estimates or any(estimate is None for estimate in estimates):
-        return None
-    return sum(estimate for estimate in estimates if estimate is not None)
+def _call_cost(record: dict[str, Any]) -> tuple[float | None, str]:
+    if not record.get("usage_observed"):
+        return None, "unavailable"
+    reported = float(record.get("cost", 0.0))
+    if reported > 0:
+        return reported, "provider_reported"
+    estimate = estimated_request_cost(
+        str(record.get("provider", "")),
+        str(record.get("model", "")),
+        fresh=int(record.get("input_tokens", 0)),
+        cached=int(record.get("cache_read_tokens", 0)),
+        cache_write=int(record.get("cache_write_tokens", 0)),
+        cache_write_1h=int(record.get("cache_write_1h_tokens", 0)),
+        output=int(record.get("output_tokens", 0)),
+    )
+    return estimate, "catalog_estimate" if estimate is not None else "unavailable"
 
 
 __all__ = ["CodingTaskExecutor"]

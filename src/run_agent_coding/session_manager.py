@@ -13,6 +13,7 @@ from run_agent_coding.storage.handle import OutcomeCommitter, SqliteSessionHandl
 from run_agent_coding.storage.sessions import SessionRecord, SqliteSessionRepository
 from run_agent_coding.storage.settle import settle
 from run_agent_coding.storage.sqlite import SqliteDatabase
+from run_agent_coding.storage.telemetry import SqliteTelemetrySink
 from run_agent_core.session.contracts import SessionConflict
 
 InferenceProviderMode = Literal["automatic", "fixed"]
@@ -86,6 +87,7 @@ class SessionManager:
         self._handle_lock = asyncio.Lock()
         self._handles: dict[str, SqliteSessionHandle] = {}
         self._closed = False
+        self._telemetry: SqliteTelemetrySink | None = None
         self._close_task: asyncio.Task[None] | None = None
 
     async def repository(self) -> SqliteSessionRepository:
@@ -125,6 +127,12 @@ class SessionManager:
             },
         )
         return CodingSessionRecord.from_record(record)
+
+    async def telemetry(self) -> SqliteTelemetrySink:
+        repository = await self.repository()
+        if self._telemetry is None:
+            self._telemetry = SqliteTelemetrySink(repository.database)
+        return self._telemetry
 
     async def get_session(self, session_id: str) -> CodingSessionRecord | None:
         repository = await self.repository()
@@ -238,5 +246,9 @@ class SessionManager:
             if errors:
                 raise errors[0]
         finally:
-            if self._owns_database and self._database is not None:
-                await self._database.aclose()
+            try:
+                if self._telemetry is not None:
+                    await self._telemetry.aclose()
+            finally:
+                if self._owns_database and self._database is not None:
+                    await self._database.aclose()

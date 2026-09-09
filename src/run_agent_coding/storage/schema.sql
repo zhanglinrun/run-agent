@@ -1,5 +1,5 @@
 PRAGMA application_id = 1381322305;
-PRAGMA user_version = 2;
+PRAGMA user_version = 3;
 
 CREATE TABLE projects (
     project_id TEXT PRIMARY KEY,
@@ -165,4 +165,19 @@ CREATE TABLE artifact_refs (
 CREATE TABLE host_metadata (
     key TEXT PRIMARY KEY,
     value_json TEXT NOT NULL CHECK(json_valid(value_json))
+);
+
+CREATE TABLE observations (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    stream TEXT NOT NULL,
+    body_json TEXT NOT NULL CHECK(json_valid(body_json)),
+    created_at REAL NOT NULL
+);
+CREATE INDEX observations_stream_seq ON observations(stream, seq);
+
+CREATE TABLE observation_health (
+    sink_id TEXT PRIMARY KEY,
+    dropped INTEGER NOT NULL CHECK(dropped >= 0),
+    failed INTEGER NOT NULL CHECK(failed >= 0),
+    updated_at REAL NOT NULL
 );

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -27,6 +28,20 @@ class FrozenTask:
 class ExecutionResult:
     output: str = ""
     metadata: dict[str, JSONValue] = field(default_factory=dict)
+
+
+class ExecutionFailure(RuntimeError):
+    """An unsuccessful attempt with its output and accounting still available."""
+
+    def __init__(self, message: str, result: ExecutionResult) -> None:
+        super().__init__(message)
+        self.result = result
+
+
+class ExecutionCancelled(asyncio.CancelledError):
+    def __init__(self, result: ExecutionResult) -> None:
+        super().__init__("execution cancelled")
+        self.result = result
 
 
 @dataclass(frozen=True, slots=True)

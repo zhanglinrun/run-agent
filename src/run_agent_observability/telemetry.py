@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import os
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -19,6 +17,7 @@ from run_agent_ai.http import (
     add_http_attempt_observer,
     provider_call_scope,
 )
+from run_agent_ai.model_limits import ModelLimitsProvider, RuntimeModelLimits
 from run_agent_core.events import (
     AgentEndEvent,
     AgentEvent,
@@ -36,51 +35,25 @@ from run_agent_core.provider_events import (
 )
 from run_agent_core.tools import AgentTool
 from run_agent_core.types import JSONValue
-
-
-class JsonlRecorder:
-    """Thread-safe append-only JSONL sink with process-local sequencing."""
-
-    def __init__(self, path: str | Path, *, fsync: bool = True) -> None:
-        self.path = Path(path)
-        self._fsync = fsync
-        self._lock = Lock()
-        self._seq = self._existing_count()
-
-    def append(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._lock:
-            self._seq += 1
-            record = {"seq": self._seq, **payload}
-            with self.path.open("a", encoding="utf-8", newline="\n") as file:
-                file.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
-                file.flush()
-                if self._fsync:
-                    os.fsync(file.fileno())
-            return record
-
-    def read_all(self) -> list[dict[str, Any]]:
-        if not self.path.exists():
-            return []
-        records = [json.loads(line) for line in self.path.read_text(encoding="utf-8").splitlines()]
-        for expected, record in enumerate(records, start=1):
-            if record.get("seq") != expected:
-                raise ValueError(
-                    f"JSONL sequence mismatch at line {expected}: got {record.get('seq')}"
-                )
-        return records
-
-    def _existing_count(self) -> int:
-        if not self.path.exists():
-            return 0
-        return sum(1 for line in self.path.read_text(encoding="utf-8").splitlines() if line)
+from run_agent_observability.sink import TelemetrySink, read_stream
 
 
 class ProviderCallLedger:
     """Correlate physical HTTP attempts with logical provider streams."""
 
-    def __init__(self, path: str | Path, *, fsync: bool = True) -> None:
-        self._recorder = JsonlRecorder(path, fsync=fsync)
+    def __init__(
+        self,
+        sink: TelemetrySink,
+        *,
+        stream: str,
+        root_id: str | None = None,
+        session_id: str | None = None,
+    ) -> None:
+        self.sink = sink
+        self.stream = stream
+        self.root_id = root_id or uuid4().hex
+        self.session_id = session_id
+        self._incomplete = False
         self._attempt_counts: dict[str, int] = {}
         self._active_call_ids: set[str] = set()
         self._lock = Lock()
@@ -89,13 +62,30 @@ class ProviderCallLedger:
 
     @property
     def path(self) -> Path:
-        return self._recorder.path
+        return self.sink.path
 
     def instrument(self, provider: ModelProvider, *, provider_name: str) -> LedgeredProvider:
+        if isinstance(provider, LedgeredProvider) and provider._ledger is self:
+            return provider
         return LedgeredProvider(provider, provider_name=provider_name, ledger=self)
 
-    def read_all(self) -> list[dict[str, Any]]:
-        return self._recorder.read_all()
+    @property
+    def complete(self) -> bool:
+        return not self._incomplete and not self._active_call_ids
+
+    async def read_all(self) -> list[dict[str, Any]]:
+        try:
+            await self.sink.flush()
+        except Exception:
+            self._incomplete = True
+        # Even after a failed write, already committed evidence remains useful.
+        records = await read_stream(self.sink, self.stream, flush=False)
+        started = {
+            row["logical_call_id"] for row in records if row["type"] == "provider_call_start"
+        }
+        finished = {row["id"] for row in records if row["type"] == "provider_call"}
+        self._incomplete |= bool(started - finished)
+        return records
 
     def close(self) -> None:
         if self._closed:
@@ -103,7 +93,7 @@ class ProviderCallLedger:
         self._closed = True
         self._unsubscribe()
 
-    def _record_attempt(self, attempt: HttpAttempt) -> None:
+    async def _record_attempt(self, attempt: HttpAttempt) -> None:
         logical_call_id = attempt.logical_call_id
         if logical_call_id is None:
             return
@@ -111,19 +101,36 @@ class ProviderCallLedger:
             if logical_call_id not in self._active_call_ids:
                 return
             self._attempt_counts[logical_call_id] = self._attempt_counts.get(logical_call_id, 0) + 1
-        self._recorder.append(
+        try:
+            await self.sink.append(
+                self.stream,
+                {
+                    "type": "http_attempt",
+                    "root_id": self.root_id,
+                    **asdict(attempt),
+                },
+            )
+        except BaseException:
+            self._incomplete = True
+            raise
+
+    async def begin_call(self, context: ProviderCallContext) -> None:
+        if self._closed:
+            raise RuntimeError("Provider ledger is closed")
+        with self._lock:
+            self._active_call_ids.add(context.logical_call_id)
+            self._attempt_counts[context.logical_call_id] = 0
+        await self.sink.append(
+            self.stream,
             {
-                "type": "http_attempt",
-                **asdict(attempt),
-            }
+                "type": "provider_call_start",
+                "root_id": self.root_id,
+                **asdict(context),
+                "started_at": time(),
+            },
         )
 
-    def begin_call(self, logical_call_id: str) -> None:
-        with self._lock:
-            self._active_call_ids.add(logical_call_id)
-            self._attempt_counts[logical_call_id] = 0
-
-    def record_call(
+    async def record_call(
         self,
         *,
         logical_call_id: str,
@@ -140,29 +147,38 @@ class ProviderCallLedger:
         with self._lock:
             physical_attempts = self._attempt_counts.pop(logical_call_id, 0)
             self._active_call_ids.discard(logical_call_id)
-        self._recorder.append(
-            {
-                "type": "provider_call",
-                "id": logical_call_id,
-                "provider": provider,
-                "model": model,
-                "session_id": session_id,
-                "started_at": started_at,
-                "duration_ms": round(duration_ms, 3),
-                "status": status,
-                "error": error,
-                "physical_attempts": physical_attempts,
-                "retry_count": max(0, physical_attempts - 1),
-                "input_tokens": usage.input if usage is not None else 0,
-                "output_tokens": usage.output if usage is not None else 0,
-                "cache_read_tokens": usage.cache_read if usage is not None else 0,
-                "cache_write_tokens": usage.cache_write if usage is not None else 0,
-                "cache_write_1h_tokens": (
-                    usage.cache_write_1h if usage is not None and usage.cache_write_1h else 0
-                ),
-                "cost": usage.cost.total if usage is not None else 0.0,
-            }
-        )
+        try:
+            await self.sink.append(
+                self.stream,
+                {
+                    "type": "provider_call",
+                    "root_id": self.root_id,
+                    "id": logical_call_id,
+                    "provider": provider,
+                    "model": model,
+                    "session_id": session_id,
+                    "started_at": started_at,
+                    "duration_ms": round(duration_ms, 3),
+                    "status": status,
+                    "error": error,
+                    "physical_attempts": physical_attempts,
+                    "retry_count": max(0, physical_attempts - 1),
+                    "input_tokens": usage.input if usage is not None else 0,
+                    "output_tokens": usage.output if usage is not None else 0,
+                    "cache_read_tokens": usage.cache_read if usage is not None else 0,
+                    "cache_write_tokens": usage.cache_write if usage is not None else 0,
+                    "cache_write_1h_tokens": (
+                        usage.cache_write_1h if usage is not None and usage.cache_write_1h else 0
+                    ),
+                    "cost": usage.cost.total if usage is not None else 0.0,
+                    "usage_observed": message is not None
+                    and (status == "succeeded" or usage is not None and usage.total_tokens > 0),
+                },
+            )
+        except Exception:
+            # Failure evidence must survive an optional reporting failure. The
+            # host reports incomplete accounting and never a zero-cost success.
+            self._incomplete = True
 
 
 class LedgeredProvider:
@@ -191,6 +207,7 @@ class LedgeredProvider:
         session_id: str | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
         async def iterator() -> AsyncIterator[AssistantMessageEvent]:
+            scoped_session_id = session_id or self._ledger.session_id
             logical_call_id = uuid4().hex
             started_at = time()
             started_monotonic = monotonic()
@@ -201,40 +218,53 @@ class LedgeredProvider:
                 logical_call_id=logical_call_id,
                 provider=self._provider_name,
                 model=model,
-                session_id=session_id,
+                session_id=scoped_session_id,
             )
-            self._ledger.begin_call(logical_call_id)
             try:
+                await self._ledger.begin_call(context)
                 with provider_call_scope(context):
-                    async for event in self._provider.stream_response(
+                    events = self._provider.stream_response(
                         model=model,
                         system=system,
                         messages=messages,
                         tools=tools,
                         signal=signal,
-                        session_id=session_id,
-                    ):
-                        if isinstance(event, AssistantDoneEvent):
-                            final = event.message
-                            status = "succeeded"
-                        elif isinstance(event, AssistantErrorEvent):
-                            final = event.error
-                            error = event.error.error_message
-                            status = event.error.stop_reason
-                        yield event
+                        session_id=scoped_session_id,
+                    )
+                    try:
+                        async for event in events:
+                            if isinstance(event, AssistantDoneEvent):
+                                final = event.message
+                                status = "succeeded"
+                            elif isinstance(event, AssistantErrorEvent):
+                                final = event.error
+                                error = event.error.error_message
+                                status = event.error.stop_reason
+                            else:
+                                final = event.partial
+                            yield event
+                    finally:
+                        close = getattr(events, "aclose", None)
+                        if close is not None:
+                            await close()
             except asyncio.CancelledError:
                 status = "cancelled"
                 error = "provider stream cancelled"
                 raise
             except Exception as exc:
+                status = "error"
                 error = str(exc) or type(exc).__name__
                 raise
+            except GeneratorExit:
+                if status != "succeeded":
+                    status, error = "cancelled", "provider stream closed before completion"
+                raise
             finally:
-                self._ledger.record_call(
+                await self._ledger.record_call(
                     logical_call_id=logical_call_id,
                     provider=self._provider_name,
                     model=model,
-                    session_id=session_id,
+                    session_id=scoped_session_id,
                     started_at=started_at,
                     duration_ms=(monotonic() - started_monotonic) * 1000,
                     status=status,
@@ -243,6 +273,11 @@ class LedgeredProvider:
                 )
 
         return iterator()
+
+    async def discover_model_limits(self, model: str) -> RuntimeModelLimits | None:
+        if isinstance(self._provider, ModelLimitsProvider):
+            return await self._provider.discover_model_limits(model)
+        return None
 
     async def aclose(self) -> None:
         if self._closed:
@@ -295,12 +330,15 @@ class TraceRecorder:
 
     def __init__(
         self,
-        path: str | Path,
+        sink: TelemetrySink,
         *,
         session_id: str | None = None,
-        fsync: bool = True,
+        stream: str,
     ) -> None:
-        self._recorder = JsonlRecorder(path, fsync=fsync)
+        self.sink = sink
+        self.stream = stream
+        self.span_count = 0
+        self.dropped_count = 0
         self.session_id = session_id
         self._trace_id: str | None = None
         self._agent_started: float | None = None
@@ -309,7 +347,7 @@ class TraceRecorder:
 
     @property
     def path(self) -> Path:
-        return self._recorder.path
+        return self.sink.path
 
     async def __call__(self, event: AgentEvent | object) -> None:
         now = monotonic()
@@ -383,8 +421,8 @@ class TraceRecorder:
             )
             self._agent_started = None
 
-    def read_all(self) -> list[dict[str, Any]]:
-        return self._recorder.read_all()
+    async def read_all(self) -> list[dict[str, Any]]:
+        return await read_stream(self.sink, self.stream)
 
     def _append_span(
         self,
@@ -406,7 +444,10 @@ class TraceRecorder:
             status=status,
             attributes=attributes or {},
         )
-        self._recorder.append({"type": "span", **asdict(span)})
+        if self.sink.emit(self.stream, {"type": "span", **asdict(span)}):
+            self.span_count += 1
+        else:
+            self.dropped_count += 1
 
 
 def percentile(values: Sequence[float], percentile_value: float) -> float:
@@ -439,12 +480,24 @@ def summarize_provider_calls(records: Sequence[Mapping[str, Any]]) -> ProviderCa
     """Reduce logical provider-call records without mixing in HTTP-attempt rows."""
     calls = [record for record in records if record.get("type") == "provider_call"]
     successful = sum(record.get("status") == "succeeded" for record in calls)
+    logical_ids = {
+        row["logical_call_id"] for row in records if row.get("type") == "provider_call_start"
+    }
+    logical_ids.update(row["id"] for row in calls)
+    attempts: dict[str, int] = {}
+    for row in records:
+        if row.get("type") == "http_attempt":
+            identity = str(row["logical_call_id"])
+            attempts[identity] = attempts.get(identity, 0) + 1
+    for row in calls:
+        identity = str(row["id"])
+        attempts[identity] = max(attempts.get(identity, 0), int(row.get("physical_attempts", 0)))
     return ProviderCallSummary(
-        logical_calls=len(calls),
+        logical_calls=len(logical_ids),
         successful_calls=successful,
-        failed_calls=len(calls) - successful,
-        physical_attempts=sum(max(0, int(record.get("physical_attempts", 0))) for record in calls),
-        retry_count=sum(max(0, int(record.get("retry_count", 0))) for record in calls),
+        failed_calls=len(logical_ids) - successful,
+        physical_attempts=sum(attempts.values()),
+        retry_count=sum(max(0, count - 1) for count in attempts.values()),
         input_tokens=sum(max(0, int(record.get("input_tokens", 0))) for record in calls),
         output_tokens=sum(max(0, int(record.get("output_tokens", 0))) for record in calls),
         cache_read_tokens=sum(max(0, int(record.get("cache_read_tokens", 0))) for record in calls),
@@ -459,7 +512,6 @@ def summarize_provider_calls(records: Sequence[Mapping[str, Any]]) -> ProviderCa
 
 
 __all__ = [
-    "JsonlRecorder",
     "LedgeredProvider",
     "ProviderCallLedger",
     "ProviderCallSummary",
