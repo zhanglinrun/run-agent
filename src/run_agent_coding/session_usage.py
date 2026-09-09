@@ -9,7 +9,6 @@ from datetime import UTC, datetime
 
 from run_agent_coding.provider_catalog import builtin_provider_entry, model_cost_for_input_tokens
 from run_agent_coding.session_stats import _response_cost
-from run_agent_coding.tui.themes import RUN_AGENT_DARK_THEME, RUN_AGENT_LIGHT_THEME
 from run_agent_core.messages import AssistantMessage
 from run_agent_core.session import (
     BranchSummaryEntry,
@@ -242,25 +241,21 @@ def _usage_event(entry: SessionEntry) -> tuple[str, str] | None:
 
 
 _SERIES_COLORS = {
-    # Derived from the built-in themes so exported charts cannot drift from them.
-    "cached": (RUN_AGENT_DARK_THEME.accent, RUN_AGENT_LIGHT_THEME.accent),
-    "cache writes": (RUN_AGENT_DARK_THEME.success, RUN_AGENT_LIGHT_THEME.success),
-    "fresh": (RUN_AGENT_DARK_THEME.error, RUN_AGENT_LIGHT_THEME.error),
-    "request": (RUN_AGENT_DARK_THEME.error, RUN_AGENT_LIGHT_THEME.error),
-    "cumulative": (RUN_AGENT_DARK_THEME.markdown_link, RUN_AGENT_LIGHT_THEME.markdown_link),
-    "output": (
-        RUN_AGENT_DARK_THEME.role_styles["branch_summary"].border,
-        RUN_AGENT_LIGHT_THEME.role_styles["branch_summary"].border,
-    ),
-    "reasoning": (RUN_AGENT_DARK_THEME.success, RUN_AGENT_LIGHT_THEME.success),
-    "event": (RUN_AGENT_DARK_THEME.markdown_bullet, RUN_AGENT_LIGHT_THEME.markdown_bullet),
+    "cached": ("#80bdff", "#0055aa"),
+    "cache writes": ("#67dbb0", "#177a55"),
+    "fresh": ("#ff8888", "#b03030"),
+    "request": ("#ff8888", "#b03030"),
+    "cumulative": ("#80bdff", "#0055aa"),
+    "output": ("#cc99ff", "#7733aa"),
+    "reasoning": ("#67dbb0", "#177a55"),
+    "event": ("#f0bb60", "#885500"),
 }
 
 
 def _series_color_pair(name: str) -> tuple[str, str]:
     return _SERIES_COLORS.get(
         name,
-        (RUN_AGENT_DARK_THEME.markdown_link, RUN_AGENT_LIGHT_THEME.markdown_link),
+        ("#80bdff", "#0055aa"),
     )
 
 

@@ -1,49 +1,25 @@
-# Run Agent CLI and commands
+# Unified terminal command
 
-Run Agent supports print mode, Pi-compatible JSONL RPC mode, and a Textual interactive
-TUI. `run-agent` opens the TUI by default. Print mode is selected with `-p/--print` or
-`--mode` and uses the same staged session/provider preparation as the TUI. The
-CLI entry point is `run_agent_coding.cli:app`.
-
-## Common flags
+Install the distribution and use `run`. The interactive frontend and print mode share `CodingApplication`, `CodingSession`, extensions and SQLite state.
 
 ```text
-run-agent [OPTIONS] [PROMPT]
+run
+run "inspect this repository"
+run --session <id>
+run --print "explain the implementation"
+run --print --mode json "explain the implementation"
+run --state-dir <directory> --sessions
+run --login <provider>
+run gateway --help
+run bench --help
 ```
 
-- `-p, --print`: run one prompt without the TUI.
-- `--mode text|json|transcript`: choose print output and imply print mode.
-- `--provider NAME`: select an explicit provider.
-- `-m, --model ID`: select an explicit model.
-- `-t, --thinking LEVEL`: set the initial thinking level for this run
-  (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). Overrides
-  remembered and catalog defaults without persisting them; an unsupported level
-  for the selected model is an error listing the available modes.
-- `--session ID`: resume a session in the TUI or print mode.
-- `--cwd PATH`: set the coding-session working directory.
-- `-e, --extension PATH`: load an explicit extension.
-- `--no-extensions`: disable discovered extension directories.
-- `--project-extensions`: opt in to trusted project extensions after approval.
-- `-a, --approve` / `-na, --no-approve`: run-only project-trust decisions.
+`--provider`, `--model` and `--thinking` control model selection. Project `.env` values are loaded without overriding process environment variables. Use `--extension <path>` for explicit Session extensions, `--no-extensions` to disable automatic discovery, and `--project-extensions` to discover approved project extensions.
 
-Explicit `--provider` and `--model` overrides take precedence over a resumed
-provider-aware transcript entry. Print mode reports actionable errors instead of
-opening an interactive login flow.
+`run` defaults to a scrolling terminal with streaming replies, bounded tool previews, multiline input and history. Enter submits; Alt+Enter inserts a newline; Ctrl+C stops the current operation; Ctrl+D exits. `/expand <tool-call-id>` displays a full tool result. While a run is active, ordinary text becomes a correction at the next tool boundary; `/queue <text>` adds a follow-up.
 
-## Model catalog refresh
+Use `/help`, `/session`, `/new`, `/resume`, `/tree`, `/branch <entry-id>`, `/name`, `/model`, `/thinking`, `/compact`, `/reload` and `/export`. Session-changing commands require the current run to settle first. HTML reports are for reading; SQLite backups are for restoring state.
 
-```bash
-run-agent update --models
-```
+Without a TTY, pass `--print` explicitly. Pipe contents and an optional positional prompt form the input. Print JSON is one complete document, using snake_case fields; stdout has no per-event records or terminal controls. Diagnostics go to stderr. A model turn succeeds only after a durable completion receipt; cancellation and failed turns do not return success.
 
-This forces ETag revalidation of models.dev and the live NVIDIA model filter,
-then atomically caches the transformed catalog at `~/.run/models-store.json`.
-Opening `/model` performs the same refresh in the background, subject to a
-four-hour freshness window. Cached/bundled models remain available on failure;
-set `RUN_AGENT_OFFLINE=1` to disable catalog network access.
-
-## Safety boundary
-
-Project trust controls ambient project-resource loading; it is not a sandbox.
-Explicit and discovered extensions execute as trusted package code. See
-`security.md`.
+Sessions live in `~/.run/state.sqlite3` by default. `--state-dir` selects an isolated application state directory. New sessions, resumes and forks use the same database contract. No old session-file format, RPC mode, legacy command alias or Textual frontend is supported.

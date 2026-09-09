@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 
 from run_agent_core.session.entries import SessionEntry
 
@@ -46,6 +46,29 @@ class AppendReceipt:
 class EntryPage:
     entries: tuple[SessionEntry, ...]
     next_seq: int | None
+
+
+RunStatus = Literal["succeeded", "failed", "cancelled", "interrupted", "outcome_unknown"]
+
+
+@dataclass(frozen=True, slots=True)
+class RunOutcome:
+    token: RunToken
+    branch_id: str
+    status: RunStatus
+    expected_head: str | None
+    entries: tuple[SessionEntry, ...] = ()
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CompletionReceipt:
+    run_id: str
+    session_id: str
+    branch_id: str
+    status: RunStatus
+    head_id: str | None
+    watermark: int
 
 
 class SessionRepository(Protocol):

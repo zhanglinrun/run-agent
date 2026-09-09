@@ -8,7 +8,7 @@ import sys
 import pytest
 
 from run_agent_coding.storage.sessions import SqliteSessionRepository
-from run_agent_coding.storage.sqlite import SchemaMismatch, SqliteDatabase
+from run_agent_coding.storage.sqlite import SCHEMA_VERSION, SchemaMismatch, SqliteDatabase
 from run_agent_core.messages import UserMessage
 from run_agent_core.session.contracts import SessionConflict, StaleRunToken
 from run_agent_core.session.entries import MessageEntry
@@ -229,13 +229,13 @@ async def test_two_hosts_serialize_schema_initialization(tmp_path):
             await one.run(
                 lambda connection: connection.execute("PRAGMA user_version").fetchone()[0]
             )
-            == 1
+            == SCHEMA_VERSION
         )
         assert (
             await two.run(
                 lambda connection: connection.execute("PRAGMA user_version").fetchone()[0]
             )
-            == 1
+            == SCHEMA_VERSION
         )
     finally:
         await asyncio.gather(one.aclose(), two.aclose())

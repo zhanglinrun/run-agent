@@ -93,13 +93,6 @@ class LabelEntry(BaseSessionEntry):
     label: str
 
 
-class LeafEntry(BaseSessionEntry):
-    """The active branch leaf pointer entry."""
-
-    type: Literal["leaf"] = "leaf"
-    entry_id: str | None = None
-
-
 class SessionInfoEntry(BaseSessionEntry):
     """Basic session metadata entry."""
 
@@ -124,7 +117,6 @@ type SessionEntry = Annotated[
     | CompactionEntry
     | BranchSummaryEntry
     | LabelEntry
-    | LeafEntry
     | SessionInfoEntry
     | CustomEntry,
     Field(discriminator="type"),

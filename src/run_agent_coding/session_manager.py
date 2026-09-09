@@ -1,80 +1,42 @@
-"""User-home session management for Run Agent coding sessions."""
+"""Async session metadata and writer ownership over the shared SQLite database."""
 
 from __future__ import annotations
 
-import re
-from contextlib import suppress
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
-from time import time
 from typing import Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict
-
 from run_agent_coding.paths import RunAgentPaths
-
-_MAX_SESSION_ID_BYTES = 128
-_RESERVED_SESSION_IDS = frozenset({"default", "index"})
-_WINDOWS_RESERVED_FILE_STEMS = frozenset(
-    {"aux", "con", "nul", "prn"}
-    | {f"com{index}" for index in range(1, 10)}
-    | {f"lpt{index}" for index in range(1, 10)}
-)
-_SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
+from run_agent_coding.storage.handle import OutcomeCommitter, SqliteSessionHandle
+from run_agent_coding.storage.sessions import SessionRecord, SqliteSessionRepository
+from run_agent_coding.storage.settle import settle
+from run_agent_coding.storage.sqlite import SqliteDatabase
+from run_agent_core.session.contracts import SessionConflict
 
 InferenceProviderMode = Literal["automatic", "fixed"]
 
 
 def normalize_session_name(value: str) -> str:
-    """Return a trimmed, single-line session name or raise ValueError."""
     name = value.strip()
-    if not name:
-        raise ValueError("Session name cannot be empty")
-    if any(char in name for char in "\r\n\t"):
-        raise ValueError("Session name must be a single line.")
+    if not name or any(char in name for char in "\r\n\t"):
+        raise ValueError("Session name must be nonempty and on one line")
     return name
 
 
 def validate_session_id(session_id: str) -> None:
-    """Reject custom session ids that are unsafe as file names."""
-    if not _SESSION_ID_PATTERN.fullmatch(session_id):
-        raise ValueError(
-            "Session id must be non-empty, contain only alphanumeric characters, '-', '_', "
-            "and '.', and start and end with an alphanumeric character"
-        )
-    if len(session_id.encode("utf-8")) > _MAX_SESSION_ID_BYTES:
-        raise ValueError(f"Session id must be at most {_MAX_SESSION_ID_BYTES} bytes")
-    normalized_id = session_id.casefold()
-    if normalized_id in _RESERVED_SESSION_IDS:
-        raise ValueError(f"Session id is reserved: {session_id}")
-    if normalized_id.partition(".")[0] in _WINDOWS_RESERVED_FILE_STEMS:
-        raise ValueError(f"Session id is not a portable file name: {session_id}")
-
-
-class SessionRecordModel(BaseModel):
-    """JSON-serializable coding-session metadata."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    id: str
-    path: str
-    cwd: str
-    model: str
-    provider_name: str | None = None
-    inference_provider: str | None = None
-    inference_provider_mode: InferenceProviderMode | None = None
-    title: str | None = None
-    created_at: float
-    updated_at: float
+    if (
+        not session_id
+        or len(session_id.encode("utf-8")) > 128
+        or any(ord(char) < 32 for char in session_id)
+    ):
+        raise ValueError("Session identity must be nonempty and at most 128 UTF-8 bytes")
 
 
 @dataclass(frozen=True, slots=True)
 class CodingSessionRecord:
-    """Metadata for one durable coding session."""
-
     id: str
-    path: Path
     cwd: Path
     model: str
     title: str | None
@@ -83,301 +45,198 @@ class CodingSessionRecord:
     provider_name: str | None = None
     inference_provider: str | None = None
     inference_provider_mode: InferenceProviderMode = "automatic"
+    project_id: str = ""
+    principal_id: str = "local"
 
     @classmethod
-    def from_model(cls, model: SessionRecordModel) -> CodingSessionRecord:
-        """Convert a JSON model to a record."""
+    def from_record(cls, record: SessionRecord) -> CodingSessionRecord:
+        mode = record.metadata.get("inference_provider_mode", "automatic")
+        if mode not in {"automatic", "fixed"}:
+            raise ValueError("Invalid session inference mode")
         return cls(
-            id=model.id,
-            path=Path(model.path),
-            cwd=Path(model.cwd),
-            model=model.model,
-            title=model.title,
-            created_at=model.created_at,
-            updated_at=model.updated_at,
-            provider_name=model.provider_name,
-            inference_provider=model.inference_provider,
-            inference_provider_mode=(
-                model.inference_provider_mode
-                or ("fixed" if model.inference_provider is not None else "automatic")
-            ),
-        )
-
-    def to_model(self) -> SessionRecordModel:
-        """Convert this record to a JSON model."""
-        return SessionRecordModel(
-            id=self.id,
-            path=str(self.path),
-            cwd=str(self.cwd),
-            model=self.model,
-            title=self.title,
-            created_at=self.created_at,
-            updated_at=self.updated_at,
-            provider_name=self.provider_name,
-            inference_provider=self.inference_provider,
-            inference_provider_mode=self.inference_provider_mode,
+            record.session_id,
+            Path(record.cwd),
+            record.model,
+            record.title,
+            record.created_at,
+            record.updated_at,
+            record.provider_name,
+            record.metadata.get("inference_provider"),
+            mode,
+            record.project_id,
+            record.principal_id,
         )
 
 
 class SessionManager:
-    """Create, index, list, and resume user-home coding sessions."""
-
-    def __init__(self, paths: RunAgentPaths | None = None) -> None:
+    def __init__(
+        self,
+        paths: RunAgentPaths | None = None,
+        *,
+        database: SqliteDatabase | None = None,
+        principal_id: str = "local",
+        owner_id: str | None = None,
+    ) -> None:
         self.paths = paths or RunAgentPaths()
+        self.principal_id = principal_id
+        self.owner_id = owner_id or uuid4().hex
+        self._database = database
+        self._owns_database = database is None
+        self._lock = asyncio.Lock()
+        self._handle_lock = asyncio.Lock()
+        self._handles: dict[str, SqliteSessionHandle] = {}
+        self._closed = False
+        self._close_task: asyncio.Task[None] | None = None
 
-    @property
-    def index_path(self) -> Path:
-        """Return the legacy global session metadata index path."""
-        return self.paths.sessions_dir / "index.jsonl"
+    async def repository(self) -> SqliteSessionRepository:
+        async with self._lock:
+            if self._closed:
+                raise RuntimeError("Session manager is closed")
+            if self._database is None:
+                self._database = await SqliteDatabase.open(self.paths.database_path)
+            return SqliteSessionRepository(self._database)
 
-    def project_index_path(self, cwd: Path) -> Path:
-        """Return the session metadata index path for a project cwd."""
-        return self.paths.project_session_dir(cwd) / "index.jsonl"
-
-    def list_sessions(self, cwd: Path | None = None) -> list[CodingSessionRecord]:
-        """Return indexed sessions, newest updated first.
-
-        When `cwd` is provided, only sessions for that resolved working directory
-        are returned. Without `cwd`, records are aggregated across project
-        indexes and the legacy global index.
-        """
-        records = self._read_project_records(cwd) if cwd is not None else self._read_all_records()
-        return sorted(records, key=lambda record: record.updated_at, reverse=True)
-
-    def get_session(self, session_id: str) -> CodingSessionRecord | None:
-        """Return a session record by id, if present."""
-        for record in self._read_all_records():
-            if record.id == session_id:
-                return record
-        return None
-
-    def latest_session_for_cwd(self, cwd: Path) -> CodingSessionRecord | None:
-        """Return the most recently updated session for a working directory."""
-        records = self.list_sessions(cwd)
-        return records[0] if records else None
-
-    def create_session(
+    async def create_session(
         self,
         *,
         cwd: Path,
         model: str,
         provider_name: str | None = None,
         inference_provider: str | None = None,
-        inference_provider_mode: InferenceProviderMode | None = None,
+        inference_provider_mode: InferenceProviderMode = "automatic",
         title: str | None = None,
         session_id: str | None = None,
+        project_id: str | None = None,
     ) -> CodingSessionRecord:
-        """Create and index a new session record."""
-        record = self.prepare_session(
+        if session_id is not None:
+            validate_session_id(session_id)
+        repository = await self.repository()
+        record = await repository.create_session(
             cwd=cwd,
             model=model,
-            provider_name=provider_name,
-            inference_provider=inference_provider,
-            inference_provider_mode=inference_provider_mode,
-            title=title,
+            principal_id=self.principal_id,
             session_id=session_id,
-        )
-        self.index_session(record)
-        return record
-
-    def create_session_exclusive(
-        self,
-        *,
-        cwd: Path,
-        model: str,
-        provider_name: str | None = None,
-        inference_provider: str | None = None,
-        inference_provider_mode: InferenceProviderMode | None = None,
-        title: str | None = None,
-        session_id: str | None = None,
-    ) -> CodingSessionRecord:
-        """Atomically reserve and index a session transcript without overwriting."""
-        record = self.prepare_session(
-            cwd=cwd,
-            model=model,
+            project_id=project_id,
             provider_name=provider_name,
-            inference_provider=inference_provider,
-            inference_provider_mode=inference_provider_mode,
             title=title,
-            session_id=session_id,
+            metadata={
+                "inference_provider": inference_provider,
+                "inference_provider_mode": inference_provider_mode,
+            },
         )
-        if self.get_session(record.id) is not None:
-            raise RuntimeError(f"Session already exists with id '{record.id}'")
+        return CodingSessionRecord.from_record(record)
+
+    async def get_session(self, session_id: str) -> CodingSessionRecord | None:
+        repository = await self.repository()
         try:
-            with record.path.open("x", encoding="utf-8"):
-                pass
-        except FileExistsError as exc:
-            raise RuntimeError(f"Session already exists with id '{record.id}'") from exc
-        except Exception:
-            with suppress(OSError):
-                record.path.unlink(missing_ok=True)
-            raise
+            record = await repository.get_session(session_id)
+        except KeyError:
+            return None
+        if record.principal_id != self.principal_id:
+            return None
+        return CodingSessionRecord.from_record(record)
+
+    async def list_sessions(self, cwd: Path | None = None) -> list[CodingSessionRecord]:
+        repository = await self.repository()
+        records = await repository.list_sessions(principal_id=self.principal_id, limit=1000)
+        canonical = str(cwd.resolve()) if cwd is not None else None
+        return [
+            CodingSessionRecord.from_record(record)
+            for record in records
+            if canonical is None or record.cwd == canonical
+        ]
+
+    async def open_storage(
+        self, session_id: str, *, committer: OutcomeCommitter | None = None
+    ) -> SqliteSessionHandle:
+        async with self._handle_lock:
+            if self._closed:
+                raise RuntimeError("Session manager is closed")
+            existing = self._handles.get(session_id)
+            if existing is not None and not existing.closed:
+                raise SessionConflict("Session already has an open writer")
+            handle, cancelled = await settle(self._open_storage(session_id, committer=committer))
+            if cancelled:
+                await settle(handle.aclose())
+                raise asyncio.CancelledError
+            return handle
+
+    async def _open_storage(
+        self, session_id: str, *, committer: OutcomeCommitter | None
+    ) -> SqliteSessionHandle:
+        record = await self.get_session(session_id)
+        if record is None:
+            raise ValueError(f"Unknown session: {session_id}")
+        repository = await self.repository()
+        token = await repository.claim(
+            session_id, owner_id=self.owner_id, run_id=f"initial-{uuid4().hex}", ttl_seconds=120
+        )
         try:
-            return self.index_session(record)
-        except Exception:
-            with suppress(Exception):
-                self._remove(record)
-            with suppress(OSError):
-                record.path.unlink(missing_ok=True)
+            branch_id = await repository.database.run(
+                lambda connection: connection.execute(
+                    "SELECT active_branch_id FROM sessions WHERE session_id=?", (session_id,)
+                ).fetchone()[0]
+            )
+        except BaseException:
+            await settle(repository.release(token))
             raise
+        handle = SqliteSessionHandle(repository, token, branch_id, committer=committer)
+        self._handles[session_id] = handle
+        return handle
 
-    def prepare_session(
-        self,
-        *,
-        cwd: Path,
-        model: str,
-        provider_name: str | None = None,
-        inference_provider: str | None = None,
-        inference_provider_mode: InferenceProviderMode | None = None,
-        title: str | None = None,
-        session_id: str | None = None,
-    ) -> CodingSessionRecord:
-        """Return metadata for a session without adding it to the resume index."""
-        now = time()
-        resolved_cwd = cwd.resolve()
-        record_id = uuid4().hex if session_id is None else session_id
-        validate_session_id(record_id)
-        project_session_dir = self.paths.project_session_dir(resolved_cwd)
-        default_session_id = f"default-{project_session_dir.name}"
-        if record_id.casefold() == default_session_id.casefold():
-            raise ValueError(f"Session id is reserved: {record_id}")
-        path = project_session_dir / f"{record_id}.jsonl"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        return CodingSessionRecord(
-            id=record_id,
-            path=path,
-            cwd=resolved_cwd,
-            model=model,
-            provider_name=provider_name,
-            inference_provider=inference_provider,
-            inference_provider_mode=(
-                inference_provider_mode
-                or ("fixed" if inference_provider is not None else "automatic")
-            ),
-            title=title,
-            created_at=now,
-            updated_at=now,
-        )
-
-    def index_session(self, record: CodingSessionRecord) -> CodingSessionRecord:
-        """Add a prepared session record to the resume index."""
-        self._upsert(record)
-        return record
-
-    def get_or_create_default_session(
-        self, *, cwd: Path, model: str, provider_name: str | None = None
-    ) -> CodingSessionRecord:
-        """Return the default project session, creating an index record when needed."""
-        resolved_cwd = cwd.resolve()
-        project_hash = self.paths.project_session_dir(resolved_cwd).name
-        session_id = f"default-{project_hash}"
-        existing = self.get_session(session_id)
-        if existing is not None:
-            return existing
-
-        now = time()
-        path = self.paths.default_session_path(resolved_cwd)
-        record = CodingSessionRecord(
-            id=session_id,
-            path=path,
-            cwd=resolved_cwd,
-            model=model,
-            provider_name=provider_name,
-            title="Default session",
-            created_at=now,
-            updated_at=now,
-        )
-        self._upsert(record)
-        return record
-
-    def touch_session(
+    async def touch_session(
         self,
         session_id: str,
         *,
         model: str | None = None,
         provider_name: str | None = None,
+        title: str | None = None,
         inference_provider: str | None = None,
         inference_provider_mode: InferenceProviderMode | None = None,
         preserve_inference_provider: bool = True,
-        title: str | None = None,
-    ) -> CodingSessionRecord | None:
-        """Update a session's last-used metadata."""
-        existing = self.get_session(session_id)
-        if existing is None:
-            return None
-        updated = CodingSessionRecord(
-            id=existing.id,
-            path=existing.path,
-            cwd=existing.cwd,
-            model=model or existing.model,
-            provider_name=provider_name if provider_name is not None else existing.provider_name,
-            inference_provider=(
-                existing.inference_provider if preserve_inference_provider else inference_provider
-            ),
-            inference_provider_mode=(
-                existing.inference_provider_mode
-                if preserve_inference_provider or inference_provider_mode is None
-                else inference_provider_mode
-            ),
-            title=title if title is not None else existing.title,
-            created_at=existing.created_at,
-            updated_at=time(),
+    ) -> CodingSessionRecord:
+        handle = self._handles.get(session_id)
+        if handle is None:
+            raise SessionConflict("Metadata updates require an owned session writer")
+        repository = await self.repository()
+        record = await repository.get_session(session_id)
+        metadata = dict(record.metadata)
+        if not preserve_inference_provider or inference_provider is not None:
+            metadata["inference_provider"] = inference_provider
+        if inference_provider_mode is not None:
+            metadata["inference_provider_mode"] = inference_provider_mode
+        updated = await repository.update_metadata(
+            handle.token,
+            model=model or record.model,
+            provider_name=provider_name or record.provider_name,
+            title=title,
+            metadata=metadata,
         )
-        self._upsert(updated)
-        return updated
+        return CodingSessionRecord.from_record(updated)
 
-    def _read_index(self, path: Path) -> list[CodingSessionRecord]:
-        if not path.exists():
-            return []
+    async def aclose(self) -> None:
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close())
 
-        records: list[CodingSessionRecord] = []
-        # Split on newlines only: str.splitlines() would also split on characters
-        # like U+2028 that appear unescaped inside JSON string values.
-        for line in path.read_text(encoding="utf-8").split("\n"):
-            stripped = line.strip()
-            if not stripped:
-                continue
-            model = SessionRecordModel.model_validate_json(stripped)
-            records.append(CodingSessionRecord.from_model(model))
-        return records
+        async def wait_close() -> None:
+            assert self._close_task is not None
+            await self._close_task
 
-    def _read_project_records(self, cwd: Path) -> list[CodingSessionRecord]:
-        resolved_cwd = cwd.resolve()
-        records = self._read_index(self.project_index_path(resolved_cwd))
-        records.extend(
-            record for record in self._read_index(self.index_path) if record.cwd == resolved_cwd
-        )
-        return _deduplicate_records(records)
+        _, cancelled = await settle(wait_close())
+        if cancelled:
+            raise asyncio.CancelledError
 
-    def _read_all_records(self) -> list[CodingSessionRecord]:
-        records = self._read_index(self.index_path)
-        for index_path in self.paths.sessions_dir.glob("*/index.jsonl"):
-            records.extend(self._read_index(index_path))
-        return _deduplicate_records(records)
-
-    def _write_index(self, path: Path, records: list[CodingSessionRecord]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        content = "\n".join(record.to_model().model_dump_json() for record in records)
-        if content:
-            content += "\n"
-        path.write_text(content, encoding="utf-8")
-
-    def _upsert(self, record: CodingSessionRecord) -> None:
-        path = self.project_index_path(record.cwd)
-        records = [item for item in self._read_index(path) if item.id != record.id]
-        records.append(record)
-        self._write_index(path, records)
-
-    def _remove(self, record: CodingSessionRecord) -> None:
-        path = self.project_index_path(record.cwd)
-        records = [item for item in self._read_index(path) if item.id != record.id]
-        self._write_index(path, records)
-
-
-def _deduplicate_records(records: list[CodingSessionRecord]) -> list[CodingSessionRecord]:
-    by_id: dict[str, CodingSessionRecord] = {}
-    for record in records:
-        existing = by_id.get(record.id)
-        if existing is None or record.updated_at >= existing.updated_at:
-            by_id[record.id] = record
-    return list(by_id.values())
+    async def _close(self) -> None:
+        async with self._handle_lock:
+            self._closed = True
+            handles = tuple(self._handles.values())
+        try:
+            outcomes = await asyncio.gather(
+                *(handle.aclose() for handle in handles), return_exceptions=True
+            )
+            errors = [item for item in outcomes if isinstance(item, BaseException)]
+            if errors:
+                raise errors[0]
+        finally:
+            if self._owns_database and self._database is not None:
+                await self._database.aclose()

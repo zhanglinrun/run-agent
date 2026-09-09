@@ -18,7 +18,9 @@ from run_agent_coding.storage.sqlite import SqliteDatabase
 from run_agent_core.session.contracts import (
     AppendReceipt,
     BranchHead,
+    CompletionReceipt,
     EntryPage,
+    RunOutcome,
     RunToken,
     SessionConflict,
     StaleRunToken,
@@ -158,6 +160,139 @@ class SqliteSessionRepository:
     async def get_session(self, session_id: str) -> SessionRecord:
         return await self.database.run(lambda connection: self._record(connection, session_id))
 
+    async def update_metadata(
+        self,
+        token: RunToken,
+        *,
+        model: str,
+        provider_name: str | None,
+        title: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> SessionRecord:
+        frozen = canonical_json(metadata) if metadata is not None else None
+
+        def update(connection: sqlite3.Connection) -> SessionRecord:
+            self.assert_token(connection, token)
+            connection.execute(
+                """UPDATE sessions SET model=?, provider_name=?, title=COALESCE(?,title),
+                   metadata_json=COALESCE(?,metadata_json), updated_at=? WHERE session_id=?""",
+                (model, provider_name, title, frozen, self.clock(), token.session_id),
+            )
+            return self._record(connection, token.session_id)
+
+        return await self.database.run(update, write=True)
+
+    async def begin_run(self, token: RunToken, *, branch_id: str, run_id: str) -> RunToken:
+        def begin(connection: sqlite3.Connection) -> RunToken:
+            self.assert_token(connection, token)
+            previous = connection.execute(
+                "SELECT status FROM executions WHERE run_id=?", (token.run_id,)
+            ).fetchone()
+            if previous is not None and previous[0] == "running":
+                raise SessionConflict("The previous run has no committed outcome")
+            self.head_in_transaction(connection, token.session_id, branch_id)
+            new = RunToken(token.session_id, token.owner_id, run_id, token.generation + 1)
+            connection.execute(
+                "UPDATE sessions SET active_run_id=?, generation=? WHERE session_id=?",
+                (run_id, new.generation, token.session_id),
+            )
+            connection.execute(
+                """INSERT INTO executions(run_id,session_id,branch_id,owner_id,
+                   generation,status,started_at)
+                   VALUES (?,?,?,?,?,'running',?)""",
+                (run_id, token.session_id, branch_id, token.owner_id, new.generation, self.clock()),
+            )
+            return new
+
+        return await self.database.run(begin, write=True)
+
+    def complete_in_transaction(
+        self, connection: sqlite3.Connection, outcome: RunOutcome
+    ) -> CompletionReceipt:
+        row = connection.execute(
+            "SELECT * FROM executions WHERE run_id=? AND session_id=?",
+            (outcome.token.run_id, outcome.token.session_id),
+        ).fetchone()
+        if (
+            row is None
+            or row["generation"] != outcome.token.generation
+            or row["branch_id"] != outcome.branch_id
+            or row["owner_id"] != outcome.token.owner_id
+        ):
+            raise SessionConflict("Run attempt does not match its completion")
+        encoded = canonical_json(
+            {
+                "status": outcome.status,
+                "expected_head": outcome.expected_head,
+                "entries": [
+                    entry.model_dump(mode="json", exclude={"seq"}) for entry in outcome.entries
+                ],
+                "error": outcome.error,
+            }
+        )
+        if row["status"] != "running":
+            if row["outcome_json"] != encoded:
+                raise SessionConflict("Run already has a different committed outcome")
+            return CompletionReceipt(
+                outcome.token.run_id,
+                outcome.token.session_id,
+                outcome.branch_id,
+                outcome.status,
+                row["head_id"],
+                row["watermark"],
+            )
+        self.assert_token(connection, outcome.token)
+        receipt = self.append_in_transaction(
+            connection,
+            outcome.entries,
+            token=outcome.token,
+            branch_id=outcome.branch_id,
+            expected_head=outcome.expected_head,
+        )
+        watermark = connection.execute(
+            "SELECT last_seq FROM sessions WHERE session_id=?", (outcome.token.session_id,)
+        ).fetchone()[0]
+        connection.execute(
+            """UPDATE executions SET status=?, finished_at=?, head_id=?, watermark=?,
+               outcome_json=?, error=? WHERE run_id=?""",
+            (
+                outcome.status,
+                self.clock(),
+                receipt.head_id,
+                watermark,
+                encoded,
+                outcome.error,
+                outcome.token.run_id,
+            ),
+        )
+        connection.execute(
+            "UPDATE sessions SET generation=generation+1, active_run_id=? WHERE session_id=?",
+            (f"idle-{outcome.token.run_id}", outcome.token.session_id),
+        )
+        if self.fault is not None:
+            self.fault("outcome_updated")
+        return CompletionReceipt(
+            outcome.token.run_id,
+            outcome.token.session_id,
+            outcome.branch_id,
+            outcome.status,
+            receipt.head_id,
+            watermark,
+        )
+
+    async def complete_run(self, outcome: RunOutcome) -> CompletionReceipt:
+        frozen = RunOutcome(
+            outcome.token,
+            outcome.branch_id,
+            outcome.status,
+            outcome.expected_head,
+            tuple(e.model_copy(deep=True) for e in outcome.entries),
+            outcome.error,
+        )
+        return await self.database.run(
+            lambda connection: self.complete_in_transaction(connection, frozen), write=True
+        )
+
     async def list_sessions(
         self, *, principal_id: str, project_id: str | None = None, limit: int = 100
     ) -> list[SessionRecord]:
@@ -195,6 +330,14 @@ class SqliteSessionRepository:
             now = self.clock()
             if row["owner_active"] and row["owner_expires_at"] > now and not takeover:
                 raise SessionConflict(f"Session already has an active owner: {session_id}")
+            # A vanished writer cannot certify which tool side effects completed.
+            # Preserve its attempt and require explicit user work after recovery.
+            connection.execute(
+                """UPDATE executions SET status='outcome_unknown', finished_at=?,
+                   error='Previous writer ended without a completion receipt'
+                   WHERE session_id=? AND status='running'""",
+                (now, session_id),
+            )
             generation = row["generation"] + 1
             connection.execute(
                 """UPDATE sessions SET generation=?, owner_id=?, active_run_id=?,

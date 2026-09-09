@@ -309,7 +309,7 @@ class ExtensionRuntime:
         # belongs to the outgoing generation. Tear it down while that generation
         # is still active so host cleanup triggered by component disposal can
         # safely use its API; only then make every captured API/context stale.
-        self.clear_ui_components()
+        self.clear_ui_status()
         self._provider_registry.retire()
         self._retired_provider_registries.append(self._provider_registry)
         self._generation.invalidate()
@@ -376,6 +376,7 @@ class ExtensionRuntime:
             )
 
     def _remove_registrations(self, source_id: str) -> None:
+        self._ui.clear_status(source_id)
         self._tools = {
             name: registration
             for name, registration in self._tools.items()
@@ -719,15 +720,9 @@ class ExtensionRuntime:
         """Install the frontend UI bridge (TUI, print-mode fallback, or test)."""
         self._ui = ui
 
-    def clear_ui_components(self) -> None:
-        """Ask the host frontend to tear down all extension-owned UI.
-
-        Invoked on `/reload` (via ``reset_for_reload``) and by session
-        replacement flows (resume/new) before ``session_start`` fires, so
-        widgets and key interceptors never outlive the world that mounted
-        them while handlers keep the chance to re-mount.
-        """
-        self._ui.clear_components()
+    def clear_ui_status(self) -> None:
+        """Clear outgoing source status before a reload or session replacement."""
+        self._ui.clear_status()
 
     def set_turn_requested_callback(self, callback: TurnRequestedCallback | None) -> None:
         """Install the host callback used to deliver messages while idle.
@@ -1195,7 +1190,7 @@ class ExtensionRuntime:
         return ExtensionContext(
             self,
             api._generation,
-            extension_name=self._extension_display_name(source_id),
+            source_id=source_id,
         )
 
     def _api_for(self, source_id: str) -> ExtensionAPI:

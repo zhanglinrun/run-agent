@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 import string
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
-from contextlib import suppress
+from contextlib import AsyncExitStack, suppress
+from contextvars import ContextVar, Token
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from run_agent_ai.model_limits import ModelLimitsProvider, RuntimeModelLimits
 from run_agent_coding.branch_summary import summarize_branch_messages_with_model
@@ -100,11 +101,7 @@ from run_agent_coding.resources import (
     resource_paths_with_cwd,
     resource_paths_with_project_trust,
 )
-from run_agent_coding.session_export import (
-    default_session_export_artifact_path,
-    export_session_artifact,
-    normalize_export_format,
-)
+from run_agent_coding.session_export import export_session_html
 from run_agent_coding.session_manager import (
     InferenceProviderMode,
     SessionManager,
@@ -112,6 +109,7 @@ from run_agent_coding.session_manager import (
 )
 from run_agent_coding.session_stats import SessionStats, calculate_session_stats
 from run_agent_coding.skills import Skill, expand_skill_command, load_skills_with_diagnostics
+from run_agent_coding.storage.settle import settle
 from run_agent_coding.system_prompt import (
     BuildSystemPromptOptions,
     ProjectContextFile,
@@ -142,15 +140,21 @@ from run_agent_core.session import (
     BranchSummaryEntry,
     CompactionEntry,
     CustomEntry,
-    JsonlSessionStorage,
     LabelEntry,
-    LeafEntry,
     MessageEntry,
     ModelChangeEntry,
     SessionInfoEntry,
     SessionState,
     SessionStorage,
     ThinkingLevelChangeEntry,
+    load_session_entries,
+)
+from run_agent_core.session.contracts import (
+    CompletionReceipt,
+    RunOutcome,
+    RunStatus,
+    RunToken,
+    StaleRunToken,
 )
 from run_agent_core.session.entries import SessionEntry
 from run_agent_core.session.tree import SessionTreeError, path_to_entry
@@ -163,7 +167,7 @@ SESSION_NAME_SYSTEM_PROMPT = (
     "You write concise coding-agent session names. Reply with only a short title, "
     "maximum four words, no quotes, no punctuation-only output."
 )
-TREE_RUNNING_MESSAGE = "Run Agent is still working. Press Escape to interrupt before using /tree."
+TREE_RUNNING_MESSAGE = "Run Agent is still working. Press Ctrl+C to interrupt before using /tree."
 
 
 async def _await_cleanup_completion[CleanupResult](
@@ -306,7 +310,6 @@ class _PendingMessageWrite:
 
     message: AgentMessage
     message_entry: MessageEntry
-    leaf_entry: LeafEntry
 
 
 @dataclass(frozen=True, slots=True)
@@ -347,7 +350,6 @@ class CodingSessionConfig:
     when the provider configuration is known, and is never persisted as a new
     remembered default.
     """
-    index_on_first_persist: bool = False
     shell_command_prefix: str | None = None
     skills_enabled: bool = True
     """Whether skill discovery is enabled for this session.
@@ -408,6 +410,16 @@ class CodingSession:
     ) -> None:
         self._config = config
         self._state = state
+        self._entries: dict[str, SessionEntry] = {entry.id: entry for entry in state.entries}
+        self._session_title: str | None = None
+        self._write_context: ContextVar[RunToken | None] = ContextVar(
+            "session_writer", default=None
+        )
+        self._completion_entries: list[SessionEntry] = []
+        self._completion_expected_head: str | None = None
+        self._last_completion: CompletionReceipt | None = None
+        self._run_status: RunStatus = "succeeded"
+        self._run_error: str | None = None
         self._harness = harness
         self._extension_runtime = extension_runtime or ExtensionRuntime()
         self._provider_registry = self._extension_runtime.provider_registry
@@ -552,8 +564,25 @@ class CodingSession:
 
     @classmethod
     async def load(cls, config: CodingSessionConfig) -> CodingSession:
+        """Acquire a bound session; a failed open always releases its writer."""
+        resources = AsyncExitStack()
+        resources.push_async_callback(config.storage.aclose)
+        try:
+            session = await cls._load(config, resources)
+        except BaseException:
+            await settle(resources.aclose())
+            raise
+        resources.pop_all()
+        return session
+
+    @classmethod
+    async def _load(cls, config: CodingSessionConfig, ownership: AsyncExitStack) -> CodingSession:
         """Load a coding session from append-only storage."""
-        entries = await config.storage.read_all()
+        if config.owns_initial_provider and config.provider is not None:
+            ownership.push_async_callback(cast(ClosableModelProvider, config.provider).aclose)
+        entries = await load_session_entries(config.storage)
+        head = await config.storage.get_head()
+        config = replace(config, session_id=config.storage.session_id)
         pending_initial_entries: tuple[SessionEntry, ...] = ()
         if not entries:
             info = SessionInfoEntry(cwd=str(config.cwd))
@@ -569,15 +598,9 @@ class CodingSession:
             )
             entries = [info, model, thinking]
             pending_initial_entries = (info, model, thinking)
-        else:
-            entries = _detach_missing_parents(entries)
 
-        linear_state = SessionState.from_entries(entries)
-        latest_leaf = _latest_leaf_entry(entries)
-        state = (
-            SessionState.from_entries(entries, leaf_id=latest_leaf.entry_id)
-            if latest_leaf is not None
-            else linear_state
+        state = SessionState.from_entries(
+            entries, leaf_id=(entries[-1].id if pending_initial_entries else head.entry_id)
         )
         unfiltered_resource_paths = resource_paths_with_cwd(config.resource_paths, config.cwd)
 
@@ -603,6 +626,7 @@ class CodingSession:
                 config.provider_settings.providers if config.provider_settings else ()
             ),
         )
+        ownership.push_async_callback(extension_runtime.aclose)
         extension_runtime.load(
             unfiltered_resource_paths,
             extra_paths=config.extension_paths,
@@ -673,6 +697,7 @@ class CodingSession:
                 provider_registry=extension_runtime.provider_registry,
                 credential_store=credential_store,
             )
+            ownership.push_async_callback(prepared.provider.aclose)
             config = replace(
                 config,
                 provider=prepared.provider,
@@ -693,6 +718,8 @@ class CodingSession:
                     else entry
                     for entry in pending_initial_entries
                 )
+                entries = list(pending_initial_entries)
+                state = SessionState.from_entries(entries, leaf_id=entries[-1].id)
         assert config.provider is not None
         active_model = _runtime_model_for_state(config, state)
         image_support = ImageSupportState(
@@ -763,10 +790,14 @@ class CodingSession:
             project_trust_resolution=trust_resolution,
             base_tools=base_tools,
         )
+        session._entries = {entry.id: entry for entry in entries}
         if config.owns_initial_provider:
-            # Ownership starts before any repair/discovery work so every
-            # failure path has exactly one closer for the candidate.
-            session._owned_providers.append(config.provider)  # type: ignore[arg-type]
+            session._owned_providers.append(cast(ClosableModelProvider, config.provider))
+        ownership.pop_all()
+        ownership.push_async_callback(_finish_aborted_session_close, session)
+        if config.session_manager is not None:
+            record = await config.session_manager.get_session(config.storage.session_id)
+            session._session_title = record.title if record is not None else None
         await session._persist_active_tool_history_repairs()
         try:
             session._apply_thinking_level_override()
@@ -784,9 +815,7 @@ class CodingSession:
             session._session_start_pending = True
             session._project_trust_commit_pending = not trust_resolution.cancelled
         except BaseException:
-            # Once constructed, this session explicitly owns every candidate
-            # provider until load returns it to the caller.
-            await _finish_aborted_session_close(session)
+            # The load ownership stack closes the fully constructed candidate.
             raise
         return session
 
@@ -956,7 +985,7 @@ class CodingSession:
         replace_instructions: bool = False,
     ) -> SessionTreeBranchResult:
         """Move the active leaf to a previous entry, preserving existing history."""
-        if self._harness.is_running:
+        if self.is_running:
             raise RuntimeError(TREE_RUNNING_MESSAGE)
         await self._flush_pending_message_writes(context=self._diagnostic_context())
         entries = await self._read_session_entries()
@@ -987,14 +1016,17 @@ class CodingSession:
                     branch_root_id=entry_id,
                     summary=summary,
                 )
-                await self._append_session_entry(summary_entry)
+                await self.storage.fork(
+                    entry_id, token=self.storage.token, entries=(summary_entry,)
+                )
+                await self._reload_entry_cache()
                 target_id = summary_entry.id
         elif selected_entry.type == "message" and isinstance(selected_entry.message, UserMessage):
             target_id = selected_entry.parent_id
             input_prefill = selected_entry.message.text
 
-        leaf = LeafEntry(parent_id=target_id, entry_id=target_id)
-        await self._append_session_entry(leaf)
+        if summary_entry is None:
+            await self.storage.fork(target_id, token=self.storage.token)
         self._last_parent_id = target_id
 
         await self._refresh_persisted_state(leaf_id=target_id)
@@ -1065,31 +1097,14 @@ class CodingSession:
         """Return the backing session storage."""
         return self._config.storage
 
-    async def export(
-        self,
-        destination: Path | None = None,
-        *,
-        format: str | None = None,
-    ) -> Path:
-        """Export the current session to a user-facing artifact."""
-        entries = await self._read_session_entries()
-        session_path = _storage_path(self._config.storage)
-        export_format = normalize_export_format(
-            format or (destination.suffix.removeprefix(".") if destination else "html")
-        )
-        output_path = _resolve_export_destination(
-            destination,
-            cwd=self.cwd,
-            session_path=session_path,
-            format=export_format,
-        )
-        return export_session_artifact(
-            entries,
-            output_path,
-            title=_session_export_title(self),
-            source=str(session_path) if session_path is not None else self.session_id,
-            format=export_format,
-            system_prompt=self.system_prompt,
+    async def export(self, destination: Path | None = None, *, format: str | None = None) -> Path:
+        if format not in {None, "html"}:
+            raise ValueError("Session reports use HTML; use a database backup for recovery")
+        output = destination or self.cwd / f"session-{self.session_id}.html"
+        return export_session_html(
+            await self._read_session_entries(),
+            output,
+            title=self.session_title or self.session_id or "Session",
         )
 
     @property
@@ -1322,8 +1337,6 @@ class CodingSession:
         entry = CustomEntry(parent_id=self._last_parent_id, namespace=namespace, data=data)
         await self._append_session_entry(entry)
         self._last_parent_id = entry.id
-        leaf = LeafEntry(parent_id=entry.id, entry_id=entry.id)
-        await self._append_session_entry(leaf)
         await self._refresh_persisted_state(leaf_id=entry.id)
 
     @property
@@ -1333,13 +1346,7 @@ class CodingSession:
 
     @property
     def session_title(self) -> str | None:
-        """Return this session's indexed human-friendly title, if named."""
-        if self._config.session_id is None or self._config.session_manager is None:
-            return None
-        record = self._config.session_manager.get_session(self._config.session_id)
-        if record is None:
-            return None
-        return record.title
+        return self._session_title
 
     @property
     def session_name(self) -> str | None:
@@ -1434,15 +1441,6 @@ class CodingSession:
         self._refresh_runtime_provider()
         self._sync_image_support()
         self._persist_default_model_choice()
-        if self._config.session_id is not None and self._config.session_manager is not None:
-            self._config.session_manager.touch_session(
-                self._config.session_id,
-                model=model,
-                provider_name=self.provider_name,
-                inference_provider=self._inference_provider,
-                inference_provider_mode=self._inference_provider_mode,
-                preserve_inference_provider=False,
-            )
 
     async def apply_startup_model_override(self, model: str) -> None:
         """Activate and persist an explicit startup model before the next turn."""
@@ -1463,8 +1461,7 @@ class CodingSession:
             model=model,
             provider=self.provider_name,
         )
-        leaf = LeafEntry(parent_id=entry.id, entry_id=entry.id)
-        await self._append_session_batch((entry, leaf))
+        await self._append_session_batch((entry,))
         self._last_parent_id = entry.id
         await self._refresh_persisted_state(leaf_id=entry.id)
 
@@ -1554,8 +1551,7 @@ class CodingSession:
                 model=choice.model,
                 provider=choice.provider_name,
             )
-            leaf = LeafEntry(parent_id=entry.id, entry_id=entry.id)
-            await self._append_session_batch((entry, leaf))
+            await self._append_session_batch((entry,))
         except BaseException:
             if candidate is not None:
                 await candidate.aclose()
@@ -1617,15 +1613,6 @@ class CodingSession:
             inference_provider=normalized,
         )
         self._owned_providers.append(provider)
-        if self._config.session_manager is not None and self._config.session_id is not None:
-            self._config.session_manager.touch_session(
-                self._config.session_id,
-                model=self.model,
-                provider_name=self.provider_name,
-                inference_provider=normalized,
-                inference_provider_mode=mode,
-                preserve_inference_provider=False,
-            )
         self._inference_provider = normalized
         self._inference_provider_mode = mode
         self._config = replace(
@@ -1743,15 +1730,6 @@ class CodingSession:
         self._sync_image_support()
         if persist_default:
             self._persist_default_model_choice()
-        if self._config.session_id is not None and self._config.session_manager is not None:
-            self._config.session_manager.touch_session(
-                self._config.session_id,
-                model=model,
-                provider_name=self.provider_name,
-                inference_provider=self._inference_provider,
-                inference_provider_mode=self._inference_provider_mode,
-                preserve_inference_provider=False,
-            )
 
     async def set_thinking_level(self, level: str) -> str:
         """Persist and activate a thinking mode for future turns."""
@@ -1781,8 +1759,6 @@ class CodingSession:
             thinking_level=normalized,
         )
         await self._append_session_entry(entry)
-        leaf = LeafEntry(parent_id=entry.id, entry_id=entry.id)
-        await self._append_session_entry(leaf)
         self._last_parent_id = entry.id
 
         self._persist_thinking_level_choice()
@@ -1914,15 +1890,6 @@ class CodingSession:
         # Track staged providers immediately so a later index-write failure does
         # not leak a provider-owned client. The active runtime remains unchanged.
         self._owned_providers.append(provider)
-        if self._config.session_manager is not None and self._config.session_id is not None:
-            self._config.session_manager.touch_session(
-                self._config.session_id,
-                model=self.model,
-                provider_name=self.provider_name,
-                inference_provider=route,
-                inference_provider_mode="automatic",
-                preserve_inference_provider=False,
-            )
         self._inference_provider = route
         self._config = replace(
             self._config,
@@ -1954,15 +1921,6 @@ class CodingSession:
             raise ProviderConfigError("Hugging Face failover requires a pinned route")
         provider, provider_config = self._build_runtime_provider(inference_provider=None)
         self._owned_providers.append(provider)
-        if self._config.session_manager is not None and self._config.session_id is not None:
-            self._config.session_manager.touch_session(
-                self._config.session_id,
-                model=self.model,
-                provider_name=self.provider_name,
-                inference_provider=None,
-                inference_provider_mode="automatic",
-                preserve_inference_provider=False,
-            )
         self._inference_provider = None
         self._config = replace(
             self._config,
@@ -2255,7 +2213,7 @@ class CodingSession:
         # cancellation leaves that prior snapshot/runtime/cache untouched.
         old_runtime = self._extension_runtime
         await old_runtime.emit_session_shutdown("reload")
-        old_runtime.clear_ui_components()
+        old_runtime.clear_ui_status()
         staged_runtime.set_ui_bridge(previous_ui)
         staged_runtime.bind(self)
         await staged_runtime.emit_session_start("reload")
@@ -2347,7 +2305,9 @@ class CodingSession:
         manager = self._config.session_manager
         if manager is None:
             raise ValueError("Session manager is not available")
-        record = manager.get_session(session_id)
+        if session_id == self.session_id:
+            return f"Already in session: {session_id}"
+        record = await manager.get_session(session_id)
         if record is None:
             raise ValueError(f"Unknown session: {session_id}")
 
@@ -2395,7 +2355,7 @@ class CodingSession:
                 provider=None if dynamic_resume else self._harness.config.provider,
                 model=model,
                 cwd=record.cwd,
-                storage=jsonl_session_storage(record.path),
+                storage=await manager.open_storage(record.id),
                 system=self._config.system,
                 custom_system_prompt=self._config.custom_system_prompt,
                 append_system_prompt=self._config.append_system_prompt,
@@ -2448,7 +2408,7 @@ class CodingSession:
     async def set_session_name(self, name: str) -> str:
         """Persist a session name and notify extensions after it changes."""
         normalized = normalize_session_name(name)
-        persisted = self._persist_session_name(
+        persisted = await self._persist_session_name(
             normalized,
             only_if_unnamed=False,
             index_if_missing=True,
@@ -2458,40 +2418,22 @@ class CodingSession:
         await self._extension_runtime.emit_event(SessionInfoChangedEvent(name=persisted))
         return persisted
 
-    def _persist_session_name(
-        self,
-        name: str,
-        *,
-        only_if_unnamed: bool,
-        index_if_missing: bool,
+    async def _persist_session_name(
+        self, name: str, *, only_if_unnamed: bool, index_if_missing: bool
     ) -> str | None:
-        """Persist and return a changed name; return None for a no-op."""
         normalized = normalize_session_name(name)
+        if (only_if_unnamed and self._session_title) or self._session_title == normalized:
+            return None
         manager = self._config.session_manager
-        session_id = self._config.session_id
-        if manager is None or session_id is None:
-            raise ValueError("Session manager is not available")
-        record = manager.get_session(session_id)
-        if record is None and index_if_missing:
-            self.ensure_session_indexed()
-            record = manager.get_session(session_id)
-        if record is None:
-            return None
-        if only_if_unnamed and record.title:
-            return None
-        if record.title == normalized:
-            return None
-        updated = manager.touch_session(
-            session_id,
-            model=self.model,
-            provider_name=self.provider_name,
-            title=normalized,
-        )
-        if updated is None:
-            if index_if_missing:
-                raise ValueError(f"Unknown session: {session_id}")
-            return None
-        return updated.title or normalized
+        if manager is not None and self.session_id is not None:
+            await manager.touch_session(
+                self.session_id,
+                model=self.model,
+                provider_name=self.provider_name,
+                title=normalized,
+            )
+        self._session_title = normalized
+        return normalized
 
     async def new_session(self) -> str:
         """Replace this session's active state with a pending unindexed session."""
@@ -2540,7 +2482,7 @@ class CodingSession:
             else _configured_inference_provider_mode(runtime_provider_config, model)
         )
         record = (
-            manager.prepare_session(
+            await manager.create_session(
                 cwd=self.cwd,
                 model=model,
                 provider_name=provider_name,
@@ -2548,7 +2490,7 @@ class CodingSession:
                 inference_provider_mode=inference_provider_mode,
             )
             if inference_provider is not None
-            else manager.prepare_session(
+            else await manager.create_session(
                 cwd=self.cwd,
                 model=model,
                 provider_name=provider_name,
@@ -2560,7 +2502,7 @@ class CodingSession:
                 provider=(None if dynamic_provider is not None else self._harness.config.provider),
                 model=record.model or model,
                 cwd=record.cwd,
-                storage=jsonl_session_storage(record.path),
+                storage=await manager.open_storage(record.id),
                 session_id=record.id,
                 provider_name=provider_name,
                 inference_provider=inference_provider,
@@ -2574,7 +2516,6 @@ class CodingSession:
                 owns_initial_provider=dynamic_provider is not None,
                 defer_authoritative_writes=dynamic_provider is not None,
                 thinking_level=thinking_level,
-                index_on_first_persist=True,
                 extension_runtime=self._extension_runtime,
             )
         )
@@ -2595,6 +2536,7 @@ class CodingSession:
         replacement instance.
         """
         old_runtime = self._extension_runtime
+        old_storage = self.storage
         try:
             if (
                 replacement.project_trust_resolution is not None
@@ -2610,7 +2552,7 @@ class CodingSession:
             # The replacement remains the explicit owner of its providers
             # through every cancellable/erroring pre-publication seam.
             await old_runtime.emit_session_shutdown(reason)
-            old_runtime.clear_ui_components()
+            old_runtime.clear_ui_status()
             await replacement._extension_runtime.emit_session_start(reason)
             replacement._commit_project_trust_resolution()
             replacement._session_start_pending = False
@@ -2623,6 +2565,9 @@ class CodingSession:
         old_runtime.retire()
         self._config = replacement._config
         self._state = replacement._state
+        self._entries = replacement._entries
+        self._session_title = replacement._session_title
+        self._completion_entries = replacement._completion_entries
         self._harness = replacement._harness
         # Detach the replacement's persistence listener so writes advance
         # this session's parent pointers, not the discarded replacement's.
@@ -2677,6 +2622,7 @@ class CodingSession:
         # shielded owner and contain cancellation rather than reporting that
         # the requested destination failed to replace the source session.
         await _finish_adopted_runtime_close(old_runtime)
+        await old_storage.aclose()
 
     async def compact_detailed(self, instructions: str | None = None) -> ManualCompactionResult:
         """Compact older context while preserving a real recent-entry boundary."""
@@ -2758,7 +2704,7 @@ class CodingSession:
         # Final close has no successor sharing the UI bridge. Remove any
         # source-owned widgets/interceptors before invalidating the API.
         try:
-            self._extension_runtime.clear_ui_components()
+            self._extension_runtime.clear_ui_status()
         except BaseException as exc:
             if error is None:
                 error = exc
@@ -2782,6 +2728,11 @@ class CodingSession:
                 if error is None:
                     error = exc
 
+        try:
+            await self.storage.aclose()
+        except BaseException as exc:
+            if error is None:
+                error = exc
         if error is not None:
             raise error
 
@@ -2794,22 +2745,6 @@ class CodingSession:
         if expand_prompt_template_command(text, self._prompt_templates) is not None:
             return CommandResult(handled=False)
         return self._command_registry.execute(self, text)
-
-    def ensure_session_indexed(self) -> None:
-        """Persist pending session metadata and add this session to the resume index."""
-        if self._config.session_id is None or self._config.session_manager is None:
-            return
-        if self._config.session_manager.get_session(self._config.session_id) is None:
-            self._config.session_manager.create_session(
-                cwd=self.cwd,
-                model=self.model,
-                provider_name=self.provider_name,
-                inference_provider=self._inference_provider,
-                inference_provider_mode=self._inference_provider_mode,
-                session_id=self._config.session_id,
-            )
-        self._config = replace(self._config, index_on_first_persist=False)
-        self._ensure_session_file_initialized()
 
     def expand_prompt_text(self, text: str) -> str:
         """Expand prompt text using loaded markdown resources."""
@@ -2915,7 +2850,13 @@ class CodingSession:
                 "CodingSession is already running; pass streaming_behavior to queue a message."
             )
 
+        if self._completion_entries:
+            raise RuntimeError("Previous run completion must be reconciled before continuing")
         self._run_active = True
+        self._run_status = "succeeded"
+        self._run_error = None
+        write_context_token: Token[RunToken | None] | None = None
+        run_id = new_agent_call_run_id()
         # id() values can be reused once earlier message objects are freed.
         self._ended_message_ids.clear()
         self._persisted_message_ids.clear()
@@ -2925,6 +2866,8 @@ class CodingSession:
         overflow_message: AssistantMessage | None = None
         route_failure_message: AssistantMessage | None = None
         try:
+            token = await self.storage.begin_run(run_id)
+            write_context_token = self._write_context.set(token)
             await self._flush_pending_message_writes(context=context)
             self._refresh_runtime_inputs()
             await self._refresh_runtime_model_limits()
@@ -3053,7 +2996,13 @@ class CodingSession:
                     yield failover_event
             else:
                 await self._try_auto_compact(context=context, phase="auto_compact_after_prompt")
-        except Exception as exc:
+        except BaseException as exc:
+            self._run_status = (
+                "cancelled"
+                if isinstance(exc, (asyncio.CancelledError, GeneratorExit))
+                else "failed"
+            )
+            self._run_error = type(exc).__name__
             self._last_diagnostic_log_path = self._diagnostic_logger.log_exception(
                 context=context,
                 phase="agent_loop",
@@ -3062,12 +3011,15 @@ class CodingSession:
             raise
         finally:
             try:
-                await self._reconcile_run_persistence(events, context=context)
+                if self.storage.token.run_id == run_id:
+                    if write_context_token is None:
+                        write_context_token = self._write_context.set(self.storage.token)
+                    settled_event, _ = await settle(self._finish_run(events, context=context))
             finally:
                 self._reset_run_prompt()
+                if write_context_token is not None:
+                    self._write_context.reset(write_context_token)
                 self._run_active = False
-                if events is not None:
-                    settled_event = await self._dispatch_agent_settled()
         if settled_event is not None:
             yield settled_event
 
@@ -3075,7 +3027,13 @@ class CodingSession:
         """Continue the agent from restored state and persist new messages."""
         self._require_idle("continue")
         context = self._diagnostic_context()
+        if self._completion_entries:
+            raise RuntimeError("Previous run completion must be reconciled before continuing")
         self._run_active = True
+        self._run_status = "succeeded"
+        self._run_error = None
+        write_context_token: Token[RunToken | None] | None = None
+        run_id = new_agent_call_run_id()
         # id() values can be reused once earlier message objects are freed.
         self._ended_message_ids.clear()
         self._persisted_message_ids.clear()
@@ -3083,6 +3041,8 @@ class CodingSession:
         settled_event: AgentSettledEvent | None = None
         route_failure_message: AssistantMessage | None = None
         try:
+            token = await self.storage.begin_run(run_id)
+            write_context_token = self._write_context.set(token)
             await self._flush_pending_message_writes(context=context)
             self._refresh_runtime_inputs()
             await self._refresh_runtime_model_limits()
@@ -3114,7 +3074,13 @@ class CodingSession:
                 async for failover_event in self._run_huggingface_route_failover(context=context):
                     yield failover_event
             await self._try_auto_compact(context=context, phase="auto_compact_after_continue")
-        except Exception as exc:
+        except BaseException as exc:
+            self._run_status = (
+                "cancelled"
+                if isinstance(exc, (asyncio.CancelledError, GeneratorExit))
+                else "failed"
+            )
+            self._run_error = type(exc).__name__
             self._last_diagnostic_log_path = self._diagnostic_logger.log_exception(
                 context=context,
                 phase="agent_loop",
@@ -3123,18 +3089,85 @@ class CodingSession:
             raise
         finally:
             try:
-                await self._reconcile_run_persistence(events, context=context)
+                if self.storage.token.run_id == run_id:
+                    if write_context_token is None:
+                        write_context_token = self._write_context.set(self.storage.token)
+                    settled_event, _ = await settle(self._finish_run(events, context=context))
             finally:
                 self._reset_run_prompt()
+                if write_context_token is not None:
+                    self._write_context.reset(write_context_token)
                 self._run_active = False
-                if events is not None:
-                    settled_event = await self._dispatch_agent_settled()
         if settled_event is not None:
             yield settled_event
 
+    async def _finish_run(
+        self, events: AsyncIterator[AgentEvent] | None, *, context: AgentCallDiagnosticContext
+    ) -> AgentSettledEvent:
+        await self._reconcile_run_persistence(events, context=context)
+        return await self._dispatch_agent_settled()
+
     async def _dispatch_agent_settled(self) -> AgentSettledEvent:
-        """Dispatch and return the final session event for one started run."""
-        event = AgentSettledEvent()
+        if self._pending_message_writes:
+            raise RuntimeError("Cannot commit a run with unpersisted intermediate messages")
+        token = self._write_context.get()
+        if token is None:
+            raise RuntimeError("Run has no write qualification")
+        status = self._run_status
+        final = next(
+            (
+                entry.message
+                for entry in reversed(self._completion_entries)
+                if isinstance(entry, MessageEntry) and isinstance(entry.message, AssistantMessage)
+            ),
+            None,
+        )
+        if (
+            status == "succeeded"
+            and final is not None
+            and final.stop_reason in {"error", "aborted"}
+        ):
+            status = "cancelled" if final.stop_reason == "aborted" else "failed"
+        head = await self.storage.get_head()
+        outcome = RunOutcome(
+            token,
+            self.storage.branch_id,
+            status,
+            self._completion_expected_head if self._completion_entries else head.entry_id,
+            tuple(self._completion_entries),
+            self._run_error or (final.error_message if final is not None else None),
+        )
+        if self._config.session_manager is not None and self.session_id is not None:
+            await self._config.session_manager.touch_session(
+                self.session_id,
+                model=self.model,
+                provider_name=self.provider_name,
+                inference_provider=self.inference_provider,
+                inference_provider_mode=self.inference_provider_mode,
+                preserve_inference_provider=False,
+            )
+        receipt = await self.storage.complete_run(outcome)
+        for entry, seq in zip(
+            self._completion_entries,
+            range(receipt.watermark - len(self._completion_entries) + 1, receipt.watermark + 1),
+            strict=True,
+        ):
+            self._entries[entry.id] = entry.model_copy(deep=True, update={"seq": seq})
+        self._completion_entries.clear()
+        self._completion_expected_head = None
+        self._last_completion = receipt
+        await self._refresh_persisted_state(leaf_id=receipt.head_id)
+        # Settled hooks receive idle authority. Tasks spawned during the run keep
+        # their old ContextVar token, which the completion transaction retired.
+        self._write_context.set(None)
+        event = AgentSettledEvent(
+            run_id=receipt.run_id,
+            session_id=receipt.session_id,
+            branch_id=receipt.branch_id,
+            status=receipt.status,
+            head_id=receipt.head_id,
+            watermark=receipt.watermark,
+        )
         await self._extension_runtime.emit_event(event)
         return event
 
@@ -3211,15 +3244,16 @@ class CodingSession:
             )
             staged.append(copied_entry)
             parent_id = copied_entry.id
-        staged.append(LeafEntry(parent_id=parent_id, entry_id=parent_id))
 
         if self._config.defer_authoritative_writes:
             self._prepared_entries.extend(staged)
+            self._entries.update((entry.id, entry) for entry in staged)
             self._last_parent_id = parent_id
             replay_entries = [*self._state.entries, *staged]
             self._state = SessionState.from_entries(replay_entries, leaf_id=parent_id)
         else:
-            await self._append_session_batch(staged)
+            await self.storage.fork(staged[0].parent_id, token=self.storage.token, entries=staged)
+            await self._reload_entry_cache()
             self._last_parent_id = parent_id
             await self._refresh_persisted_state(leaf_id=parent_id)
         self._harness.replace_messages(self._state.messages)
@@ -3246,44 +3280,45 @@ class CodingSession:
             await self._persist_message(event.message)
 
     async def _persist_message(self, message: AgentMessage) -> None:
-        """Persist one completed message at the active branch tip, idempotently.
-
-        Message lifecycle events are the durable-message boundary. Stable entry
-        ids let a retry finish a partially completed message/leaf pair without
-        appending the message a second time.
-
-        Only a retry reads durable ids: a first attempt mints ids that cannot
-        already be on disk, so the extra full-file read is skipped on the hot
-        path.
-        """
+        self._writer_token()
         message_id = id(message)
+        if message_id in self._persisted_message_ids:
+            return
+        # A subsequent message proves that the previous final-looking reply was intermediate.
+        if self._completion_entries:
+            pending_entries = tuple(self._completion_entries)
+            receipt = await self.storage.append_entries(
+                pending_entries,
+                expected_head=self._completion_expected_head,
+                token=self._writer_token(),
+            )
+            for entry, seq in zip(pending_entries, receipt.sequences, strict=True):
+                self._entries[entry.id] = entry.model_copy(deep=True, update={"seq": seq})
+            self._completion_entries.clear()
         pending = self._pending_message_writes.get(message_id)
-        is_retry = pending is not None
         if pending is None:
-            entry = MessageEntry(parent_id=self._last_parent_id, message=message)
             pending = _PendingMessageWrite(
-                message=message,
-                message_entry=entry,
-                leaf_entry=LeafEntry(parent_id=entry.id, entry_id=entry.id),
+                message, MessageEntry(parent_id=self._last_parent_id, message=message)
             )
             self._pending_message_writes[message_id] = pending
-
-        durable_ids = (
-            {entry.id for entry in await self._read_session_entries()} if is_retry else frozenset()
-        )
-        missing: list[SessionEntry] = []
-        if pending.message_entry.id not in durable_ids:
-            missing.append(pending.message_entry)
-        if pending.leaf_entry.id not in durable_ids:
-            missing.append(pending.leaf_entry)
-        if missing:
-            await self._append_session_batch(missing)
-        self._last_parent_id = pending.message_entry.id
-
-        await self._refresh_persisted_state(leaf_id=self._last_parent_id)
+        entry = pending.message_entry
+        await self._ensure_session_initialized()
+        if self._run_active and isinstance(message, AssistantMessage) and not message.tool_calls:
+            self._completion_expected_head = entry.parent_id
+            self._completion_entries.append(entry.model_copy(deep=True))
+            self._entries[entry.id] = entry
+        else:
+            await self._append_session_batch((entry,))
+        self._last_parent_id = entry.id
+        await self._refresh_persisted_state(leaf_id=entry.id)
         self._persisted_message_ids.add(message_id)
         self._pending_message_writes.pop(message_id, None)
-        self._invalidate_context_usage_cache()
+
+    def _writer_token(self) -> RunToken:
+        token = self._write_context.get() or self.storage.token
+        if token != self.storage.token:
+            raise StaleRunToken("This callback belongs to an expired run")
+        return token
 
     async def _reconcile_run_persistence(
         self,
@@ -3314,6 +3349,7 @@ class CodingSession:
                     await self._persist_message(message)
                 except Exception as exc:  # noqa: BLE001 - preserve cancellation
                     self._log_persistence_failure(context=context, exc=exc)
+                    raise
         self._ended_message_ids.clear()
         self._persisted_message_ids.clear()
 
@@ -3345,60 +3381,57 @@ class CodingSession:
         self._context_usage_cache = None
 
     async def _refresh_persisted_state(self, *, leaf_id: str | None) -> None:
-        entries = await self._read_session_entries()
-        self._state = SessionState.from_entries(entries, leaf_id=leaf_id)
-        if self._config.session_id is not None and self._config.session_manager is not None:
-            self._config.session_manager.touch_session(
-                self._config.session_id,
-                model=self.model,
-                provider_name=self.provider_name,
-                inference_provider=self._inference_provider,
-                inference_provider_mode=self._inference_provider_mode,
-                preserve_inference_provider=False,
-            )
+        self._state = SessionState.from_entries(list(self._entries.values()), leaf_id=leaf_id)
+        self._invalidate_context_usage_cache()
 
     async def _read_session_entries(self) -> list[SessionEntry]:
-        """Read stored entries, detaching roots imported from external history."""
-        return _detach_missing_parents(await self._config.storage.read_all())
+        return list(self._entries.values())
+
+    async def _reload_entry_cache(self) -> None:
+        entries = await load_session_entries(self.storage)
+        self._entries = {entry.id: entry for entry in entries}
 
     async def _commit_prepared_entries(self) -> None:
-        """Durably commit the staged startup/repair batch exactly once."""
         if not self._config.defer_authoritative_writes:
             return
-        durable_ids = {entry.id for entry in await self._config.storage.read_all()}
-        missing = tuple(entry for entry in self._prepared_entries if entry.id not in durable_ids)
-        if missing:
-            append_batch = getattr(self._config.storage, "append_batch", None)
-            if append_batch is None:
-                # Compatibility storage implementations predate the atomic
-                # batch contract.  Production storage always takes this path.
-                for entry in missing:
-                    await self._config.storage.append(entry)
+        entries = tuple(self._prepared_entries)
+        if entries:
+            head = await self.storage.get_head()
+            if head.entry_id != entries[0].parent_id:
+                await self.storage.fork(
+                    entries[0].parent_id, token=self.storage.token, entries=entries
+                )
+                await self._reload_entry_cache()
             else:
-                await append_batch(missing)
+                receipt = await self.storage.append_entries(
+                    entries, expected_head=entries[0].parent_id, token=self.storage.token
+                )
+                for entry, seq in zip(entries, receipt.sequences, strict=True):
+                    self._entries[entry.id] = entry.model_copy(deep=True, update={"seq": seq})
         self._pending_initial_entries = ()
         self._prepared_entries.clear()
         self._config = replace(self._config, defer_authoritative_writes=False)
-        try:
-            if self._config.index_on_first_persist:
-                self._index_current_session()
-        except Exception as exc:  # index is a rebuildable cache, not authority
-            self._record_session_index_diagnostic(exc)
 
     async def _append_session_entry(self, entry: SessionEntry) -> None:
-        """Append one durable entry after flushing deferred session metadata."""
-        await self._ensure_session_initialized()
-        await self._config.storage.append(entry)
+        await self._append_session_batch((entry,))
 
     async def _append_session_batch(self, entries: Sequence[SessionEntry]) -> None:
-        """Append entries as one storage transaction, with legacy fallback."""
-        await self._ensure_session_initialized()
-        append_batch = getattr(self._config.storage, "append_batch", None)
-        if append_batch is None:
-            for entry in entries:
-                await self._config.storage.append(entry)
+        self._writer_token()
+        if not entries:
             return
-        await append_batch(tuple(entries))
+        await self._ensure_session_initialized()
+        if self._completion_entries:
+            self._completion_entries.extend(entry.model_copy(deep=True) for entry in entries)
+            for entry in entries:
+                self._entries[entry.id] = entry
+            return
+        receipt = await self.storage.append_entries(
+            entries,
+            expected_head=entries[0].parent_id,
+            token=self._writer_token(),
+        )
+        for entry, seq in zip(entries, receipt.sequences, strict=True):
+            self._entries[entry.id] = entry.model_copy(deep=True, update={"seq": seq})
 
     async def _close_replaced_provider(self, provider: ModelProvider) -> None:
         """Close a Run Agent-owned provider once after a committed publication."""
@@ -3410,62 +3443,19 @@ class CodingSession:
             await close()
 
     async def _ensure_session_initialized(self) -> None:
-        if self._config.defer_authoritative_writes and self._prepared_entries:
+        if self._config.defer_authoritative_writes:
             await self._commit_prepared_entries()
-            return
-        if not self._pending_initial_entries:
-            return
-        await self._write_pending_initial_entries()
-        if self._config.index_on_first_persist:
-            try:
-                self._index_current_session()
-            except Exception as exc:
-                self._record_session_index_diagnostic(exc)
-
-    async def _write_pending_initial_entries(self) -> None:
-        durable_ids = {entry.id for entry in await self._config.storage.read_all()}
-        missing = tuple(
-            entry for entry in self._pending_initial_entries if entry.id not in durable_ids
-        )
-        if missing:
-            append_batch = getattr(self._config.storage, "append_batch", None)
-            if append_batch is not None:
-                await append_batch(missing)
-            else:
-                for entry in missing:
-                    await self._config.storage.append(entry)
-        self._pending_initial_entries = ()
-
-    def _ensure_session_file_initialized(self) -> None:
-        if not self._pending_initial_entries:
-            return
-        for entry in self._pending_initial_entries:
-            _append_session_entry_sync(self._config.storage, entry)
-        self._pending_initial_entries = ()
-
-    def _record_session_index_diagnostic(self, exc: BaseException) -> None:
-        self._resource_diagnostics = (
-            *self._resource_diagnostics,
-            ResourceDiagnostic(
-                kind="session-index",
-                message=f"Session index needs repair: {type(exc).__name__}",
-                severity="warning",
-            ),
-        )
-
-    def _index_current_session(self) -> None:
-        if self._config.session_id is None or self._config.session_manager is None:
-            return
-        existing = self._config.session_manager.get_session(self._config.session_id)
-        if existing is not None:
-            return
-        self._config.session_manager.create_session(
-            cwd=self.cwd,
-            model=self.model,
-            provider_name=self.provider_name,
-            inference_provider=self._inference_provider,
-            session_id=self._config.session_id,
-        )
+        elif self._pending_initial_entries:
+            entries = self._pending_initial_entries
+            receipt = await self.storage.append_entries(
+                entries,
+                expected_head=entries[0].parent_id,
+                token=self._writer_token(),
+            )
+            for entry, seq in zip(entries, receipt.sequences, strict=True):
+                self._entries[entry.id] = entry.model_copy(deep=True, update={"seq": seq})
+            self._pending_initial_entries = ()
+            self._prepared_entries.clear()
 
     async def _try_auto_compact(
         self,
@@ -3524,7 +3514,7 @@ class CodingSession:
             title = _fallback_session_name(first_message)
         if title is None:
             return
-        persisted = self._persist_session_name(
+        persisted = await self._persist_session_name(
             title,
             only_if_unnamed=True,
             index_if_missing=False,
@@ -3533,12 +3523,11 @@ class CodingSession:
             await self._extension_runtime.emit_event(SessionInfoChangedEvent(name=persisted))
 
     def _should_auto_name_session(self) -> bool:
-        if self._config.session_id is None or self._config.session_manager is None:
-            return False
-        record = self._config.session_manager.get_session(self._config.session_id)
-        if record is not None and record.title:
-            return False
-        return sum(isinstance(message, UserMessage) for message in self._harness.messages) == 1
+        return (
+            self._session_title is None
+            and self._config.session_manager is not None
+            and sum(isinstance(message, UserMessage) for message in self._harness.messages) == 1
+        )
 
     async def _generate_session_name(self, first_message: str) -> str | None:
         prompt = (
@@ -3697,8 +3686,6 @@ class CodingSession:
             tokens_before=tokens_before,
         )
         await self._append_session_entry(compaction)
-        leaf = LeafEntry(parent_id=compaction.id, entry_id=compaction.id)
-        await self._append_session_entry(leaf)
         self._last_parent_id = compaction.id
 
         await self._refresh_persisted_state(leaf_id=compaction.id)
@@ -3789,29 +3776,11 @@ def is_retryable_huggingface_route_error(message: AssistantMessage) -> bool:
     return False
 
 
-def _detach_missing_parents(entries: list[SessionEntry]) -> list[SessionEntry]:
-    """Return entries with dangling parent pointers detached from external history."""
-    entry_ids = {entry.id for entry in entries}
-    return [
-        entry.model_copy(update={"parent_id": None})
-        if entry.parent_id is not None and entry.parent_id not in entry_ids
-        else entry
-        for entry in entries
-    ]
-
-
 def _last_parent_id_from_state(state: SessionState) -> str | None:
     if state.active_leaf_id is not None:
         return state.active_leaf_id
     if state.entries:
         return state.entries[-1].id
-    return None
-
-
-def _latest_leaf_entry(entries: list[SessionEntry]) -> LeafEntry | None:
-    for entry in reversed(entries):
-        if isinstance(entry, LeafEntry):
-            return entry
     return None
 
 
@@ -3831,8 +3800,7 @@ def _tree_choice_label(entry: SessionEntry, *, branch_indent: int = 0) -> str:
 def _tree_branch_indents(entries: list[SessionEntry]) -> dict[str, int]:
     children_by_parent: dict[str | None, list[str]] = {}
     for entry in entries:
-        if entry.type != "leaf":
-            children_by_parent.setdefault(entry.parent_id, []).append(entry.id)
+        children_by_parent.setdefault(entry.parent_id, []).append(entry.id)
 
     sibling_indexes = {
         child_id: index
@@ -3841,8 +3809,6 @@ def _tree_branch_indents(entries: list[SessionEntry]) -> dict[str, int]:
     }
     indents: dict[str, int] = {}
     for entry in entries:
-        if entry.type == "leaf":
-            continue
         parent_indent = indents.get(entry.parent_id, 0) if entry.parent_id is not None else 0
         sibling_index = sibling_indexes.get(entry.id, 0)
         indents[entry.id] = parent_indent + (1 if sibling_index > 0 else 0)
@@ -3852,8 +3818,7 @@ def _tree_branch_indents(entries: list[SessionEntry]) -> dict[str, int]:
 def _ordered_tree_entries(entries: list[SessionEntry]) -> tuple[SessionEntry, ...]:
     children_by_parent: dict[str | None, list[SessionEntry]] = {}
     for entry in entries:
-        if entry.type != "leaf":
-            children_by_parent.setdefault(entry.parent_id, []).append(entry)
+        children_by_parent.setdefault(entry.parent_id, []).append(entry)
 
     ordered: list[SessionEntry] = []
     seen: set[str] = set()
@@ -3882,7 +3847,7 @@ def _ordered_tree_entries(entries: list[SessionEntry]) -> tuple[SessionEntry, ..
 
     append_descendants(None)
     for entry in entries:
-        if entry.type != "leaf" and entry.id not in seen:
+        if entry.id not in seen:
             ordered.append(entry)
             seen.add(entry.id)
             append_descendants(entry.id)
@@ -3947,50 +3912,6 @@ def _messages_after_entry_on_active_path(
         return ()
     return tuple(
         entry.message for entry in active_path[target_index + 1 :] if entry.type == "message"
-    )
-
-
-def _storage_path(storage: SessionStorage) -> Path | None:
-    path = getattr(storage, "path", None)
-    return path if isinstance(path, Path) else None
-
-
-def _resolve_export_destination(
-    destination: Path | None,
-    *,
-    cwd: Path,
-    session_path: Path | None,
-    format: str,
-) -> Path:
-    if destination is None:
-        if session_path is not None:
-            return default_session_export_artifact_path(
-                session_path,
-                destination_dir=cwd,
-                format=format,
-            )
-        return cwd / f"run-agent-session.{format}"
-
-    resolved = destination if destination.is_absolute() else cwd / destination
-    if resolved.suffix:
-        return resolved
-    name = session_path.stem if session_path is not None else "run-agent-session"
-    return default_session_export_artifact_path(
-        Path(name),
-        destination_dir=resolved,
-        format=format,
-    )
-
-
-def _session_export_title(session: CodingSession) -> str:
-    manager = session.session_manager
-    session_id = session.session_id
-    if manager is not None and session_id is not None:
-        record = manager.get_session(session_id)
-        if record is not None and record.title:
-            return record.title
-    return (
-        f"Run Agent session {session_id}" if session_id is not None else "Run Agent Session Export"
     )
 
 
@@ -4565,21 +4486,3 @@ def _tool_history_repair_plan(
         parent_id = None
 
     return parent_id, repair.messages[common_prefix_length:], repair
-
-
-def default_session_path(cwd: Path) -> Path:
-    """Return Run Agent's default user-home session path for a project cwd."""
-    return RunAgentPaths().default_session_path(cwd)
-
-
-def jsonl_session_storage(path: str | Path) -> JsonlSessionStorage:
-    """Convenience factory for local JSONL coding-session storage."""
-    return JsonlSessionStorage(path)
-
-
-def _append_session_entry_sync(storage: SessionStorage, entry: SessionEntry) -> None:
-    """Append an entry synchronously for slash commands that cannot await storage."""
-    if isinstance(storage, JsonlSessionStorage):
-        storage.append_sync(entry)
-        return
-    raise RuntimeError("Session storage does not support synchronous initialization")

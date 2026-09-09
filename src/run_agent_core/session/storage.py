@@ -1,268 +1,208 @@
-"""Locked, append-only session storage implementations."""
+"""Bound transactional session handles and a deterministic test implementation."""
 
 from __future__ import annotations
 
 import asyncio
-import os
-import tempfile
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager, suppress
-from importlib import import_module
-from pathlib import Path
-from typing import BinaryIO, Protocol
+from collections.abc import Sequence
+from typing import Protocol
+from uuid import uuid4
 
-from run_agent_core.session.entries import SessionEntry
-from run_agent_core.session.jsonl import (
-    SessionJsonlError,
-    entry_from_json_line,
-    entry_to_json_line,
+from run_agent_core.session.contracts import (
+    AppendReceipt,
+    BranchHead,
+    CompletionReceipt,
+    EntryPage,
+    RunOutcome,
+    RunToken,
+    SessionConflict,
+    StaleRunToken,
 )
+from run_agent_core.session.entries import SessionEntry
+from run_agent_core.session.tree import path_to_entry
 
 
 class SessionStorage(Protocol):
-    """Append-only session storage interface."""
+    """A session writer with explicit branch, version and completion semantics."""
 
-    async def append(self, entry: SessionEntry) -> None:
-        """Append one entry to storage."""
-        ...
+    @property
+    def session_id(self) -> str: ...
 
-    async def append_batch(self, entries: Sequence[SessionEntry]) -> None:
-        """Atomically append a complete batch of entries."""
-        ...
+    @property
+    def branch_id(self) -> str: ...
 
-    async def read_all(self) -> list[SessionEntry]:
-        """Read all entries in storage order."""
-        ...
+    @property
+    def token(self) -> RunToken: ...
+
+    async def read_entries(self, *, after_seq: int = 0, limit: int = 1000) -> EntryPage: ...
+
+    async def get_head(self) -> BranchHead: ...
+
+    async def append_entries(
+        self, entries: Sequence[SessionEntry], *, expected_head: str | None, token: RunToken
+    ) -> AppendReceipt: ...
+
+    async def fork(
+        self, at_entry_id: str | None, *, token: RunToken, entries: Sequence[SessionEntry] = ()
+    ) -> BranchHead: ...
+
+    async def begin_run(self, run_id: str) -> RunToken: ...
+
+    async def complete_run(self, outcome: RunOutcome) -> CompletionReceipt: ...
+
+    async def aclose(self) -> None: ...
 
 
-class _TornTailError(Exception):
-    def __init__(self, *, truncate_at: int) -> None:
-        self.truncate_at = truncate_at
-
-
-class JsonlSessionStorage:
-    """Strict JSONL storage with locking, sequencing, and torn-tail repair.
-
-    New entries receive a one-based continuous ``seq`` under the same
-    cross-process lock as the write. A malformed final record is recoverable
-    only when it is an unterminated tail; corruption elsewhere remains a hard
-    error. Batch writes use a same-directory temporary file, fsync, and atomic
-    replace so related session entries become visible together.
-    """
-
-    def __init__(self, path: str | Path) -> None:
-        self.path = Path(path)
-        self.lock_path = self.path.with_name(f".{self.path.name}.lock")
-        self.temp_path = self.path.with_name(f".{self.path.name}.tmp")
-
-    async def append(self, entry: SessionEntry) -> None:
-        self.append_sync(entry)
-
-    def append_sync(self, entry: SessionEntry) -> None:
-        """Synchronous append used by command paths that cannot await."""
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._locked(exclusive=True):
-            self._remove_incomplete_temp()
-            existing = self._read_repair_unlocked()
-            self._assign_sequences((entry,), start=len(existing) + 1)
-            with self.path.open("ab") as file:
-                file.write(entry_to_json_line(entry).encode("utf-8"))
-                file.flush()
-                os.fsync(file.fileno())
-
-    async def append_batch(self, entries: Sequence[SessionEntry]) -> None:
-        self.append_batch_sync(entries)
-
-    def append_batch_sync(self, entries: Sequence[SessionEntry]) -> None:
-        """Atomically append all entries, preserving the old file on failure."""
-        batch = tuple(entries)
-        if not batch:
-            return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._locked(exclusive=True):
-            self._remove_incomplete_temp()
-            existing = self._read_repair_unlocked()
-            self._assign_sequences(batch, start=len(existing) + 1)
-            encoded = b"".join(entry_to_json_line(entry).encode("utf-8") for entry in batch)
-            previous = self.path.read_bytes() if self.path.exists() else b""
-            self._atomic_replace(previous + encoded)
-
-    async def read_all(self) -> list[SessionEntry]:
-        """Read and validate all entries, repairing only a torn final record."""
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        if self.temp_path.exists():
-            with self._locked(exclusive=True):
-                self._remove_incomplete_temp()
-                return self._read_repair_unlocked()
-        try:
-            with self._locked(exclusive=False):
-                return self._read_unlocked()
-        except _TornTailError:
-            with self._locked(exclusive=True):
-                return self._read_repair_unlocked()
-
-    @staticmethod
-    def _assign_sequences(entries: Sequence[SessionEntry], *, start: int) -> None:
-        for offset, entry in enumerate(entries):
-            expected = start + offset
-            if entry.seq is not None and entry.seq != expected:
-                raise SessionJsonlError(
-                    f"Invalid session sequence for entry {entry.id}: "
-                    f"expected {expected}, got {entry.seq}"
-                )
-        for offset, entry in enumerate(entries):
-            entry.seq = start + offset
-
-    def _read_repair_unlocked(self) -> list[SessionEntry]:
-        try:
-            return self._read_unlocked()
-        except _TornTailError as exc:
-            if not self.path.exists():
-                return []
-            with self.path.open("r+b") as file:
-                file.truncate(exc.truncate_at)
-                file.flush()
-                os.fsync(file.fileno())
-            return self._read_unlocked()
-
-    def _read_unlocked(self) -> list[SessionEntry]:
-        if not self.path.exists():
-            return []
-        data = self.path.read_bytes()
-        raw_lines = data.split(b"\n")
-        entries: list[SessionEntry] = []
-        seen_ids: set[str] = set()
-        last_index = len(raw_lines) - 1
-        truncate_at = data.rfind(b"\n") + 1
-        for index, raw_line in enumerate(raw_lines, start=1):
-            if not raw_line.strip():
-                continue
-            try:
-                line = raw_line.decode("utf-8")
-                entry = entry_from_json_line(line, line_number=index)
-            except (UnicodeDecodeError, SessionJsonlError) as exc:
-                if index - 1 == last_index and not data.endswith(b"\n"):
-                    raise _TornTailError(truncate_at=truncate_at) from exc
-                if isinstance(exc, SessionJsonlError):
-                    raise
-                raise SessionJsonlError(
-                    f"Invalid UTF-8 session entry on line {index}: {exc}"
-                ) from exc
-            expected_seq = len(entries) + 1
-            if entry.seq is not None and entry.seq != expected_seq:
-                raise SessionJsonlError(
-                    f"Invalid session sequence on line {index}: "
-                    f"expected {expected_seq}, got {entry.seq}"
-                )
-            if entry.id in seen_ids:
-                raise SessionJsonlError(f"Duplicate session entry id {entry.id!r} on line {index}")
-            seen_ids.add(entry.id)
-            entries.append(entry)
-        return entries
-
-    def _atomic_replace(self, data: bytes) -> None:
-        descriptor, temporary = tempfile.mkstemp(
-            prefix=f".{self.path.name}.",
-            suffix=".tmp",
-            dir=self.path.parent,
-        )
-        try:
-            os.close(descriptor)
-            temporary_path = Path(temporary)
-            with temporary_path.open("wb") as file:
-                file.write(data)
-                file.flush()
-                os.fsync(file.fileno())
-            os.replace(temporary_path, self.path)
-            _fsync_directory(self.path.parent)
-        except BaseException:
-            with _suppress_os_error():
-                Path(temporary).unlink()
-            raise
-
-    def _remove_incomplete_temp(self) -> None:
-        with _suppress_os_error():
-            self.temp_path.unlink()
-        prefix = f".{self.path.name}."
-        for candidate in self.path.parent.glob(f"{prefix}*.tmp"):
-            with _suppress_os_error():
-                candidate.unlink()
-
-    @contextmanager
-    def _locked(self, *, exclusive: bool) -> Iterator[None]:
-        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.lock_path.open("a+b") as lock_file:
-            with suppress(OSError):
-                os.chmod(self.lock_path, 0o600)
-            _lock_file(lock_file, exclusive=exclusive)
-            try:
-                yield
-            finally:
-                _unlock_file(lock_file)
+async def load_session_entries(storage: SessionStorage) -> list[SessionEntry]:
+    """Materialize history explicitly for cold open and tree inspection."""
+    entries: list[SessionEntry] = []
+    after = 0
+    while True:
+        page = await storage.read_entries(after_seq=after)
+        entries.extend(page.entries)
+        if page.next_seq is None:
+            return entries
+        after = page.next_seq
 
 
 class InMemorySessionStorage:
-    """Deterministic storage useful for tests and embedded frontends."""
+    """Tests use the same expected-head and run-fence contract as durable hosts."""
 
-    def __init__(self, entries: Sequence[SessionEntry] = ()) -> None:
-        self.entries = list(entries)
+    def __init__(
+        self, entries: Sequence[SessionEntry] = (), *, session_id: str | None = None
+    ) -> None:
+        self.session_id = session_id or uuid4().hex
+        self.branch_id = "main"
+        self.token = RunToken(self.session_id, "memory", "initial", 1)
+        self.entries = [
+            entry.model_copy(deep=True, update={"seq": i + 1}) for i, entry in enumerate(entries)
+        ]
+        self._heads: dict[str, str | None] = {"main": self.entries[-1].id if self.entries else None}
+        self._closed = False
         self._lock = asyncio.Lock()
+        self.outcomes: dict[str, CompletionReceipt] = {}
+        self._outcome_inputs: dict[str, RunOutcome] = {}
 
-    async def append(self, entry: SessionEntry) -> None:
+    def _check(self, token: RunToken) -> None:
+        if self._closed or token != self.token:
+            raise StaleRunToken("Session write qualification has expired")
+
+    async def get_head(self) -> BranchHead:
+        return BranchHead(self.session_id, self.branch_id, self._heads[self.branch_id])
+
+    async def read_entries(self, *, after_seq: int = 0, limit: int = 1000) -> EntryPage:
+        if after_seq < 0 or not 1 <= limit <= 10_000:
+            raise ValueError("Invalid history page bounds")
+        rows = [
+            entry.model_copy(deep=True) for entry in self.entries if (entry.seq or 0) > after_seq
+        ]
+        page = rows[:limit]
+        return EntryPage(tuple(page), page[-1].seq if len(rows) > limit else None)
+
+    def _append(
+        self, entries: Sequence[SessionEntry], expected_head: str | None, token: RunToken
+    ) -> AppendReceipt:
+        self._check(token)
+        existing = {entry.id: entry for entry in self.entries}
+        parent = expected_head
+        for entry in entries:
+            if entry.parent_id != parent:
+                raise SessionConflict("Batch does not extend its expected parent chain")
+            parent = entry.id
+        if len({entry.id for entry in entries}) != len(entries):
+            raise SessionConflict("Duplicate event identity in one batch")
+        present = [existing.get(entry.id) for entry in entries]
+        for entry, old in zip(entries, present, strict=True):
+            if old is not None and old.model_dump(exclude={"seq"}) != entry.model_dump(
+                exclude={"seq"}
+            ):
+                raise SessionConflict("An event identity has different content")
+        if entries and all(item is not None for item in present):
+            return AppendReceipt(
+                self.session_id,
+                self.branch_id,
+                parent,
+                tuple(e.id for e in entries),
+                tuple(e.seq or 0 for e in present if e is not None),
+                False,
+            )
+        if (
+            any(item is not None for item in present)
+            or self._heads[self.branch_id] != expected_head
+        ):
+            raise SessionConflict("Branch head changed")
+        sequences = tuple(range(len(self.entries) + 1, len(self.entries) + len(entries) + 1))
+        self.entries.extend(
+            entry.model_copy(deep=True, update={"seq": seq})
+            for entry, seq in zip(entries, sequences, strict=True)
+        )
+        self._heads[self.branch_id] = parent
+        return AppendReceipt(
+            self.session_id,
+            self.branch_id,
+            parent,
+            tuple(e.id for e in entries),
+            sequences,
+            bool(entries),
+        )
+
+    async def append_entries(
+        self, entries: Sequence[SessionEntry], *, expected_head: str | None, token: RunToken
+    ) -> AppendReceipt:
         async with self._lock:
-            self.entries.append(entry)
+            return self._append(entries, expected_head, token)
 
-    async def append_batch(self, entries: Sequence[SessionEntry]) -> None:
+    async def fork(
+        self, at_entry_id: str | None, *, token: RunToken, entries: Sequence[SessionEntry] = ()
+    ) -> BranchHead:
         async with self._lock:
-            self.entries.extend(entries)
+            self._check(token)
+            if at_entry_id is not None:
+                path_to_entry(self.entries, at_entry_id)
+            previous_branch = self.branch_id
+            self.branch_id = uuid4().hex
+            self._heads[self.branch_id] = at_entry_id
+            try:
+                self._append(entries, at_entry_id, token)
+            except BaseException:
+                del self._heads[self.branch_id]
+                self.branch_id = previous_branch
+                raise
+            return await self.get_head()
 
-    async def read_all(self) -> list[SessionEntry]:
+    async def begin_run(self, run_id: str) -> RunToken:
         async with self._lock:
-            return list(self.entries)
+            self._check(self.token)
+            self.token = RunToken(self.session_id, "memory", run_id, self.token.generation + 1)
+            return self.token
 
+    async def complete_run(self, outcome: RunOutcome) -> CompletionReceipt:
+        async with self._lock:
+            previous = self._outcome_inputs.get(outcome.token.run_id)
+            if previous is not None:
+                if previous != outcome:
+                    raise SessionConflict("Run already has a different outcome")
+                return self.outcomes[outcome.token.run_id]
+            self._check(outcome.token)
+            if outcome.branch_id != self.branch_id:
+                raise SessionConflict("Run branch changed")
+            self._append(outcome.entries, outcome.expected_head, outcome.token)
+            receipt = CompletionReceipt(
+                outcome.token.run_id,
+                self.session_id,
+                self.branch_id,
+                outcome.status,
+                self._heads[self.branch_id],
+                len(self.entries),
+            )
+            self.outcomes[outcome.token.run_id] = receipt
+            self._outcome_inputs[outcome.token.run_id] = outcome
+            self.token = RunToken(
+                self.session_id,
+                self.token.owner_id,
+                f"idle-{self.token.run_id}",
+                self.token.generation + 1,
+            )
+            return receipt
 
-@contextmanager
-def _suppress_os_error() -> Iterator[None]:
-    with suppress(OSError):
-        yield
-
-
-def _lock_file(file: BinaryIO, *, exclusive: bool) -> None:
-    if os.name == "nt":
-        msvcrt = import_module("msvcrt")
-
-        del exclusive
-        file.seek(0)
-        msvcrt.locking(file.fileno(), msvcrt.LK_LOCK, 1)
-        return
-    fcntl = import_module("fcntl")
-
-    mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
-    fcntl.flock(file.fileno(), mode)
-
-
-def _unlock_file(file: BinaryIO) -> None:
-    if os.name == "nt":
-        msvcrt = import_module("msvcrt")
-
-        file.seek(0)
-        msvcrt.locking(file.fileno(), msvcrt.LK_UNLCK, 1)
-        return
-    fcntl = import_module("fcntl")
-
-    fcntl.flock(file.fileno(), fcntl.LOCK_UN)
-
-
-def _fsync_directory(path: Path) -> None:
-    try:
-        descriptor = os.open(path, os.O_RDONLY)
-    except OSError:
-        return
-    try:
-        with suppress(OSError):
-            os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-__all__ = ["InMemorySessionStorage", "JsonlSessionStorage", "SessionStorage"]
+    async def aclose(self) -> None:
+        self._closed = True

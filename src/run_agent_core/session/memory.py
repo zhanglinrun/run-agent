@@ -79,8 +79,6 @@ class SessionState:
                     thinking_level = entry.thinking_level
                 case "label":
                     label = entry.label
-                case "leaf":
-                    active_leaf_id = entry.entry_id
                 case "session_info":
                     session_info = entry
                 case "custom":

@@ -16,7 +16,7 @@ do not need a public callback URL.
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -e ".[feishu]"
-.\.venv\Scripts\run-agent-gateway.exe `
+run gateway `
   --extension examples/gateway_extensions/feishu.py `
   --cwd .
 ```
@@ -29,11 +29,4 @@ The adapter maps each Feishu chat to one durable Gateway session and replies to
 the triggering message. The SDK handles duplicate events, group mention policy,
 reconnection, and message chunking.
 
-Send `/new` in a direct chat, or mention the bot with `/new` in a group, to start
-a fresh CodingSession for that Feishu chat. The previous context remains on disk
-and durable Mem0 memory is not deleted.
-
-## stdin JSONL
-
-`stdin_jsonl.py` is a small local integration and smoke-test adapter. It reads
-UTF-8 JSON objects from stdin and writes Gateway responses to stdout.
+The Coding session pool stores session history in the shared SQLite database. The durable task controller, new-route switching and delivery recovery are under redesign; follow `docs/implementation` for verified scope before deploying those capabilities.

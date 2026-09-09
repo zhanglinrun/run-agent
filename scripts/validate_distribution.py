@@ -8,13 +8,17 @@ import tempfile
 from pathlib import Path
 
 SMOKE = """
-import asyncio, json, pathlib
+import asyncio, json, pathlib, sys
 from importlib.metadata import distribution
 import run_agent_entry
 from run_agent_coding.storage.sqlite import SqliteDatabase
 from run_agent_coding.storage.sessions import SqliteSessionRepository
 from run_agent_core.session.entries import MessageEntry
 from run_agent_core.messages import UserMessage
+from run_agent_coding.application import CodingApplication, ApplicationOptions
+from run_agent_coding.paths import RunAgentPaths
+from run_agent_core.messages import AssistantMessage, TextContent
+from run_agent_core.provider_events import AssistantDoneEvent
 scripts = {e.name:e.value for e in distribution('run-agent-harness').entry_points
            if e.group == 'console_scripts'}
 assert scripts == {'run':'run_agent_entry:main'}, scripts
@@ -27,9 +31,27 @@ async def check():
                                   token=token, expected_head=None)
     async with await SqliteDatabase.open('state.sqlite3') as db:
         assert (await SqliteSessionRepository(db).get_head('s')).entry_id == 'a'
+    class Provider:
+        async def stream_response(self, **kwargs):
+            yield AssistantDoneEvent(reason='stop', message=AssistantMessage(
+                content=[TextContent(text='installed-wheel')], model='test', stop_reason='stop'))
+    paths = RunAgentPaths(home=pathlib.Path('application'), agents_home=pathlib.Path('agents'))
+    options = ApplicationOptions(cwd=pathlib.Path.cwd(), paths=paths, model='test',
+                                 extensions_enabled=False)
+    async with await CodingApplication.open(options, provider=Provider()) as app:
+        events = [event async for event in app.prompt('persist installed session')]
+        assert events[-1].status == 'succeeded'
+        identity = app.session.session_id
+        head = events[-1].head_id
+    from dataclasses import replace
+    reopened = await CodingApplication.open(replace(options, resume=identity), provider=Provider())
+    async with reopened as app:
+        assert (await app.session.storage.get_head()).entry_id == head
+    assert not any(name.startswith(('textual', 'run_agent_coding.tui')) for name in sys.modules)
 asyncio.run(check())
 print(json.dumps({'entry_module':run_agent_entry.__file__, 'scripts':scripts,
-                  'schema_initialization_and_reopen':True}))
+                  'schema_initialization_and_reopen':True,
+                  'application_completion_and_resume':True}))
 """
 
 
@@ -75,8 +97,8 @@ def main() -> None:
         for obsolete in ["run-agent", "run-agent-gateway", "run-agent-bench"]:
             assert not launcher.with_name(obsolete + launcher.suffix).exists()
     report["scope"] = (
-        "Wheel import, schema, persistence, command routing; "
-        "interactive and model execution are separate gates."
+        "Wheel import, schema, persistence, command routing, application completion and resume; "
+        "terminal interactions and real model execution are separate gates."
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")

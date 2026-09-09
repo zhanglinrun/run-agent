@@ -6,7 +6,7 @@ import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Literal, Protocol
 from uuid import uuid4
 
 from run_agent_core.messages import AgentMessage, CustomMessage, ToolResultMessage
@@ -14,13 +14,9 @@ from run_agent_core.tools import AgentTool, AgentToolResult
 from run_agent_core.types import JSONValue
 
 if TYPE_CHECKING:
-    from textual import events
-    from textual.widget import Widget
-
     from run_agent_coding.extensions.providers import DynamicProvider
     from run_agent_coding.extensions.runtime import ExtensionRuntime
     from run_agent_coding.paths import RunAgentPaths
-    from run_agent_coding.tui.config import TuiTheme
 
 AGENT_EVENT_TYPES: frozenset[str] = frozenset(
     {
@@ -108,233 +104,6 @@ ToolCallMarkup = Callable[[str, "Mapping[str, JSONValue]"], "str | None"]
 # `render_result` or ``None`` to fall back to the generic result block. Errors
 # are swallowed by the resolver, never raised into the frontend.
 ToolResultMarkup = Callable[[str, AgentToolResult, bool], "str | None"]
-
-# --- component seam ---------------------------------------------------------
-# Widget-hosting capability that lets an extension mount its own Textual widgets
-# into host-owned slots and a main-area view, and intercept keys pre-dispatch
-# (before the host's priority bindings and the focused widget). The "component"
-# type is Textual's own ``Widget`` (referenced only under TYPE_CHECKING so
-# print-mode stays import-clean): Textual is deliberately part of the public
-# extension contract. Extensions build against the Textual version Run Agent pins; a
-# Textual major bump is a coordinated break for core and extensions together.
-# History and measured trade-offs: dev-notes/design/component-seam-experiment.md.
-# It replaced the older transcript-source seam, which Step 3 removed from core.
-
-Placement = Literal["above_prompt", "below_prompt"]
-
-# Factories run on the UI thread and receive the live theme (theme handoff,
-# mirrors Pi's ``(tui, theme) => Component``).
-SlotWidgetFactory = Callable[["TuiTheme"], "Widget"]
-# A slot widget may be given as a factory or, for the simple case, as a plain
-# list of display lines the HOST turns into a widget — this lets an extension
-# mount text without importing Textual at all (ports Pi's ``string[]`` form of
-# ``setWidget``). Strings are rendered as Rich markup, with a literal-text
-# fallback if the markup is malformed.
-SlotWidgetContent = Sequence[str] | SlotWidgetFactory
-# Sidebar bodies use the same data-first shape: simple sections provide Rich
-# display lines without importing Textual; advanced sections provide a widget
-# factory receiving the live theme.
-SidebarWidgetFactory = Callable[["TuiTheme"], "Widget"]
-SidebarContent = Sequence[str] | SidebarWidgetFactory
-# The main-view factory also receives the handle so the widget can close itself.
-MainViewFactory = Callable[["MainViewHandle", "TuiTheme"], "Widget"]
-
-# Pre-dispatch key hook (ports Pi's ``onTerminalInput``). Returns True to
-# consume the key. Fires for every main-screen key regardless of focus; the host
-# passes the Textual ``Key`` event and the current prompt text so the handler
-# can self-gate (Pi gates on ``getEditorText() === ""``).
-KeyInterceptor = Callable[["events.Key", str], bool]
-
-
-_DEFAULT_THEME: TuiTheme | None = None
-
-
-def _default_theme() -> TuiTheme:
-    """Return a shared default theme without importing the TUI at module load.
-
-    The import is deferred (and cached) so merely importing the extensions API
-    stays free of the Textual/TUI dependency graph; only an extension that
-    actually reads ``theme`` in print mode pays for it, and it never raises.
-    """
-    global _DEFAULT_THEME
-    if _DEFAULT_THEME is None:
-        from run_agent_coding.tui.config import RUN_AGENT_DARK_THEME
-
-        _DEFAULT_THEME = RUN_AGENT_DARK_THEME
-    return _DEFAULT_THEME
-
-
-class MainViewHandle(Protocol):
-    """Handle to an open main-area view (ports Pi's ``OverlayHandle``, trimmed).
-
-    Carries Pi's ``done(result)`` semantics: the factory (or a key interceptor)
-    calls ``close(result)`` to tear the view down *and* hand a value back to
-    whoever opened it, and the opener awaits :meth:`wait` for that value. This
-    is the result-resolution half of Pi's ``ctx.ui.custom<T>``, kept on the
-    synchronous open/handle model rather than an ``async`` open.
-
-    ``close()`` unmounts the view and restores the main transcript. It is safe
-    to call more than once; the first close wins and later closes are no-ops.
-    """
-
-    def close(self, result: object | None = None) -> None:
-        """Close the view, resolving :meth:`wait` with ``result`` (Pi's ``done``).
-
-        The first close wins: its ``result`` is what :meth:`wait` returns, and
-        any later ``close(...)`` is a no-op. Safe to call more than once.
-        """
-        ...
-
-    async def wait(self) -> object | None:
-        """Await the view's teardown and return the result passed to ``close``.
-
-        Resolves with the value handed to :meth:`close` (``None`` when closed
-        with no result). Also resolves with ``None`` — never hangs — when the
-        view is force-cleared on a session rebind, quarantined after a widget
-        crash, or superseded by a later ``open_main_view``. Returns immediately
-        if the view was already closed before ``wait`` is awaited.
-        """
-        ...
-
-    @property
-    def is_open(self) -> bool: ...
-
-
-class ComponentBridge(Protocol):
-    """Host widget-hosting capability, exposed via ``context.ui.components``.
-
-    Part of what a :class:`UiBridge` provides when a TUI is attached;
-    :class:`NullUiBridge`/:class:`StderrUiBridge` implement it as no-ops so an
-    extension stays fully functional (just widget-less) in print mode. Check
-    :attr:`supports_components` before building widgets.
-    """
-
-    @property
-    def supports_components(self) -> bool:
-        """Return whether the frontend can host extension widgets."""
-        ...
-
-    @property
-    def theme(self) -> TuiTheme:
-        """Return the live TUI theme handed to widget factories."""
-        ...
-
-    def get_prompt_text(self) -> str:
-        """Return the current prompt-editor text (Pi's getEditorText).
-
-        Key interceptors receive the prompt text as their second argument;
-        this is for reads outside the key path.
-        """
-        ...
-
-    def request_render(self) -> None:
-        """Ask the host to re-render mounted extension widgets (Pi's requestRender)."""
-        ...
-
-    def set_slot_widget(
-        self,
-        key: str,
-        content: SlotWidgetContent | None,
-        *,
-        placement: Placement = "above_prompt",
-    ) -> None:
-        """Mount an extension widget into a prompt-adjacent slot under ``key``.
-
-        ``content`` is either a ``factory(theme) -> Widget`` callable or a plain
-        list of display lines (``Sequence[str]``) the host renders as Rich
-        markup — the string form lets simple extensions avoid importing Textual.
-        Passing ``content=None`` unmounts and forgets that key. Re-setting a key
-        replaces its content. Multiple keys per placement mount in call order.
-        Placement defaults to ``"above_prompt"`` (Pi's ``aboveEditor``).
-        """
-        ...
-
-    def open_main_view(self, factory: MainViewFactory) -> MainViewHandle:
-        """Mount ``factory(handle, theme)`` as a full main-area view.
-
-        The widget replaces the main transcript in place (a display-toggled
-        sibling, not a modal screen), so prompt-adjacent widgets such as slot
-        widgets stay visible. ``handle.close(result)`` restores the transcript
-        and resolves ``await handle.wait()`` with ``result`` (Pi's ``done``),
-        so the opener can show a view and get an answer back.
-        """
-        ...
-
-    def register_key_interceptor(self, handler: KeyInterceptor) -> Callable[[], None]:
-        """Register a pre-dispatch key hook; return an unsubscribe callable.
-
-        Ports Pi's ``onTerminalInput``. The handler sees a key before the
-        host's app-level priority bindings and before the focused widget, so it
-        can own navigation keys the host otherwise reserves. It fires for EVERY
-        main-screen key regardless of focus (never while a modal screen is on
-        top), so the handler MUST self-gate and return ``True`` only for keys it
-        consumes.
-
-        The host's hard interrupt/exit keys (``ctrl+c`` and ``ctrl+d``) are
-        reserved: the interceptor is never consulted for them and cannot
-        consume them, so a bug in the handler can never swallow the session's
-        escape hatches. All other keys — escape, enter, arrows, tab — remain
-        interceptable.
-        """
-        ...
-
-
-class ExtensionSidebar:
-    """Extension-owned facade for host-framed TUI sidebar sections.
-
-    Sections are isolated by extension name and stable key. Re-setting a key
-    updates it without changing its position; removing and re-adding it appends
-    it after the remaining extension sections. The host owns headings,
-    separators, width, scrolling, sidebar placement, and lifecycle cleanup.
-    """
-
-    def __init__(
-        self,
-        runtime: ExtensionRuntime,
-        extension_name: str,
-        generation: ExtensionGeneration,
-    ) -> None:
-        self._runtime = runtime
-        self._extension_name = extension_name
-        self._generation = generation
-
-    @property
-    def supported(self) -> bool:
-        """Return whether the active frontend can display sidebar sections."""
-        self._generation.assert_active()
-        return bool(getattr(self._runtime.ui, "supports_sidebar", False))
-
-    def set_section(self, key: str, *, title: str, content: SidebarContent) -> None:
-        """Add or replace a host-framed sidebar section under stable ``key``."""
-        self._generation.assert_active()
-        normalized_key = key.strip()
-        normalized_title = title.strip()
-        if not normalized_key:
-            raise ExtensionError("sidebar section key must not be empty")
-        if not normalized_title:
-            raise ExtensionError("sidebar section title must not be empty")
-        if not self.supported:
-            return
-        setter = getattr(self._runtime.ui, "set_sidebar_section", None)
-        if setter is not None:
-            setter(
-                self._extension_name,
-                normalized_key,
-                title=normalized_title,
-                content=content,
-            )
-
-    def remove_section(self, key: str) -> None:
-        """Remove this extension's sidebar section under ``key``, if present."""
-        self._generation.assert_active()
-        normalized_key = key.strip()
-        if not normalized_key:
-            raise ExtensionError("sidebar section key must not be empty")
-        if not self.supported:
-            return
-        remover = getattr(self._runtime.ui, "remove_sidebar_section", None)
-        if remover is not None:
-            remover(self._extension_name, normalized_key)
 
 
 class ExtensionError(RuntimeError):
@@ -595,102 +364,15 @@ class UiBridge(Protocol):
         title: str,
         placeholder: str = "",
         *,
+        secret: bool = False,
         timeout: float | None = None,
     ) -> str | None:
         """Show a text prompt; return the entered text, or None on cancel."""
         ...
 
-    # -- component seam -- see ComponentBridge for docs -----------------------
+    def set_status(self, source: str, key: str, text: str | None) -> None: ...
 
-    @property
-    def supports_components(self) -> bool:
-        """Return whether the frontend can host extension widgets."""
-        ...
-
-    @property
-    def theme(self) -> TuiTheme:
-        """Return the live TUI theme handed to widget factories."""
-        ...
-
-    def get_prompt_text(self) -> str:
-        """Return the current prompt-editor text."""
-        ...
-
-    def request_render(self) -> None:
-        """Ask the host to re-render mounted extension widgets."""
-        ...
-
-    def set_slot_widget(
-        self,
-        key: str,
-        content: SlotWidgetContent | None,
-        *,
-        placement: Placement = "above_prompt",
-    ) -> None:
-        """Mount or remove an extension slot widget (factory or string lines)."""
-        ...
-
-    def open_main_view(self, factory: MainViewFactory) -> MainViewHandle:
-        """Open a full main-area extension view."""
-        ...
-
-    def register_key_interceptor(self, handler: KeyInterceptor) -> Callable[[], None]:
-        """Register a pre-dispatch key hook; return an unsubscribe callable.
-
-        See the base bridge protocol: the handler is consulted before the
-        host's priority bindings and the focused widget, fires for every
-        main-screen key regardless of focus, and must self-gate. The hard
-        interrupt/exit keys (``ctrl+c`` and ``ctrl+d``) are reserved and never
-        reach the interceptor.
-        """
-        ...
-
-    @property
-    def supports_sidebar(self) -> bool:
-        """Return whether this frontend can host extension sidebar sections."""
-        ...
-
-    def set_sidebar_section(
-        self,
-        extension_name: str,
-        key: str,
-        *,
-        title: str,
-        content: SidebarContent,
-    ) -> None:
-        """Add or replace one extension-owned, host-framed sidebar section."""
-        ...
-
-    def remove_sidebar_section(self, extension_name: str, key: str) -> None:
-        """Remove one extension-owned sidebar section, if present."""
-        ...
-
-    def clear_components(self) -> None:
-        """Tear down all extension-owned UI (host-driven, not for extensions).
-
-        The runtime drives this on `/reload` (the stale generation's widgets
-        and interceptors must not outlive its registrations) and on session
-        rebinds (resume/new), before ``session_start`` fires so handlers can
-        re-mount. Slot widgets and any main view are unmounted (a pending
-        ``wait()`` resolves with ``None``) and key interceptors are dropped.
-        """
-        ...
-
-
-class _DeadMainViewHandle:
-    """A no-op main-view handle returned when no UI can host a view."""
-
-    def close(self, result: object | None = None) -> None:
-        """Do nothing: there is no view to close (``result`` is ignored)."""
-
-    async def wait(self) -> object | None:
-        """Return None immediately: a dead handle never opens a view."""
-        return None
-
-    @property
-    def is_open(self) -> bool:
-        """Return False: a dead handle is never open."""
-        return False
+    def clear_status(self, source: str | None = None) -> None: ...
 
 
 class NullUiBridge:
@@ -729,67 +411,17 @@ class NullUiBridge:
         title: str,
         placeholder: str = "",
         *,
+        secret: bool = False,
         timeout: float | None = None,
     ) -> str | None:
         """Return None: no UI to enter text into (Pi no-op default)."""
         return None
 
-    # -- component seam -------------------------------------------------------
+    def set_status(self, source: str, key: str, text: str | None) -> None:
+        """Headless hosts do not render status lines."""
 
-    @property
-    def supports_components(self) -> bool:
-        """Return False: print mode cannot host widgets."""
-        return False
-
-    @property
-    def theme(self) -> TuiTheme:
-        """Return a usable default theme (never raise; print-mode may read it)."""
-        return _default_theme()
-
-    def get_prompt_text(self) -> str:
-        """Return an empty prompt: there is no editor in print mode."""
-        return ""
-
-    def request_render(self) -> None:
-        """Do nothing: there is no frontend to re-render."""
-
-    def set_slot_widget(
-        self,
-        key: str,
-        content: SlotWidgetContent | None,
-        *,
-        placement: Placement = "above_prompt",
-    ) -> None:
-        """Do nothing: there is no slot to mount into."""
-
-    def open_main_view(self, factory: MainViewFactory) -> MainViewHandle:
-        """Return a dead handle: there is no main area to host a view."""
-        return _DeadMainViewHandle()
-
-    def register_key_interceptor(self, handler: KeyInterceptor) -> Callable[[], None]:
-        """Return a no-op unsubscribe: no key stream to intercept."""
-        return lambda: None
-
-    @property
-    def supports_sidebar(self) -> bool:
-        """Return False: print mode has no interactive sidebar."""
-        return False
-
-    def set_sidebar_section(
-        self,
-        extension_name: str,
-        key: str,
-        *,
-        title: str,
-        content: SidebarContent,
-    ) -> None:
-        """Do nothing: there is no sidebar in print mode."""
-
-    def remove_sidebar_section(self, extension_name: str, key: str) -> None:
-        """Do nothing: there is no sidebar in print mode."""
-
-    def clear_components(self) -> None:
-        """Do nothing: no components were ever mounted."""
+    def clear_status(self, source: str | None = None) -> None:
+        """No status is retained by headless hosts."""
 
 
 class StderrUiBridge(NullUiBridge):
@@ -829,11 +461,11 @@ class ExtensionUi:
         runtime: ExtensionRuntime,
         generation: ExtensionGeneration | None = None,
         *,
-        extension_name: str = "",
+        source_id: str = "",
     ) -> None:
         self._runtime = runtime
         self._generation = generation if generation is not None else ExtensionGeneration()
-        self._sidebar = ExtensionSidebar(runtime, extension_name, self._generation)
+        self._source_id = source_id
 
     @property
     def has_ui(self) -> bool:
@@ -868,30 +500,19 @@ class ExtensionUi:
         title: str,
         placeholder: str = "",
         *,
+        secret: bool = False,
         timeout: float | None = None,
     ) -> str | None:
         """Prompt the user for text; None on cancel/no UI."""
         self._generation.assert_active()
-        return await self._runtime.ui.input(title, placeholder, timeout=timeout)
+        return await self._runtime.ui.input(title, placeholder, secret=secret, timeout=timeout)
 
-    @property
-    def sidebar(self) -> ExtensionSidebar:
-        """Return this extension's host-framed sidebar capability."""
+    def set_status(self, key: str, text: str | None) -> None:
+        """Update this extension's terminal status without owning UI widgets."""
         self._generation.assert_active()
-        return self._sidebar
-
-    @property
-    def components(self) -> ComponentBridge:
-        """Return the host widget-hosting capability.
-
-        Straight pass-through to the installed UI bridge, which implements the
-        :class:`ComponentBridge` members (the TUI hosts real widgets; the
-        print-mode bridges are no-ops with ``supports_components == False``).
-        Gate widget work on ``context.ui.components.supports_components``.
-        A stale facade raises here, before the bridge is ever reachable.
-        """
-        self._generation.assert_active()
-        return cast("ComponentBridge", self._runtime.ui)
+        if not key.strip():
+            raise ExtensionError("Status key must not be empty")
+        self._runtime.ui.set_status(self._source_id, key, text)
 
     def notify(self, message: str, level: NotifyLevel = "info") -> None:
         """Show a notification in the UI, if one is attached."""
@@ -913,11 +534,11 @@ class ExtensionContext:
         runtime: ExtensionRuntime,
         generation: ExtensionGeneration | None = None,
         *,
-        extension_name: str = "",
+        source_id: str = "",
     ) -> None:
         self._runtime = runtime
         self._generation = generation if generation is not None else ExtensionGeneration()
-        self._ui = ExtensionUi(runtime, self._generation, extension_name=extension_name)
+        self._ui = ExtensionUi(runtime, self._generation, source_id=source_id)
 
     @property
     def cwd(self) -> Path:
@@ -1049,7 +670,7 @@ class ExtensionAPI:
         self._context = ExtensionContext(
             runtime,
             self._generation,
-            extension_name=extension_name,
+            source_id=self._source_id,
         )
 
     @property

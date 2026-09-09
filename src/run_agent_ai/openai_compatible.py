@@ -661,6 +661,8 @@ class _ResponsesStreamParser:
         return [], False
 
     def finalize(self) -> list[ProviderEvent]:
+        if self._status is None:
+            return [ProviderErrorEvent(message="Responses stream ended before a terminal event")]
         tool_calls = [
             builder.build(index)
             for index, builder in enumerate(_ordered_builders(self._tool_call_builders))

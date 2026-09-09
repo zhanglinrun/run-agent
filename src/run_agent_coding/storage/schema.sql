@@ -1,5 +1,5 @@
 PRAGMA application_id = 1381322305;
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;
 
 CREATE TABLE projects (
     project_id TEXT PRIMARY KEY,
@@ -23,7 +23,8 @@ CREATE TABLE sessions (
     owner_id TEXT,
     active_run_id TEXT,
     owner_expires_at REAL,
-    owner_active INTEGER NOT NULL DEFAULT 0 CHECK(owner_active IN (0, 1))
+    owner_active INTEGER NOT NULL DEFAULT 0 CHECK(owner_active IN (0, 1)),
+    active_branch_id TEXT NOT NULL DEFAULT 'main'
 );
 CREATE INDEX sessions_project_updated ON sessions(project_id, updated_at DESC);
 CREATE INDEX sessions_principal_updated ON sessions(principal_id, updated_at DESC);
@@ -57,6 +58,22 @@ CREATE TABLE entries (
     FOREIGN KEY(session_id, parent_id) REFERENCES entries(session_id, entry_id)
 );
 CREATE INDEX entries_run ON entries(run_id, seq);
+
+CREATE TABLE executions (
+    run_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    branch_id TEXT NOT NULL,
+    owner_id TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('running','succeeded','failed','cancelled','interrupted','outcome_unknown')),
+    started_at REAL NOT NULL,
+    finished_at REAL,
+    head_id TEXT,
+    watermark INTEGER,
+    outcome_json TEXT CHECK(outcome_json IS NULL OR json_valid(outcome_json)),
+    error TEXT,
+    FOREIGN KEY(session_id, branch_id) REFERENCES branches(session_id, branch_id)
+);
 
 CREATE TABLE context_snapshots (
     snapshot_id TEXT PRIMARY KEY,

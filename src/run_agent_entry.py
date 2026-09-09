@@ -8,6 +8,10 @@ from importlib.metadata import PackageNotFoundError, version
 
 def main(argv: list[str] | None = None) -> int:
     """Start the Coding, Gateway or evaluation host without cross-layer imports."""
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        configure = getattr(stream, "reconfigure", None)
+        if configure is not None:
+            configure(encoding="utf-8", errors="replace")
     args = list(sys.argv[1:] if argv is None else argv)
     if args == ["--version"]:
         try:

@@ -46,8 +46,11 @@
     {
       "id": "P0-7",
       "requirement": "固定统一 CLI 的交互样例，验证现有渲染器对滚动记录、多行输入和流式工具输出的适配；选择复用或只替换呈现层。",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "docs/implementation/checkpoint-02.md",
+        "docs/implementation/application-tests.xml"
+      ]
     },
     {
       "id": "P0-8",
@@ -78,8 +81,11 @@
     {
       "id": "P1-4",
       "requirement": "明确 session_start、agent_settled 与持久完成回执的先后关系。",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "docs/implementation/checkpoint-02.md",
+        "docs/implementation/application-tests.xml"
+      ]
     },
     {
       "id": "P1-5",
@@ -107,20 +113,29 @@
     {
       "id": "P1-8",
       "requirement": "提取统一 application 启动/退出流程，使默认交互、初始任务、恢复和 print 使用同一 Session 与服务组合。",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "docs/implementation/checkpoint-02.md",
+        "docs/implementation/application-tests.xml"
+      ]
     },
     {
       "id": "P1-9",
       "requirement": "收敛为一套终端滚动记录、输入区、工具过程和斜杠命令，删除旧 UI 接口和重复呈现路径。",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "docs/implementation/checkpoint-02.md",
+        "docs/implementation/application-tests.xml"
+      ]
     },
     {
       "id": "P1-10",
       "requirement": "统一帮助、错误、stdout/stderr 和退出码；补管道、无 TTY、取消及新版 UI 契约，完成 A06—A08。",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "docs/implementation/checkpoint-02.md",
+        "docs/implementation/application-tests.xml"
+      ]
     },
     {
       "id": "P1-11",
@@ -129,14 +144,20 @@
       "evidence": [
         "src/run_agent_entry.py",
         "pyproject.toml",
-        "docs/implementation/distribution-check.json"
+        "docs/implementation/distribution-check.json",
+        "docs/implementation/checkpoint-02.md",
+        "docs/implementation/application-tests.xml",
+        "docs/implementation/distribution-check-02.json"
       ]
     },
     {
       "id": "P1-12",
       "requirement": "移除 JSONL RPC 和逐事件 JSON 输出，print/json 改为单个结果对象；同步 Python 集成测试入口。",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "docs/implementation/checkpoint-02.md",
+        "docs/implementation/application-tests.xml"
+      ]
     },
     {
       "id": "P2-1",
@@ -164,14 +185,19 @@
       "status": "in_progress",
       "evidence": [
         "src/run_agent_core/session/contracts.py",
-        "src/run_agent_coding/storage/sessions.py"
+        "src/run_agent_coding/storage/sessions.py",
+        "docs/implementation/checkpoint-02.md",
+        "docs/implementation/application-tests.xml"
       ]
     },
     {
       "id": "P2-4",
       "requirement": "接入 CodingSession 持久化，消除最终事件与宿主终态分开提交的问题。",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "docs/implementation/checkpoint-02.md",
+        "docs/implementation/application-tests.xml"
+      ]
     },
     {
       "id": "P2-5",
@@ -195,8 +221,11 @@
     {
       "id": "P2-7",
       "requirement": "接通 new/resume/branch/history，直接改写调用者，删除旧 JSONL 格式读写、导入导出及文件会话装配。",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "docs/implementation/checkpoint-02.md",
+        "docs/implementation/application-tests.xml"
+      ]
     },
     {
       "id": "P2-8",
@@ -464,22 +493,31 @@
       "id": "A06",
       "scenario": "同一 CLI 的默认交互/print/恢复",
       "invariant": "共用 application、SQLite、权限与扩展生命周期，无第二套终端业务逻辑",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "docs/implementation/checkpoint-02.md",
+        "docs/implementation/application-tests.xml"
+      ]
     },
     {
       "id": "A07",
       "scenario": "管道、无 TTY、Ctrl+C",
       "invariant": "无控制码污染机器输出，不等待交互输入，取消与退出状态真实",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "docs/implementation/checkpoint-02.md",
+        "docs/implementation/application-tests.xml"
+      ]
     },
     {
       "id": "A08",
       "scenario": "新版终端与 UI 扩展契约",
       "invariant": "保留的扩展直接使用新 API，无旧 Textual 接口适配器或双界面路径",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "docs/implementation/checkpoint-02.md",
+        "docs/implementation/application-tests.xml"
+      ]
     },
     {
       "id": "A09",
@@ -487,7 +525,10 @@
       "invariant": "安装产物包含入口，默认交互、--help、--version、gateway、bench 路由正确",
       "status": "in_progress",
       "evidence": [
-        "docs/implementation/component-tests.xml"
+        "docs/implementation/component-tests.xml",
+        "docs/implementation/checkpoint-02.md",
+        "docs/implementation/application-tests.xml",
+        "docs/implementation/distribution-check-02.json"
       ],
       "note": "Component evidence exists; full application/host integration is still pending."
     },
@@ -497,7 +538,10 @@
       "invariant": "只注册 run，无 run-agent 等旧脚本别名；所有新版示例可执行",
       "status": "in_progress",
       "evidence": [
-        "docs/implementation/component-tests.xml"
+        "docs/implementation/component-tests.xml",
+        "docs/implementation/checkpoint-02.md",
+        "docs/implementation/application-tests.xml",
+        "docs/implementation/distribution-check-02.json"
       ],
       "note": "Component evidence exists; full application/host integration is still pending."
     },
@@ -584,7 +628,9 @@
       "invariant": "分支头、序号和事件一致",
       "status": "in_progress",
       "evidence": [
-        "docs/implementation/component-tests.xml"
+        "docs/implementation/component-tests.xml",
+        "docs/implementation/checkpoint-02.md",
+        "docs/implementation/application-tests.xml"
       ],
       "note": "Component evidence exists; full application/host integration is still pending."
     },
@@ -594,7 +640,9 @@
       "invariant": "活动状态写入被拒绝",
       "status": "in_progress",
       "evidence": [
-        "docs/implementation/component-tests.xml"
+        "docs/implementation/component-tests.xml",
+        "docs/implementation/checkpoint-02.md",
+        "docs/implementation/application-tests.xml"
       ],
       "note": "Component evidence exists; full application/host integration is still pending."
     },
@@ -609,9 +657,11 @@
       "id": "S04",
       "scenario": "空状态目录初始化与首次持久化",
       "invariant": "自动建立新版 SQLite schema，完成任务后能重启查询、恢复和分叉",
-      "status": "in_progress",
+      "status": "complete",
       "evidence": [
-        "docs/implementation/component-tests.xml"
+        "docs/implementation/component-tests.xml",
+        "docs/implementation/checkpoint-02.md",
+        "docs/implementation/application-tests.xml"
       ],
       "note": "Component evidence exists; full application/host integration is still pending."
     },
@@ -646,8 +696,11 @@
       "id": "S08",
       "scenario": "交互、print、Gateway 和 Eval 全链路运行",
       "invariant": "无产品 JSONL 文件、RPC、Adapter 或 reader/writer；SQLite 账本和轨迹可复核",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "docs/implementation/checkpoint-02.md",
+        "docs/implementation/application-tests.xml"
+      ]
     },
     {
       "id": "E01",

@@ -9,7 +9,7 @@
 - 原始调度与存储性能：`baseline-runtime.json`、`baseline-storage.json`。这些是模拟负载，用于同条件比较，不代表模型能力。
 - 新版目标：Provider / Core / Coding / Gateway；唯一产品命令 `run`；SQLite 权威状态；独立 Gateway；Session 扩展装配经验学习；独立环境验收和证据闭环。
 
-当前检查点：6 项组件任务完成，其他任务和所有完整应用验收继续开放。详情见 `checkpoint-01.json` 及 `requirements.json`。
+当前检查点：9 项实施任务完成，A08 与 S04 的新版应用行为验收通过。其他完整目标继续开放；详见 `checkpoint-02.md`、`application-tests.xml` 及 `requirements.json`。`checkpoint-01.json` 保留为历史组件记录。
 
 已落地并验证：
 
@@ -31,4 +31,6 @@
 
 `storage-component-results.json` 是新 repository 的单机模拟测量，尚未覆盖整个 CodingSession 路径，不直接用它填写简历中的端到端性能数字。
 
-下一阶段接通 CodingSession 与 application 的 SQLite 生命周期、最终提交回执和新存储接口，收敛终端，移除产品 JSONL/RPC。随后继续网关、experience、独立验收、真实模型样本与消融。当前旧 Session 主路径与 Textual 呈现仍待替换，不能把组件完成当作整项目完成。
+检查点 02 已接通 CodingSession、application 和 Gateway 会话池的 SQLite 生命周期与最终提交回执，统一 Rich / prompt_toolkit 终端，删除会话 JSONL、RPC、Textual 呈现和组件 API。50 项新版测试通过；全量 mypy 检查 142 个源文件通过。全新 wheel 安装可从源码外完成模拟任务并恢复会话。
+
+下一阶段替换诊断、观测与评测中的剩余 JSONL，补齐 HostServices、受管理扩展任务与资源快照，继续持久网关、experience、独立验收、真实模型样本与消融。Outbox 尚未实现，模拟模型测试不代表真实编码能力。

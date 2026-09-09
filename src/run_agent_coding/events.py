@@ -8,6 +8,7 @@ from pydantic import Field
 
 from run_agent_core.events import AgentEvent
 from run_agent_core.messages import AgentMessage, WireModel
+from run_agent_core.session.contracts import RunStatus
 from run_agent_core.session.entries import SessionEntry
 
 
@@ -19,6 +20,12 @@ class SessionAgentEndEvent(WireModel):
 
 class AgentSettledEvent(WireModel):
     type: Literal["agent_settled"] = "agent_settled"
+    run_id: str
+    session_id: str
+    branch_id: str
+    status: RunStatus
+    head_id: str | None
+    watermark: int
 
 
 class QueueUpdateEvent(WireModel):

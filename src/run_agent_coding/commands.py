@@ -87,8 +87,6 @@ class CommandSession(Protocol):
     @property
     def session_manager(self) -> SessionManager | None: ...
 
-    def ensure_session_indexed(self) -> None: ...
-
     def set_model(self, model: str) -> None: ...
 
     def reload_provider_settings(self) -> None: ...
@@ -123,9 +121,7 @@ class CommandResult:
     tools_picker_requested: bool = False
     scoped_models_picker_requested: bool = False
     skills_picker_requested: bool = False
-    theme_picker_requested: bool = False
     thinking_level: str | None = None
-    theme: str | None = None
     message: str | None = None
     session_name: str | None = None
 
@@ -243,7 +239,7 @@ def create_default_command_registry() -> CommandRegistry:
     registry.register(
         SlashCommand(
             name="export",
-            usage="/export [--format html|jsonl] [destination]",
+            usage="/export [--format html] [destination]",
             description="Export the current session.",
             handler=_export_command,
         )
@@ -365,15 +361,6 @@ def create_default_command_registry() -> CommandRegistry:
     )
     registry.register(
         SlashCommand(
-            name="theme",
-            usage="/theme [name]",
-            description="Show or set the TUI theme.",
-            handler=_theme_command,
-            search_terms=("light", "dark", "contrast"),
-        )
-    )
-    registry.register(
-        SlashCommand(
             name="login",
             usage="/login [provider]",
             description="Connect a provider with OAuth or an API key.",
@@ -489,16 +476,12 @@ def _hotkeys_command(context: CommandContext) -> CommandResult:
     lines = [
         "Common keyboard shortcuts:",
         "- Enter: submit prompt",
-        "- Shift+Enter: insert newline",
-        "- Alt+Enter: queue follow-up while running",
-        "- Esc: cancel active run",
-        "- Ctrl+K: open slash-command completions",
-        "- Ctrl+R: open session picker",
-        "- Ctrl+P / Shift+Ctrl+P: cycle scoped models forward / backward",
-        "- Shift+Tab: cycle thinking mode",
-        "- Ctrl+T: toggle thinking tokens",
-        "- Ctrl+O: collapse or expand tool output",
-        "- Ctrl+C: clear prompt input",
+        "- Alt+Enter: insert newline",
+        "- Tab: complete a slash command",
+        "- Up / Down: input history",
+        "- Ctrl+C: stop the current operation or clear input",
+        "- /queue <text>: queue a follow-up while running",
+        "- /expand <tool-call-id>: show full tool output",
         "- Ctrl+D: quit",
     ]
     return CommandResult(handled=True, message="\n".join(lines))
@@ -568,8 +551,6 @@ def _resume_command(context: CommandContext) -> CommandResult:
     if manager is None:
         return CommandResult(handled=True, message="Session manager is not available.")
     session_id = context.args.strip()
-    if manager.get_session(session_id) is None:
-        return CommandResult(handled=True, message=f"Unknown session: {session_id}")
     return CommandResult(
         handled=True,
         resume_session_id=session_id,
@@ -589,10 +570,7 @@ def _name_command(context: CommandContext) -> CommandResult:
         return CommandResult(handled=True, message="Session manager is not available.")
 
     if not context.args:
-        record = manager.get_session(session_id)
-        title = (
-            record.title if record is not None else context.session.session_title
-        ) or "Untitled session"
+        title = context.session.session_title or "Untitled session"
         return CommandResult(
             handled=True,
             message=f"Current session name: {title}\nUsage: /name <new name>",
@@ -608,21 +586,6 @@ def _name_command(context: CommandContext) -> CommandResult:
         session_name=name,
         message=f"Session renamed: {name}",
     )
-
-
-def _format_sessions(context: CommandContext) -> str:
-    manager = context.session.session_manager
-    if manager is None:
-        return "Session manager is not available."
-
-    records = manager.list_sessions(context.session.cwd)
-    if not records:
-        return "No sessions found."
-
-    lines = ["Indexed sessions:"]
-    for record in records:
-        lines.append(_format_session_record(record))
-    return "\n".join(lines)
 
 
 def _tools_command(context: CommandContext) -> CommandResult:
@@ -716,25 +679,6 @@ def _thinking_status_lines(session: CommandSession) -> list[str]:
 def _thinking_unavailable_reason(session: CommandSession) -> str | None:
     reason = getattr(session, "thinking_unavailable_reason", None)
     return reason if isinstance(reason, str) and reason else None
-
-
-def _theme_command(context: CommandContext) -> CommandResult:
-    if not context.args:
-        return CommandResult(handled=True, theme_picker_requested=True)
-
-    # Imported lazily so importing this module never pulls in `run_agent_coding.tui`
-    # (whose package __init__ imports Textual) until /theme actually executes.
-    from run_agent_coding.tui.themes import available_tui_theme_names
-
-    theme_name = context.args.strip()
-    available = available_tui_theme_names()
-    if theme_name not in available:
-        themes = ", ".join(available)
-        return CommandResult(
-            handled=True,
-            message=f"Unknown theme: {theme_name}\nAvailable themes: {themes}",
-        )
-    return CommandResult(handled=True, theme=theme_name)
 
 
 def _login_command(context: CommandContext) -> CommandResult:
@@ -861,7 +805,7 @@ def _parse_export_args(args: str) -> tuple[str | None, Path | None]:
         if part == "--format":
             index += 1
             if index >= len(parts):
-                raise ValueError("Usage: /export [--format html|jsonl] [destination]")
+                raise ValueError("Usage: /export [--format html] [destination]")
             export_format = parts[index]
         elif part.startswith("--format="):
             export_format = part.partition("=")[2]
@@ -870,7 +814,7 @@ def _parse_export_args(args: str) -> tuple[str | None, Path | None]:
         elif destination is None:
             destination = Path(part).expanduser()
         else:
-            raise ValueError("Usage: /export [--format html|jsonl] [destination]")
+            raise ValueError("Usage: /export [--format html] [destination]")
         index += 1
     return export_format, destination
 

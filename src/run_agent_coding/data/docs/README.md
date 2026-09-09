@@ -7,7 +7,6 @@ Run Agent is a minimalist Python coding-agent harness inspired by Pi. Use these 
 - [Models](models.md): configure durable and extension-provided providers and models.
 - [CLI](cli.md): command-line and slash-command entry points.
 - [Security](security.md): project-input trust behavior and isolation boundaries.
-- [TUI](tui.md): interactive interface behavior.
 - [Architecture](architecture.md): package boundaries and contributor design rules.
 
 Read only the references relevant to the task, then follow their links and the active project's instructions.
