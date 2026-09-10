@@ -34,6 +34,7 @@ from run_agent_coding.storage.snapshots import read_snapshot
 from run_agent_coding.storage.sqlite import SqliteDatabase
 from run_agent_coding.storage.state import ExtensionRetired, NamespaceState, assert_extension
 from run_agent_coding.storage.tasks import BoundTaskService, LocalTaskManager
+from run_agent_coding.storage.unit_of_work import CommitParticipant, UnitOfWork
 from run_agent_core.session.contracts import AppendReceipt
 from run_agent_core.session.entries import CustomEntry
 
@@ -130,7 +131,13 @@ class SqliteHostServices:
             raise ValueError("Invalid extension bindings")
         frozen_sources = tuple(sources)
 
-        def publish(connection: sqlite3.Connection) -> tuple[str, str, AppendReceipt | None]:
+        # One named unit of work: the extension rebind and its activation entry
+        # commit together, so a generation can never be live without its marker,
+        # nor a marker without its generation.
+        session_row: list[sqlite3.Row] = []
+        receipt: list[AppendReceipt | None] = []
+
+        def validate(connection: sqlite3.Connection) -> None:
             assert_active()
             session = connection.execute(
                 "SELECT * FROM sessions WHERE session_id=?",
@@ -150,6 +157,9 @@ class SqliteHostServices:
             ).fetchall()
             if any(row[0] != expected_generation for row in owners):
                 raise ExtensionRetired("The published extension generation changed")
+            session_row.append(session)
+
+        def rebind(connection: sqlite3.Connection) -> None:
             connection.execute(
                 "UPDATE extension_owners SET active=0 WHERE session_id=?",
                 (session_id,),
@@ -161,30 +171,43 @@ class SqliteHostServices:
                     "owner_id=excluded.owner_id,generation=excluded.generation,active=1",
                     (session_id, source, self.owner_id, generation),
                 )
+
+        def interrupt_tasks(connection: sqlite3.Connection) -> None:
             connection.execute(
                 "UPDATE extension_tasks SET status='interrupted',finished_at=? "
                 "WHERE session_id=? AND owner_id<>? "
                 "AND status IN ('queued','running','cancelling')",
                 (time(), session_id, self.owner_id),
             )
-            receipt = None
-            if activation is not None:
-                if activation.token.session_id != session_id:
-                    raise ExtensionRetired("Resource activation belongs to another session")
-                # The activation pointer is committed by the append below; a fault
-                # here must prevent that commit rather than leave a half-published
-                # version visible to the next session.
-                self._hit_fault("activation_commit")
-                receipt = SqliteSessionRepository(self.database).append_in_transaction(
+
+        def commit_activation(connection: sqlite3.Connection) -> None:
+            if activation is None:
+                return
+            if activation.token.session_id != session_id:
+                raise ExtensionRetired("Resource activation belongs to another session")
+            # The activation pointer is committed by the append below; a fault
+            # here must prevent that commit rather than leave a half-published
+            # version visible to the next session.
+            self._hit_fault("activation_commit")
+            receipt.append(
+                SqliteSessionRepository(self.database).append_in_transaction(
                     connection,
                     (activation.entry,),
                     token=activation.token,
                     branch_id=activation.branch_id,
                     expected_head=activation.expected_head,
                 )
-            return session["principal_id"], session["project_id"], receipt
+            )
 
-        principal_id, project_id, receipt = await self.database.run(publish, write=True)
+        await UnitOfWork(self.database).commit(
+            CommitParticipant("extension-validation", validate),
+            CommitParticipant("extension-rebind", rebind),
+            CommitParticipant("task-interruption", interrupt_tasks),
+            CommitParticipant("activation-entry", commit_activation),
+        )
+        session = session_row[0]
+        principal_id, project_id = session["principal_id"], session["project_id"]
+        publication_receipt = receipt[0] if receipt else None
         scopes = _service_scopes(principal_id, project_id, session_id)
         services: dict[str, HostServices] = {
             source: BoundHostServices(
@@ -198,7 +221,7 @@ class SqliteHostServices:
             )
             for source in frozen_sources
         }
-        return HostPublication(services, receipt)
+        return HostPublication(services, publication_receipt)
 
     async def retire(self, session_id: str, generation: str) -> int:
         def retire(connection: sqlite3.Connection) -> None:

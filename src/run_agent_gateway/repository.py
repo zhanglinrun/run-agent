@@ -25,6 +25,7 @@ from run_agent_coding.storage.handle import OutcomeCommitter
 from run_agent_coding.storage.sessions import SqliteSessionRepository, canonical_json
 from run_agent_coding.storage.settle import settle
 from run_agent_coding.storage.sqlite import SqliteDatabase
+from run_agent_coding.storage.unit_of_work import CommitParticipant, UnitOfWork
 from run_agent_core.messages import AssistantMessage, CustomMessage
 from run_agent_core.session.contracts import CompletionReceipt, RunOutcome, SessionConflict
 from run_agent_core.session.entries import MessageEntry
@@ -825,39 +826,43 @@ class GatewayRepository:
                 outcome, entries=tuple(entry.model_copy(deep=True) for entry in outcome.entries)
             )
 
-        def complete(connection: sqlite3.Connection) -> CompletionReceipt | None:
+        # One named unit of work: the session outcome, the gateway terminal state
+        # and the result delivery commit together or not at all. Participants run
+        # in this order, so the guards see the same state the inline version did.
+        task_row: list[sqlite3.Row] = []
+        receipt: list[CompletionReceipt | None] = []
+
+        def qualify(connection: sqlite3.Connection) -> None:
             task = self._assignment(connection, owner, assignment, cancelling=status == "cancelled")
             if task["status"] == "cancelling" and status != "cancelled":
                 raise SessionConflict("Stop committed before this result")
-            if task["status"] in TERMINAL and (task["status"], task["output"], task["error"]) != (
-                status,
-                output,
-                error,
-            ):
+            if task["status"] in TERMINAL and (
+                task["status"],
+                task["output"],
+                task["error"],
+            ) != (status, output, error):
                 raise SessionConflict("Task already has a different completion")
-            receipt = None
-            if outcome is not None:
-                if (
-                    outcome.token.run_id != assignment.run_id
-                    or outcome.token.session_id != assignment.session_id
-                    or outcome.status != status
-                ):
-                    raise SessionConflict("Outcome does not belong to the assigned task")
-                receipt = self.sessions.complete_in_transaction(connection, outcome)
-            elif connection.execute(
-                "SELECT 1 FROM executions WHERE run_id=?", (assignment.run_id,)
-            ).fetchone():
-                raise SessionConflict("A Coding execution requires an atomic session outcome")
-            if task["status"] in TERMINAL:
-                if (
-                    connection.execute(
-                        "SELECT 1 FROM gateway_outbox WHERE task_id=? AND kind='result'",
-                        (assignment.task_id,),
-                    ).fetchone()
-                    is None
-                ):
-                    raise SessionConflict("Committed task is missing its result delivery")
-                return receipt
+            task_row.append(task)
+
+        def apply_outcome(connection: sqlite3.Connection) -> None:
+            if outcome is None:
+                existing = connection.execute(
+                    "SELECT 1 FROM executions WHERE run_id=?", (assignment.run_id,)
+                ).fetchone()
+                if existing:
+                    raise SessionConflict("A Coding execution requires an atomic session outcome")
+                return
+            if (
+                outcome.token.run_id != assignment.run_id
+                or outcome.token.session_id != assignment.session_id
+                or outcome.status != status
+            ):
+                raise SessionConflict("Outcome does not belong to the assigned task")
+            receipt.append(self.sessions.complete_in_transaction(connection, outcome))
+
+        def apply_terminal(connection: sqlite3.Connection) -> None:
+            if task_row[-1]["status"] in TERMINAL:
+                return
             connection.execute(
                 "UPDATE gateway_tasks SET status=?,output=?,error=?,finished_at=? WHERE task_id=?",
                 (status, output, error, self.clock(), assignment.task_id),
@@ -867,6 +872,17 @@ class GatewayRepository:
                 (status, self.clock(), assignment.run_id),
             )
             self._fault("gateway_task_completed")
+
+        def apply_delivery(connection: sqlite3.Connection) -> None:
+            task = task_row[-1]
+            if task["status"] in TERMINAL:
+                delivered = connection.execute(
+                    "SELECT 1 FROM gateway_outbox WHERE task_id=? AND kind='result'",
+                    (assignment.task_id,),
+                ).fetchone()
+                if delivered is None:
+                    raise SessionConflict("Committed task is missing its result delivery")
+                return
             self._outbox(
                 connection,
                 assignment.task_id,
@@ -888,10 +904,19 @@ class GatewayRepository:
                 },
             )
             self._fault("gateway_outbox_inserted")
-            self._queue_unconsumed_input(connection, assignment.run_id)
-            return receipt
 
-        return await self.database.run(complete, write=True)
+        def apply_requeue(connection: sqlite3.Connection) -> None:
+            if task_row[-1]["status"] not in TERMINAL:
+                self._queue_unconsumed_input(connection, assignment.run_id)
+
+        await UnitOfWork(self.database).commit(
+            CommitParticipant("gateway-qualification", qualify),
+            CommitParticipant("session-outcome", apply_outcome),
+            CommitParticipant("task-terminal", apply_terminal),
+            CommitParticipant("result-delivery", apply_delivery),
+            CommitParticipant("steering-requeue", apply_requeue),
+        )
+        return receipt[0] if receipt else None
 
     def _queue_unconsumed_input(self, connection: sqlite3.Connection, run_id: str) -> None:
         rows = connection.execute(

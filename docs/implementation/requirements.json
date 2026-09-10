@@ -223,12 +223,14 @@
     {
       "id": "P2-3",
       "requirement": "实现 owner/run token 校验及组合层 UnitOfWork。",
-      "status": "in_progress",
+      "status": "complete",
       "evidence": [
-        "src/run_agent_core/session/contracts.py",
-        "src/run_agent_coding/storage/sessions.py",
-        "docs/implementation/checkpoint-02.md",
-        "docs/implementation/application-tests.xml"
+        "src/run_agent_coding/storage/unit_of_work.py",
+        "src/run_agent_gateway/repository.py",
+        "src/run_agent_coding/storage/host.py",
+        "tests/redesign/test_unit_of_work.py::test_participants_apply_in_declaration_order",
+        "tests/redesign/test_unit_of_work.py::test_a_failing_participant_rolls_back_the_earlier_ones",
+        "tests/redesign/test_gateway_repository.py::test_final_history_task_outcome_and_delivery_commit_atomically"
       ]
     },
     {
