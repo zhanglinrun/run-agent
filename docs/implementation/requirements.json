@@ -42,8 +42,14 @@
     {
       "id": "P0-6",
       "requirement": "建立 fault point、可控工具和多轮脚本的最小支撑。",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "src/run_agent_evals/simulation.py",
+        "tests/redesign/test_simulation_support.py::test_fault_journal_records_order_and_raises_only_where_configured",
+        "tests/redesign/test_simulation_support.py::test_controlled_tool_counts_invocations_and_records_its_delay",
+        "tests/redesign/test_simulation_support.py::test_turn_script_fires_only_on_its_triggering_event",
+        "docs/implementation/open-issue-flake-01.md"
+      ]
     },
     {
       "id": "P0-7",
