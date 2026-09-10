@@ -18,7 +18,7 @@ from run_agent_coding.host.contracts import StateChange
 from run_agent_coding.host.learning import review_origin
 from run_agent_core.types import JSONValue
 
-from .worker import ReviewWorker
+from .worker import ReviewLedger, ReviewWorker
 
 AUXILIARY_ORIGINS = frozenset({"review", "evaluation", "naming"})
 REVIEW_REQUEST_PREFIX = "review-request:"
@@ -112,10 +112,10 @@ class ForegroundGate:
     queued: a completion event arrives while its own session is still running, so
     checking the foreground while queueing would defer every review forever.
 
-    It is deliberately not yet fed by the application's ``is_running``. That reports
-    true even after a prompt has returned, so using it here would defer every review -
-    the pipeline test caught exactly that. Which signal means "the user's run is in
-    flight" is an open question, tracked rather than guessed at.
+    It is fed the application's ``is_running``, measured rather than assumed: a probe
+    around a foreground run reports false before start, after start, and after the
+    prompt returns, for a succeeding provider and a failing one alike. So the signal
+    means "a run is in flight", which is exactly what the gate needs.
     """
 
     busy: Callable[[], bool]
@@ -137,10 +137,9 @@ class ReviewCoordinator:
         self._api = api
         self._trigger = trigger or ReviewTrigger()
         self._worker = ReviewWorker()
-        # Mechanism in place, signal unresolved: see ForegroundGate. Feeding it the
-        # application's is_running would defer every review, so it stays off until the
-        # right signal is established.
-        self._gate = ForegroundGate(busy=lambda: False)
+        # Read live rather than captured, so a review starting while a run is in flight
+        # is held back instead of competing with it.
+        self._gate = ForegroundGate(busy=lambda: api.context.is_running)
 
     async def settled(self, event: object, context: ExtensionContext) -> None:
         """Record at most one review request for an admitted completion."""
@@ -188,11 +187,23 @@ class ReviewCoordinator:
         claim = self._worker.claim(self._api.context.session_id or "session")
         if claim is None:
             return {"consumed": None, "reason": "a review is already running"}
+        # The review's spend belongs to the run that caused it. The ledger is created
+        # here, tied to that run, so whatever the review spends is attributable rather
+        # than an anonymous cost nobody can explain.
+        ledger = ReviewLedger(parent_run_id=run_id)
         try:
             # Anything this fork writes is agent-created, which is the only kind of
             # asset automatic maintenance may later touch.
             with review_origin():
-                return await self._consume_once(run_id)
+                outcome = await self._consume_once(run_id)
+            # Rebuilt from the known shape rather than unpacked, and the usage is
+            # bound to the run that caused the review.
+            fields = outcome if isinstance(outcome, Mapping) else {}
+            return {
+                "consumed": fields.get("consumed"),
+                "key": fields.get("key"),
+                "usage": ledger.attribution(),
+            }
         finally:
             self._worker.release(claim)
 

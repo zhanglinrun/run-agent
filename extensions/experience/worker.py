@@ -15,6 +15,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from uuid import uuid4
 
+from run_agent_core.types import JSONValue
+
 ALLOWED_CAPABILITIES = frozenset({"read_evidence", "create_candidate", "inspect"})
 
 
@@ -52,7 +54,7 @@ class ReviewLedger:
         self.input_tokens = 0
         self.output_tokens = 0
 
-    def attribution(self) -> dict[str, object]:
+    def attribution(self) -> dict[str, JSONValue]:
         """The usage as charged to the run that caused the review.
 
         A review spends the user's money, so the spend has to belong to someone. An
