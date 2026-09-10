@@ -480,8 +480,13 @@
     {
       "id": "P5-4",
       "requirement": "增加开发集和最小迁移任务；固定资源、禁用评测写回。",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "src/run_agent_coding/host/learning.py",
+        "tests/redesign/test_learning_writeback.py::test_no_experience_is_written_while_writeback_is_off",
+        "tests/redesign/test_learning_writeback.py::test_the_evaluator_disables_writeback_for_the_duration_of_a_trial",
+        "evals/coding/tasks/tasks.json"
+      ]
     },
     {
       "id": "P5-5",

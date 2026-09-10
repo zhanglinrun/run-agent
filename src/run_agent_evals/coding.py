@@ -8,6 +8,7 @@ from typing import Any
 from uuid import uuid4
 
 from run_agent_coding.application import ApplicationOptions, CodingApplication
+from run_agent_coding.host.learning import writeback_disabled
 from run_agent_coding.paths import RunAgentPaths
 from run_agent_coding.project_trust import TrustDefault
 from run_agent_coding.provider_config import ProviderSettings, load_provider_settings
@@ -49,6 +50,15 @@ class CodingTaskExecutor:
         self.trust_default = trust_default
 
     async def execute(self, task: FrozenTask, workspace: Path) -> ExecutionResult:
+        """Run one measured trial with learning writeback switched off.
+
+        An evaluation must not change the experience it is measuring, so the guard
+        is set for the whole trial and restored afterwards.
+        """
+        with writeback_disabled():
+            return await self._run_measured(task, workspace)
+
+    async def _run_measured(self, task: FrozenTask, workspace: Path) -> ExecutionResult:
         call_id = uuid4().hex
         session_id = f"eval-{call_id}"
         manager = SessionManager(self.paths)

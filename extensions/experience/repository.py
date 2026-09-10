@@ -14,6 +14,7 @@ from run_agent_coding.host.contracts import (
     ScopedServices,
     StateChange,
 )
+from run_agent_coding.host.learning import require_writeback
 from run_agent_core.session.contracts import SessionConflict
 from run_agent_core.types import JSONValue
 
@@ -60,6 +61,8 @@ class ExperienceRepository:
         snapshot_id: str | None = None,
         expected_base: str | None = None,
     ) -> Candidate:
+        # P5-4: an evaluation must not change the asset it is measuring.
+        require_writeback()
         scoped = self.scoped(proposal.scope)
         if command_id is not None:
             await self._command(command_id, proposal.scope, {"remember", "propose", "import"})
