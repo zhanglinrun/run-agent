@@ -47,7 +47,8 @@
       "status": "complete",
       "evidence": [
         "docs/implementation/p0-5-cost-estimate.md",
-        "docs/implementation/real-sample-evidence/p0-5-first-run/report.json",
+        "docs/implementation/real-sample-evidence/p0-5-passed-run/report.json",
+        "docs/implementation/real-sample-evidence/p0-5-passed-run/ledger-extract.json",
         "docs/implementation/real-sample-evidence/p0-5-first-run/ledger-extract.json"
       ]
     },
