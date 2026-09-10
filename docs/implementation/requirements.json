@@ -299,10 +299,11 @@
     {
       "id": "P3-1",
       "requirement": "实现结构化路由、Inbox 去重、持久准入与回执。",
-      "status": "in_progress",
+      "status": "complete",
       "evidence": [
-        "docs/implementation/checkpoint-07.md",
-        "docs/implementation/gateway-repository-tests.xml"
+        "src/run_agent_gateway/routing.py",
+        "src/run_agent_gateway/repository.py",
+        "tests/redesign/test_gateway_repository.py::test_admission_deduplicates_concurrent_deliveries_and_conflicts"
       ]
     },
     {
@@ -319,64 +320,58 @@
     {
       "id": "P3-3",
       "requirement": "替换前驱 Task 链为就绪 Session 调度，实施准入和运行双层容量。",
-      "status": "in_progress",
+      "status": "complete",
       "evidence": [
-        "docs/implementation/checkpoint-07.md",
-        "docs/implementation/gateway-repository-tests.xml"
+        "src/run_agent_gateway/scheduler.py",
+        "tests/redesign/test_gateway_runtime.py::test_many_queued_tasks_allocate_only_running_coroutines",
+        "tests/redesign/test_mixed_load.py::test_one_session_replays_the_mixed_foreground_background_control_script"
       ]
     },
     {
       "id": "P3-4",
       "requirement": "实现工作区租约、独立后台 Session/worktree 与结果产物。",
-      "status": "in_progress",
+      "status": "complete",
       "evidence": [
-        "docs/implementation/checkpoint-09.md",
-        "docs/implementation/background-tests.xml",
-        "tests/redesign/test_background_workspaces.py",
-        "docs/implementation/distribution-check-09.json"
+        "src/run_agent_gateway/workspaces.py",
+        "tests/redesign/test_background_workspaces.py::test_worktree_is_pinned_and_result_includes_patch_and_new_files",
+        "tests/redesign/test_mixed_load.py::test_one_session_replays_the_mixed_foreground_background_control_script"
       ]
     },
     {
       "id": "P3-5",
       "requirement": "通过持久状态控制取消，完成子进程收敛和迟到提交隔离。",
-      "status": "in_progress",
+      "status": "complete",
       "evidence": [
-        "docs/implementation/checkpoint-07.md",
-        "docs/implementation/gateway-repository-tests.xml",
-        "docs/implementation/checkpoint-10.md",
-        "docs/implementation/process-tests.xml",
-        "docs/implementation/process-linux-tests.xml",
-        "docs/implementation/checkpoint-11.md",
-        "docs/implementation/process-journal-tests.xml"
+        "src/run_agent_gateway/repository.py",
+        "tests/redesign/test_gateway_runtime.py::test_real_prompt_stop_discards_late_answer_and_retains_slot_until_cleanup"
       ]
     },
     {
       "id": "P3-6",
       "requirement": "实现最终事务与 Outbox、投递回执、重试及失败查询。",
-      "status": "in_progress",
+      "status": "complete",
       "evidence": [
-        "docs/implementation/checkpoint-07.md",
-        "docs/implementation/gateway-repository-tests.xml"
+        "src/run_agent_gateway/outbox.py",
+        "tests/redesign/test_gateway_repository.py::test_final_history_task_outcome_and_delivery_commit_atomically"
       ]
     },
     {
       "id": "P3-7",
       "requirement": "实现启动恢复、owner 资格、未知副作用状态和优雅退出。",
-      "status": "in_progress",
+      "status": "complete",
       "evidence": [
-        "docs/implementation/checkpoint-07.md",
-        "docs/implementation/gateway-repository-tests.xml",
-        "docs/implementation/checkpoint-12.md",
-        "docs/implementation/recovery-tests.xml",
-        "docs/implementation/recovery-linux-tests.xml",
-        "docs/implementation/distribution-check-12.json"
+        "src/run_agent_gateway/recovery.py",
+        "tests/redesign/test_gateway_recovery.py::test_restored_database_does_not_restart_gateway_or_repeat_delivery"
       ]
     },
     {
       "id": "P3-8",
       "requirement": "执行 G01—G11 与相关故障测试，运行可重复的混合负载。",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "tests/redesign/test_mixed_load.py::test_one_session_replays_the_mixed_foreground_background_control_script",
+        "docs/implementation/p2-closeout.md"
+      ]
     },
     {
       "id": "P3-9",
@@ -679,8 +674,12 @@
       "id": "G01",
       "scenario": "同会话普通任务与多会话交错",
       "invariant": "普通任务按持久接收顺序执行，其他会话可前进",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "tests/redesign/test_gateway_runtime.py::test_actual_dispatcher_runs_and_reopens_one_session_fifo",
+        "tests/redesign/test_gateway_repository.py::test_ready_sessions_round_robin_and_workspace_waiters_take_no_slot",
+        "tests/redesign/test_mixed_load.py::test_one_session_replays_the_mixed_foreground_background_control_script"
+      ]
     },
     {
       "id": "G02",
@@ -709,36 +708,52 @@
       "id": "G04",
       "scenario": "stop 与最终提交竞争",
       "invariant": "按事务顺序得到唯一终态，无迟到成功污染",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "tests/redesign/test_gateway_repository.py::test_stop_revokes_intermediate_history_before_late_result_and_allows_cancel_receipt",
+        "tests/redesign/test_gateway_repository.py::test_execution_reservations_and_no_early_release_during_cancel",
+        "tests/redesign/test_gateway_runtime.py::test_real_prompt_stop_discards_late_answer_and_retains_slot_until_cleanup"
+      ]
     },
     {
       "id": "G05",
       "scenario": "重复渠道消息/同键异内容",
       "invariant": "返回原 task 或报冲突，不双建",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "tests/redesign/test_gateway_repository.py::test_admission_deduplicates_concurrent_deliveries_and_conflicts",
+        "tests/redesign/test_gateway_steering.py::test_idle_steer_uses_normal_admission_and_duplicate_conflicts"
+      ]
     },
     {
       "id": "G06",
       "scenario": "后台占满运行和等待容量",
       "invariant": "前台保留准入/执行份额仍有效",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "tests/redesign/test_gateway_repository.py::test_background_cannot_consume_foreground_waiting_reservation",
+        "tests/redesign/test_gateway_runtime.py::test_many_queued_tasks_allocate_only_running_coroutines"
+      ]
     },
     {
       "id": "G07",
       "scenario": "热点会话持续入队",
       "invariant": "就绪会话有调度机会，排队对象不无限增长",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "tests/redesign/test_gateway_repository.py::test_ready_sessions_round_robin_and_workspace_waiters_take_no_slot",
+        "tests/redesign/test_gateway_runtime.py::test_many_queued_tasks_allocate_only_running_coroutines"
+      ]
     },
     {
       "id": "G08",
       "scenario": "同目录两个修改任务",
       "invariant": "工作区租约协调；等待者不占执行槽",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "tests/redesign/test_gateway_runtime.py::test_route_cannot_lease_a_workspace_other_than_its_coding_session",
+        "tests/redesign/test_gateway_repository.py::test_ready_sessions_round_robin_and_workspace_waiters_take_no_slot"
+      ]
     },
     {
       "id": "G09",
@@ -768,8 +783,11 @@
       "id": "G11",
       "scenario": "发送成功但回执丢失",
       "invariant": "有渠道幂等能力则复用键；否则记录潜在重复",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "tests/redesign/test_gateway_repository.py::test_outbox_retries_same_id_after_restart_and_limits_attempts",
+        "tests/redesign/test_gateway_runtime.py::test_channel_timeout_retries_the_same_delivery_id"
+      ]
     },
     {
       "id": "S01",
