@@ -92,51 +92,79 @@ class SqliteSessionRepository:
         metadata_json = canonical_json(metadata or {})
 
         def create(connection: sqlite3.Connection) -> SessionRecord:
-            now = self.clock()
-            if project_id is not None:
-                project = connection.execute(
-                    "SELECT project_id FROM projects WHERE project_id=?", (project_id,)
-                ).fetchone()
-                if project is None:
-                    raise KeyError(f"Unknown project: {project_id}")
-                project_identity = project_id
-            else:
-                project = connection.execute(
-                    "SELECT project_id FROM projects WHERE canonical_path=?", (resolved_cwd,)
-                ).fetchone()
-                project_identity = project[0] if project else uuid4().hex
-                if project is None:
-                    connection.execute(
-                        "INSERT INTO projects VALUES (?, ?, ?)",
-                        (project_identity, resolved_cwd, now),
-                    )
-            try:
-                connection.execute(
-                    """INSERT INTO sessions(session_id, principal_id, project_id, cwd, model,
-                       provider_name, title, metadata_json, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        identity,
-                        principal_id,
-                        project_identity,
-                        resolved_cwd,
-                        model,
-                        provider_name,
-                        title,
-                        metadata_json,
-                        now,
-                        now,
-                    ),
-                )
-            except sqlite3.IntegrityError as exc:
-                raise SessionConflict(f"Session already exists: {identity}") from exc
-            connection.execute(
-                "INSERT INTO branches(session_id, branch_id, created_at) VALUES (?, 'main', ?)",
-                (identity, now),
+            return self.create_in_transaction(
+                connection,
+                session_id=identity,
+                principal_id=principal_id,
+                cwd=Path(resolved_cwd),
+                model=model,
+                provider_name=provider_name,
+                project_id=project_id,
+                title=title,
+                metadata=json.loads(metadata_json),
             )
-            return self._record(connection, identity)
 
         return await self.database.run(create, write=True)
+
+    def create_in_transaction(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        session_id: str,
+        principal_id: str,
+        cwd: Path,
+        model: str,
+        provider_name: str | None = None,
+        project_id: str | None = None,
+        title: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> SessionRecord:
+        """Create the initial session and branch inside a host admission transaction."""
+        canonical_path = str(cwd.resolve())
+        now = self.clock()
+        if not session_id or not principal_id:
+            raise ValueError("Session and principal identities must not be empty")
+        if project_id is not None:
+            if (
+                connection.execute(
+                    "SELECT 1 FROM projects WHERE project_id=?", (project_id,)
+                ).fetchone()
+                is None
+            ):
+                raise KeyError(f"Unknown project: {project_id}")
+        else:
+            project = connection.execute(
+                "SELECT project_id FROM projects WHERE canonical_path=?", (canonical_path,)
+            ).fetchone()
+            project_id = project[0] if project else uuid4().hex
+            if project is None:
+                connection.execute(
+                    "INSERT INTO projects VALUES (?,?,?)", (project_id, canonical_path, now)
+                )
+        try:
+            connection.execute(
+                "INSERT INTO sessions(session_id,principal_id,project_id,cwd,model,provider_name,"
+                "title,metadata_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (
+                    session_id,
+                    principal_id,
+                    project_id,
+                    canonical_path,
+                    model,
+                    provider_name,
+                    title,
+                    canonical_json(metadata or {}),
+                    now,
+                    now,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise SessionConflict(f"Session already exists: {session_id}") from exc
+        connection.execute(
+            "INSERT INTO branches(session_id,branch_id,created_at) VALUES (?,'main',?)",
+            (session_id, now),
+        )
+        return self._record(connection, session_id)
 
     @staticmethod
     def _record(connection: sqlite3.Connection, session_id: str) -> SessionRecord:
@@ -192,6 +220,10 @@ class SqliteSessionRepository:
             if previous is not None and previous[0] == "running":
                 raise SessionConflict("The previous run has no committed outcome")
             self.head_in_transaction(connection, token.session_id, branch_id)
+            if connection.execute(
+                "SELECT 1 FROM execution_revocations WHERE run_id=?", (run_id,)
+            ).fetchone():
+                raise StaleRunToken("Run was cancelled before it began")
             new = RunToken(token.session_id, token.owner_id, run_id, token.generation + 1)
             connection.execute(
                 "UPDATE sessions SET active_run_id=?, generation=? WHERE session_id=?",
@@ -244,7 +276,12 @@ class SqliteSessionRepository:
                 row["watermark"],
                 row["snapshot_id"],
             )
-        self.assert_token(connection, outcome.token)
+        self.assert_token(connection, outcome.token, allow_revoked=outcome.status == "cancelled")
+        revoked = connection.execute(
+            "SELECT 1 FROM execution_revocations WHERE run_id=?", (outcome.token.run_id,)
+        ).fetchone()
+        if revoked and outcome.entries:
+            raise SessionConflict("Revoked runs cannot append final history")
         if outcome.snapshot_id is not None:
             snapshot = connection.execute(
                 "SELECT run_id,session_id,branch_id FROM context_snapshots WHERE snapshot_id=?",
@@ -262,6 +299,7 @@ class SqliteSessionRepository:
             token=outcome.token,
             branch_id=outcome.branch_id,
             expected_head=outcome.expected_head,
+            allow_revoked=outcome.status == "cancelled",
         )
         watermark = connection.execute(
             "SELECT last_seq FROM sessions WHERE session_id=?", (outcome.token.session_id,)
@@ -365,7 +403,9 @@ class SqliteSessionRepository:
 
         return await self.database.run(claim, write=True)
 
-    def assert_token(self, connection: sqlite3.Connection, token: RunToken) -> sqlite3.Row:
+    def assert_token(
+        self, connection: sqlite3.Connection, token: RunToken, *, allow_revoked: bool = False
+    ) -> sqlite3.Row:
         row: sqlite3.Row | None = connection.execute(
             "SELECT * FROM sessions WHERE session_id=?", (token.session_id,)
         ).fetchone()
@@ -378,6 +418,13 @@ class SqliteSessionRepository:
             or row["owner_expires_at"] <= self.clock()
         ):
             raise StaleRunToken(f"Run no longer owns session {token.session_id}")
+        if (
+            not allow_revoked
+            and connection.execute(
+                "SELECT 1 FROM execution_revocations WHERE run_id=?", (token.run_id,)
+            ).fetchone()
+        ):
+            raise StaleRunToken("Run write authority was revoked")
         return row
 
     async def renew(self, token: RunToken, *, ttl_seconds: float = 3600) -> None:
@@ -385,7 +432,7 @@ class SqliteSessionRepository:
             raise ValueError("Lease duration must be positive")
 
         def renew(connection: sqlite3.Connection) -> None:
-            self.assert_token(connection, token)
+            self.assert_token(connection, token, allow_revoked=True)
             connection.execute(
                 "UPDATE sessions SET owner_expires_at=? WHERE session_id=?",
                 (self.clock() + ttl_seconds, token.session_id),
@@ -395,7 +442,7 @@ class SqliteSessionRepository:
 
     async def release(self, token: RunToken) -> None:
         def release(connection: sqlite3.Connection) -> None:
-            self.assert_token(connection, token)
+            self.assert_token(connection, token, allow_revoked=True)
             connection.execute(
                 "UPDATE sessions SET owner_active=0 WHERE session_id=?", (token.session_id,)
             )
@@ -444,9 +491,10 @@ class SqliteSessionRepository:
         token: RunToken,
         branch_id: str = "main",
         expected_head: str | None,
+        allow_revoked: bool = False,
     ) -> AppendReceipt:
         """Compose with a host's final outcome and Outbox in this same transaction."""
-        row = self.assert_token(connection, token)
+        row = self.assert_token(connection, token, allow_revoked=allow_revoked)
         head = self.head_in_transaction(connection, token.session_id, branch_id)
         if len({entry.id for entry in entries}) != len(entries):
             raise SessionConflict("A batch contains duplicate entry IDs")

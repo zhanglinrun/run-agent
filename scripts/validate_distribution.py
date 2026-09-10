@@ -21,6 +21,9 @@ from run_agent_coding.paths import RunAgentPaths
 from run_agent_coding.host.contracts import StateChange
 from run_agent_core.messages import AssistantMessage, TextContent
 from run_agent_core.provider_events import AssistantDoneEvent
+from run_agent_gateway.contracts import RouteIdentity, Submission
+from run_agent_gateway.repository import GatewayRepository
+from run_agent_gateway.outbox import OutboxRepository
 scripts = {e.name:e.value for e in distribution('run-agent-harness').entry_points
            if e.group == 'console_scripts'}
 assert scripts == {'run':'run_agent_entry:main'}, scripts
@@ -37,6 +40,22 @@ async def check():
         await sink.append('accounting', {'cost':0.5})
         assert (await sink.read('accounting'))[0]['cost'] == 0.5
         await sink.aclose()
+        gateway = GatewayRepository(db)
+        await gateway.initialize()
+        owner = await gateway.acquire_owner('installed-host')
+        submitted = Submission(RouteIdentity('installed','account','chat'), 'local',
+                               'message-one', 'test admission', pathlib.Path.cwd())
+        accepted = await gateway.admit(owner, submitted, model='test')
+        assert (await gateway.admit(owner, submitted, model='test')).task_id == accepted.task_id
+        assignment = await gateway.claim_next(owner)
+        await gateway.complete(owner, assignment, status='succeeded', output='verified')
+        await gateway.release(owner, assignment)
+        outbox = OutboxRepository(gateway)
+        for kind in ['accepted', 'result']:
+            delivery = (await outbox.claim(owner))[0]
+            assert delivery.kind == kind
+            await outbox.acknowledge(owner, delivery, {'id':kind})
+        await gateway.release_owner(owner)
     class Provider:
         async def stream_response(self, **kwargs):
             yield AssistantDoneEvent(reason='stop', message=AssistantMessage(
@@ -95,7 +114,8 @@ print(json.dumps({'entry_module':run_agent_entry.__file__, 'scripts':scripts,
                   'application_completion_and_resume':True,
                   'sqlite_telemetry':True, 'no_jsonl_output':True,
                   'host_services_and_reload':True, 'context_snapshot':True,
-                  'skill_package_and_resume':True, 'extension_disposer':True}))
+                  'skill_package_and_resume':True, 'extension_disposer':True,
+                  'gateway_transactions':True}))
 """
 
 

@@ -1,5 +1,5 @@
 PRAGMA application_id = 1381322305;
-PRAGMA user_version = 5;
+PRAGMA user_version = 6;
 
 CREATE TABLE projects (
     project_id TEXT PRIMARY KEY,
@@ -74,6 +74,12 @@ CREATE TABLE executions (
     error TEXT,
     snapshot_id TEXT REFERENCES context_snapshots(snapshot_id),
     FOREIGN KEY(session_id, branch_id) REFERENCES branches(session_id, branch_id)
+);
+
+CREATE TABLE execution_revocations (
+    run_id TEXT PRIMARY KEY,
+    reason TEXT NOT NULL,
+    requested_at REAL NOT NULL
 );
 
 CREATE TABLE context_snapshots (

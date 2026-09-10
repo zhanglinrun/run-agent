@@ -262,8 +262,8 @@
     {
       "id": "P3-1",
       "requirement": "实现结构化路由、Inbox 去重、持久准入与回执。",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": ["docs/implementation/checkpoint-07.md", "docs/implementation/gateway-repository-tests.xml"]
     },
     {
       "id": "P3-2",
@@ -274,8 +274,8 @@
     {
       "id": "P3-3",
       "requirement": "替换前驱 Task 链为就绪 Session 调度，实施准入和运行双层容量。",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": ["docs/implementation/checkpoint-07.md", "docs/implementation/gateway-repository-tests.xml"]
     },
     {
       "id": "P3-4",
@@ -286,20 +286,20 @@
     {
       "id": "P3-5",
       "requirement": "通过持久状态控制取消，完成子进程收敛和迟到提交隔离。",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": ["docs/implementation/checkpoint-07.md", "docs/implementation/gateway-repository-tests.xml"]
     },
     {
       "id": "P3-6",
       "requirement": "实现最终事务与 Outbox、投递回执、重试及失败查询。",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": ["docs/implementation/checkpoint-07.md", "docs/implementation/gateway-repository-tests.xml"]
     },
     {
       "id": "P3-7",
       "requirement": "实现启动恢复、owner 资格、未知副作用状态和优雅退出。",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": ["docs/implementation/checkpoint-07.md", "docs/implementation/gateway-repository-tests.xml"]
     },
     {
       "id": "P3-8",

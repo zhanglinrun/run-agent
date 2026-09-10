@@ -3035,6 +3035,7 @@ class CodingSession:
         source: Literal["interactive", "extension"] = "interactive",
         custom_type: str | None = None,
         details: dict[str, JSONValue] | None = None,
+        run_id: str | None = None,
     ) -> AsyncIterator[CodingSessionEvent]:
         """Append a user prompt, run the agent, and persist new messages.
 
@@ -3089,7 +3090,8 @@ class CodingSession:
         self._run_error = None
         self._last_snapshot_id = None
         write_context_token: Token[RunToken | None] | None = None
-        run_id = new_agent_call_run_id()
+        run_id = run_id or new_agent_call_run_id()
+        context = replace(context, run_id=run_id)
         # id() values can be reused once earlier message objects are freed.
         self._ended_message_ids.clear()
         self._persisted_message_ids.clear()

@@ -123,10 +123,12 @@ class CodingApplication:
         await self.session.emit_pending_session_start()
         self._started = True
 
-    async def prompt(self, text: str) -> AsyncIterator[CodingSessionEvent]:
+    async def prompt(
+        self, text: str, *, run_id: str | None = None
+    ) -> AsyncIterator[CodingSessionEvent]:
         if not self._started:
             await self.start()
-        events = self.session.prompt(text)
+        events = self.session.prompt(text, run_id=run_id)
         try:
             async for event in events:
                 yield event
