@@ -36,14 +36,39 @@ class ReviewBudget:
         return self.max_input_tokens <= 0
 
 
+class UnattributedUsage(RuntimeError):
+    """Raised when a review's spend cannot be attributed to the run that caused it."""
+
+
 class ReviewLedger:
     """Track what one review spent, and refuse once the budget is gone."""
 
-    def __init__(self, budget: ReviewBudget | None = None) -> None:
+    def __init__(
+        self, budget: ReviewBudget | None = None, *, parent_run_id: str | None = None
+    ) -> None:
         self._budget = budget or ReviewBudget()
+        self.parent_run_id = parent_run_id
         self.requests = 0
         self.input_tokens = 0
         self.output_tokens = 0
+
+    def attribution(self) -> dict[str, object]:
+        """The usage as charged to the run that caused the review.
+
+        A review spends the user's money, so the spend has to belong to someone. An
+        anonymous total cannot be explained or acted on, so this refuses rather than
+        reporting usage nobody owns.
+        """
+        if self.parent_run_id is None:
+            raise UnattributedUsage(
+                "review usage needs a parent run; anonymous spend cannot be attributed"
+            )
+        return {
+            "parent_run_id": self.parent_run_id,
+            "requests": self.requests,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+        }
 
     @property
     def budget(self) -> ReviewBudget:

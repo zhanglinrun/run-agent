@@ -104,6 +104,27 @@ class ReviewTrigger:
         return self._clock() - self._last_admitted_at < self._policy.cooldown_seconds
 
 
+@dataclass(frozen=True, slots=True)
+class ForegroundGate:
+    """Whether a foreground run is in flight, so a review can yield to it.
+
+    The gate belongs at the point where a review would start, not where one is
+    queued: a completion event arrives while its own session is still running, so
+    checking the foreground while queueing would defer every review forever.
+
+    It is deliberately not yet fed by the application's ``is_running``. That reports
+    true even after a prompt has returned, so using it here would defer every review -
+    the pipeline test caught exactly that. Which signal means "the user's run is in
+    flight" is an open question, tracked rather than guessed at.
+    """
+
+    busy: Callable[[], bool]
+
+    def deferral(self) -> str | None:
+        """The reason to hold the review back, or ``None`` to proceed."""
+        return "foreground busy" if self.busy() else None
+
+
 class ReviewCoordinator:
     """Turn an admitted durable completion into one durable review request.
 
@@ -116,6 +137,10 @@ class ReviewCoordinator:
         self._api = api
         self._trigger = trigger or ReviewTrigger()
         self._worker = ReviewWorker()
+        # Mechanism in place, signal unresolved: see ForegroundGate. Feeding it the
+        # application's is_running would defer every review, so it stays off until the
+        # right signal is established.
+        self._gate = ForegroundGate(busy=lambda: False)
 
     async def settled(self, event: object, context: ExtensionContext) -> None:
         """Record at most one review request for an admitted completion."""
@@ -153,6 +178,11 @@ class ReviewCoordinator:
         run_id = str(payload.get("run_id") or "") if isinstance(payload, Mapping) else ""
         if not run_id:
             raise ValueError("experience-review needs a run_id")
+        # Yield to the foreground without dropping the request: returning here leaves
+        # it queued and unconsumed, so it runs once the user's own run has finished.
+        deferral = self._gate.deferral()
+        if deferral is not None:
+            return {"consumed": None, "reason": deferral}
         # A session belongs to one principal, so claiming per session is the
         # stricter form of the worker's one-review-per-principal rule.
         claim = self._worker.claim(self._api.context.session_id or "session")
