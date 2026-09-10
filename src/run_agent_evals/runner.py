@@ -18,6 +18,7 @@ from run_agent_evals.models import (
     ExecutionResult,
     FrozenTask,
     TrialArtifact,
+    TrialStatus,
     VerifierResult,
 )
 
@@ -62,7 +63,7 @@ class EvaluationRunner:
         execution = ExecutionResult()
         verifiers: list[VerifierResult] = []
         error: str | None = None
-        status = "error"
+        status: TrialStatus = "error"
         try:
             execution = await executor.execute(task, workspace)
             for command in task.verify:
@@ -84,9 +85,15 @@ class EvaluationRunner:
             status = "cancelled"
             error = "trial cancelled"
             raise
-        except Exception as exc:  # noqa: BLE001 - executor is an evaluation boundary
-            if isinstance(exc, ExecutionFailure):
-                execution = exc.result
+        except ExecutionFailure as exc:
+            # The executor's own failure type: it carries a partial result to keep.
+            execution = exc.result
+            status = "error"
+            error = str(exc) or type(exc).__name__
+        except (OSError, ValueError, KeyError, RuntimeError) as exc:
+            # The failure classes this boundary expects from a capability. Anything
+            # outside them is a defect rather than a task outcome, so it propagates
+            # instead of being recorded as if the task had merely erred.
             status = "error"
             error = str(exc) or type(exc).__name__
         finally:
@@ -96,7 +103,7 @@ class EvaluationRunner:
                 task_id=task.id,
                 candidate_id=candidate_id,
                 seed=seed,
-                status=status,  # type: ignore[arg-type]
+                status=status,
                 prompt=task.prompt,
                 fixture=str(task.fixture),
                 started_at=started_at,
