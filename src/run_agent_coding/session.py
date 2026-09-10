@@ -2409,7 +2409,7 @@ class CodingSession:
             return
         try:
             self._runtime_model_limits = await provider.discover_model_limits(self.model)
-        except Exception as exc:  # noqa: BLE001 - static catalog remains the safe fallback
+        except Exception as exc:  # static catalog remains the safe fallback
             self._model_limits_discovery_error = f"{type(exc).__name__}: {exc}"
 
     async def reload(self) -> CodingReloadSummary:
@@ -3829,7 +3829,7 @@ class CodingSession:
                 # Runs in a finally: a repeat failure must not mask cancellation.
                 try:
                     await self._persist_message(message)
-                except Exception as exc:  # noqa: BLE001 - preserve cancellation
+                except Exception as exc:  # preserve cancellation
                     self._log_persistence_failure(context=context, exc=exc)
                     raise
         self._ended_message_ids.clear()
@@ -3947,7 +3947,7 @@ class CodingSession:
     ) -> bool:
         try:
             return await self._maybe_auto_compact()
-        except Exception as exc:  # noqa: BLE001 - automatic compaction must not lose a turn
+        except Exception as exc:  # automatic compaction must not lose a turn
             self._last_diagnostic_log_path = self._diagnostic_logger.log_exception(
                 context=context,
                 phase=phase,
@@ -3967,7 +3967,7 @@ class CodingSession:
             summary = await self._generate_compaction_summary(plan.messages_to_summarize)
             await self._append_compaction(summary, replace_entry_ids=plan.replace_entry_ids)
             return True
-        except Exception as exc:  # noqa: BLE001 - the original overflow remains visible
+        except Exception as exc:  # the original overflow remains visible
             self._last_diagnostic_log_path = self._diagnostic_logger.log_exception(
                 context=context,
                 phase="overflow_compact",
@@ -3985,7 +3985,7 @@ class CodingSession:
             return
         try:
             title = await self._generate_session_name(first_message)
-        except Exception as exc:  # noqa: BLE001 - naming must not interrupt the agent turn
+        except Exception as exc:  # naming must not interrupt the agent turn
             self._last_diagnostic_log_path = self._diagnostic_logger.log_exception(
                 context=context,
                 phase="auto_name_session",

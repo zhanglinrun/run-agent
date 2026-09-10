@@ -378,7 +378,7 @@ class ExtensionRuntime:
         try:
             extension.setup(api)
             self._verify_source(registered)
-        except Exception as exc:  # noqa: BLE001 - extensions are an isolation boundary
+        except Exception as exc:  # extensions are an isolation boundary
             api._generation.invalidate("Extension setup failed; this source is inactive")
             self._extensions.remove(registered)
             self._remove_registrations(source_id)
@@ -612,7 +612,7 @@ class ExtensionRuntime:
         options = MessageRenderOptions(expanded=expanded)
         try:
             markup = renderer(view, options)
-        except Exception as exc:  # noqa: BLE001 - a renderer must never crash the frontend
+        except Exception as exc:  # a renderer must never crash the frontend
             if custom_type not in self._renderer_failures_reported:
                 self._renderer_failures_reported.add(custom_type)
                 self._record_runtime_failure(extension_name, f"message_renderer:{custom_type}", exc)
@@ -642,7 +642,7 @@ class ExtensionRuntime:
             return None
         try:
             line = registered.tool.render_call(arguments)
-        except Exception as exc:  # noqa: BLE001 - a renderer must never crash the frontend
+        except Exception as exc:  # a renderer must never crash the frontend
             if name not in self._renderer_failures_reported:
                 self._renderer_failures_reported.add(name)
                 self._record_runtime_failure(registered.extension, f"render_call:{name}", exc)
@@ -675,7 +675,7 @@ class ExtensionRuntime:
         failure_key = f"render_result:{tool_name}"
         try:
             markup = registered.tool.render_result(result, expanded=expanded)
-        except Exception as exc:  # noqa: BLE001 - a renderer must never crash the frontend
+        except Exception as exc:  # a renderer must never crash the frontend
             if failure_key not in self._renderer_failures_reported:
                 self._renderer_failures_reported.add(failure_key)
                 self._record_runtime_failure(
@@ -1033,7 +1033,7 @@ class ExtensionRuntime:
             )
             try:
                 result = await _resolve(handler(event, self._fresh_context(owner.source_id)))
-            except Exception as exc:  # noqa: BLE001 - fail-safe: an error blocks the tool
+            except Exception as exc:  # fail-safe: an error blocks the tool
                 self._record_runtime_failure(owner.name, "tool_call", exc)
                 return BeforeToolCallResult(
                     block=True,
@@ -1074,7 +1074,7 @@ class ExtensionRuntime:
             )
             try:
                 outcome = await _resolve(handler(event, self._fresh_context(owner.source_id)))
-            except Exception as exc:  # noqa: BLE001 - result hooks are observational-ish
+            except Exception as exc:  # result hooks are observational-ish
                 self._record_runtime_failure(owner.name, "tool_result", exc)
                 continue
             if outcome is None:
@@ -1159,7 +1159,7 @@ class ExtensionRuntime:
         for owner, handler in self._handlers_for("project_trust"):
             try:
                 result = await _resolve(handler(event, self._fresh_context(owner.source_id)))
-            except Exception as exc:  # noqa: BLE001 - trust handlers fail closed/defer
+            except Exception as exc:  # trust handlers fail closed/defer
                 self._record_runtime_failure(owner.name, "project_trust", exc)
                 continue
             if result is None:
@@ -1204,7 +1204,7 @@ class ExtensionRuntime:
                         self._fresh_context(owner.source_id),
                     )
                 )
-            except Exception as exc:  # noqa: BLE001 - extensions are an isolation boundary
+            except Exception as exc:  # extensions are an isolation boundary
                 self._record_runtime_failure(owner.name, "input", exc)
                 continue
             if result is None:
@@ -1244,7 +1244,7 @@ class ExtensionRuntime:
                 if result.system_prompt is not None:
                     current_system = result.system_prompt
                     overridden = True
-            except Exception as exc:  # noqa: BLE001 - one extension cannot break run preparation
+            except Exception as exc:  # one extension cannot break run preparation
                 self._record_runtime_failure(owner.name, "before_agent_start", exc)
         return BeforeAgentStartResult(
             messages=tuple(messages), system_prompt=current_system if overridden else None
@@ -1273,7 +1273,7 @@ class ExtensionRuntime:
                     self._record_bad_result(owner.name, "context", result)
                     continue
                 current = tuple(message.model_copy(deep=True) for message in result.messages)
-            except Exception as exc:  # noqa: BLE001 - retain the last accepted context snapshot
+            except Exception as exc:  # retain the last accepted context snapshot
                 self._record_runtime_failure(owner.name, "context", exc)
         return current
 
@@ -1287,7 +1287,7 @@ class ExtensionRuntime:
         for owner, handler in handlers:
             try:
                 await _resolve(handler(event, self._fresh_context(owner.source_id)))
-            except Exception as exc:  # noqa: BLE001 - extensions are an isolation boundary
+            except Exception as exc:  # extensions are an isolation boundary
                 self._record_runtime_failure(owner.name, event_type, exc)
 
     async def _on_agent_event(self, event: AgentEvent) -> None:
@@ -1314,7 +1314,7 @@ class ExtensionRuntime:
         for owner, handler in self._handlers_for(event_name):
             try:
                 await _resolve(handler(payload, self._fresh_context(owner.source_id)))
-            except Exception as exc:  # noqa: BLE001 - extensions are an isolation boundary
+            except Exception as exc:  # extensions are an isolation boundary
                 self._record_runtime_failure(owner.name, event_name, exc)
 
     # -- internals -------------------------------------------------------------

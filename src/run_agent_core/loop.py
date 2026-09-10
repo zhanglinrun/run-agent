@@ -649,7 +649,7 @@ async def _prepare_tool_call(
         if decision is not None and decision.arguments is not None:
             arguments = decision.arguments
             prepared_call = call.model_copy(update={"arguments": dict(arguments)}, deep=True)
-    except Exception as exc:  # noqa: BLE001 - preparation and policy failures block the tool
+    except Exception as exc:  # preparation and policy failures block the tool
         return None, _ToolCallOutcome(
             call=call,
             result=_error_result(str(exc)),
@@ -694,7 +694,7 @@ async def _produce_tool_outcome(
             )
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001 - tools are an isolation boundary
+        except Exception as exc:  # tools are an isolation boundary
             outcome = _ToolCallOutcome(
                 call=prepared.call,
                 result=_error_result(str(exc)),
@@ -718,7 +718,7 @@ async def _finalize_tool_call(
             outcome.result,
             outcome.is_error,
         )
-    except Exception as exc:  # noqa: BLE001 - a failed result hook must settle its tool task
+    except Exception as exc:  # a failed result hook must settle its tool task
         result, is_error = _error_result(str(exc)), True
     return _ToolCallOutcome(call=outcome.call, result=result, is_error=is_error)
 

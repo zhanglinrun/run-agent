@@ -305,7 +305,7 @@ class OpenAICodexProvider:
                         data={"attempts": attempt + 1},
                     )
                     return
-                except Exception as exc:  # noqa: BLE001 - provider errors are surfaced as events
+                except Exception as exc:  # provider errors are surfaced as events
                     yield ProviderErrorEvent(message=str(exc), data={"attempts": attempt + 1})
                     return
 

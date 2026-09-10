@@ -458,7 +458,7 @@ async def _start_local_oauth_server(
     future: asyncio.Future[str | None] = loop.create_future()
 
     class CallbackHandler(BaseHTTPRequestHandler):
-        def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        def do_GET(self) -> None:  # BaseHTTPRequestHandler API
             try:
                 parsed = urlparse(self.path)
                 if parsed.path != callback_path:

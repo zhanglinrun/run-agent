@@ -127,7 +127,7 @@ def startup_update_notice(
     if cached_result is None:
         try:
             latest_version = fetch_latest_pypi_version(fetcher=fetcher)
-        except Exception:  # noqa: BLE001 - update checks must never block startup
+        except Exception:  # update checks must never block startup
             return None
         _write_update_check_cache(cache_path, current_time, latest_version)
     else:
@@ -159,7 +159,7 @@ def startup_release_notes_notice(
     path = state_path or default_release_notes_state_path()
     try:
         previous_version = _read_last_seen_version(path)
-    except Exception:  # noqa: BLE001 - release-note state should not block startup
+    except Exception:  # release-note state should not block startup
         previous_version = None
 
     _write_release_notes_state(path, current_version)
@@ -175,7 +175,7 @@ def startup_release_notes_notice(
     if release_notes is None:
         try:
             release_notes = load_release_notes()
-        except Exception:  # noqa: BLE001 - a broken bundled file must not block startup
+        except Exception:  # a broken bundled file must not block startup
             release_notes = ()
 
     entries = release_notes_between(
@@ -302,7 +302,7 @@ def _cached_update_check_result(cache_path: Path | None, now: datetime) -> Updat
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         result = _parse_cached_result(data)
-    except Exception:  # noqa: BLE001 - corrupt caches should be ignored
+    except Exception:  # corrupt caches should be ignored
         return None
     if now - result.checked_at > UPDATE_CHECK_INTERVAL:
         return None

@@ -568,7 +568,7 @@ class ProjectTrustCoordinator:
         for decide in extension_deciders:
             try:
                 extension_result = await decide(event)
-            except Exception as exc:  # noqa: BLE001 - extensions safely defer on errors
+            except Exception as exc:  # extensions safely defer on errors
                 diagnostics.append(f"project_trust extension failed: {type(exc).__name__}: {exc}")
                 continue
             if extension_result is None or extension_result.decision == "defer":

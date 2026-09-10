@@ -344,7 +344,7 @@ def _load_extension(
         spec.loader.exec_module(module)
         if version != source_version(entry.path, entry.package_dir):
             raise ValueError("Extension source changed during import")
-    except BaseException as exc:  # noqa: BLE001 - extensions are an isolation boundary
+    except BaseException as exc:  # extensions are an isolation boundary
         del sys.modules[module_name]
         return None, [_error_diagnostic(entry, f"failed to import extension: {exc!r}")]
 
