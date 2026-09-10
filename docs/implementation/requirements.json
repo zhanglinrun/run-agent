@@ -57,8 +57,10 @@
     {
       "id": "P0-8",
       "requirement": "列出本项目旧开发状态的实际路径与弃用功能，按用户授权清理旧会话/日志/评测数据和旧配置；不做备份或格式迁移要求，准备空状态目录验收。",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "docs/implementation/cleanup-01.md"
+      ]
     },
     {
       "id": "P1-1",
