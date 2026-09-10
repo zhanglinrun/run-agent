@@ -204,6 +204,8 @@ CREATE TABLE extension_tasks (
     handler TEXT NOT NULL,
     payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
     snapshot_id TEXT,
+    origin_kind TEXT NOT NULL DEFAULT 'user'
+        CHECK(origin_kind IN ('user','review','evaluation','naming')),
     status TEXT NOT NULL CHECK(status IN ('queued','running','cancelling','cancelled','succeeded','failed','interrupted')),
     result_json TEXT CHECK(result_json IS NULL OR json_valid(result_json)),
     error TEXT,

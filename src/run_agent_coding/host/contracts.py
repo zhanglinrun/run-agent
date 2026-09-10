@@ -156,6 +156,9 @@ class TaskSpec:
     handler: str
     payload: JSONValue
     snapshot_id: str | None = None
+    # The host, not the extension, decides whether this is ordinary user work or
+    # an auxiliary task. Auxiliary tasks are excluded from triggering reviews.
+    origin_kind: str = "user"
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +168,7 @@ class TaskInfo:
     status: str
     result: JSONValue = None
     error: str | None = None
+    origin_kind: str = "user"
 
 
 @dataclass(frozen=True, slots=True)

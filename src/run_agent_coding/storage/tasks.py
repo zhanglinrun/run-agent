@@ -25,6 +25,10 @@ from run_agent_coding.storage.sqlite import SqliteDatabase
 from run_agent_coding.storage.state import assert_extension
 from run_agent_core.types import JSONValue
 
+# Mirrors the CHECK constraint on extension_tasks.origin_kind: the host assigns
+# this, and auxiliary kinds are excluded from triggering further reviews.
+TASK_ORIGIN_KINDS = ("user", "review", "evaluation", "naming")
+
 
 class TaskRejected(RuntimeError):
     pass
@@ -71,7 +75,9 @@ class LocalTaskManager:
         payload = canonical_json(spec.payload)
         if not spec.handler or len(spec.handler.encode()) > 128 or len(payload.encode()) > 65536:
             raise TaskRejected("Task handler or payload exceeds admission limits")
-        frozen = TaskSpec(spec.handler, json.loads(payload), spec.snapshot_id)
+        if spec.origin_kind not in TASK_ORIGIN_KINDS:
+            raise TaskRejected(f"Unknown task origin kind: {spec.origin_kind}")
+        frozen = TaskSpec(spec.handler, json.loads(payload), spec.snapshot_id, spec.origin_kind)
         task_id = uuid4().hex
 
         async def admit() -> None:
@@ -94,7 +100,7 @@ class LocalTaskManager:
                             )
                     connection.execute(
                         "INSERT INTO extension_tasks "
-                        "VALUES (?,?,?,?,?,?,?,?,'queued',NULL,NULL,?,NULL)",
+                        "VALUES (?,?,?,?,?,?,?,?,?,'queued',NULL,NULL,?,NULL)",
                         (
                             task_id,
                             token.session_id,
@@ -104,6 +110,7 @@ class LocalTaskManager:
                             frozen.handler,
                             payload,
                             frozen.snapshot_id,
+                            frozen.origin_kind,
                             time(),
                         ),
                     )
@@ -208,13 +215,20 @@ class LocalTaskManager:
     async def status(self, token: ExtensionToken, task_id: str) -> TaskInfo:
         def read(connection: sqlite3.Connection) -> TaskInfo:
             row = connection.execute(
-                "SELECT handler,status,result_json,error FROM extension_tasks "
+                "SELECT handler,status,result_json,error,origin_kind FROM extension_tasks "
                 "WHERE task_id=? AND session_id=? AND source_id=?",
                 (task_id, token.session_id, token.source_id),
             ).fetchone()
             if row is None:
                 raise KeyError("Unknown task in this extension session")
-            return TaskInfo(task_id, row[0], row[1], json.loads(row[2]) if row[2] else None, row[3])
+            return TaskInfo(
+                task_id,
+                row[0],
+                row[1],
+                json.loads(row[2]) if row[2] else None,
+                row[3],
+                row[4],
+            )
 
         return await self.database.run(read)
 
