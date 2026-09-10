@@ -235,6 +235,7 @@ def setup(api: ExtensionAPI) -> None:
     api.register_resource_provider("experience", select_context, version="1")
     api.on("session_start", cast(ExtensionHandler, start))
     api.on("agent_event", cast(ExtensionHandler, coordinator.settled))
+    api.register_task_handler("experience-review", coordinator.consume)
     api.register_command("experience", command, description="Review and publish experience assets.")
     api.register_tool(
         AgentTool(

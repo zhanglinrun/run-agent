@@ -9,12 +9,15 @@ tasks so that a review can never trigger another review.
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from run_agent_coding.events import AgentSettledEvent
 from run_agent_coding.extensions import ExtensionAPI, ExtensionContext
 from run_agent_coding.host.contracts import StateChange
+from run_agent_core.types import JSONValue
+
+from .worker import ReviewWorker
 
 AUXILIARY_ORIGINS = frozenset({"review", "evaluation", "naming"})
 REVIEW_REQUEST_PREFIX = "review-request:"
@@ -111,6 +114,7 @@ class ReviewCoordinator:
     def __init__(self, api: ExtensionAPI, trigger: ReviewTrigger | None = None) -> None:
         self._api = api
         self._trigger = trigger or ReviewTrigger()
+        self._worker = ReviewWorker()
 
     async def settled(self, event: object, context: ExtensionContext) -> None:
         """Record at most one review request for an admitted completion."""
@@ -133,12 +137,6 @@ class ReviewCoordinator:
         )
 
     def _request(self, event: AgentSettledEvent) -> ReviewRequest:
-        """Build the trigger input from the receipt alone.
-
-        Turn and correction counts need a richer event than the receipt carries,
-        so today only a failed run reaches the trigger. Wire those two signals in
-        before claiming the \"complex task\" branch works end to end.
-        """
         return ReviewRequest(
             source_run_id=event.run_id,
             session_id=event.session_id,
@@ -147,3 +145,29 @@ class ReviewCoordinator:
             corrections=0,
             failures=0 if event.status == "succeeded" else 1,
         )
+
+    async def consume(self, payload: object, task_context: object) -> JSONValue:
+        """Consume one queued review request under the review worker's claim."""
+        del task_context
+        run_id = str(payload.get("run_id") or "") if isinstance(payload, Mapping) else ""
+        if not run_id:
+            raise ValueError("experience-review needs a run_id")
+        # A session belongs to one principal, so claiming per session is the
+        # stricter form of the worker's one-review-per-principal rule.
+        claim = self._worker.claim(self._api.context.session_id or "session")
+        if claim is None:
+            return {"consumed": None, "reason": "a review is already running"}
+        try:
+            return await self._consume_once(run_id)
+        finally:
+            self._worker.release(claim)
+
+    async def _consume_once(self, run_id: str) -> JSONValue:
+        state = self._api.context.services.scope("session").state
+        pending = await state.get(f"{REVIEW_REQUEST_PREFIX}{run_id}")
+        consumed_key = f"review-consumed:{run_id}"
+        if pending is None or await state.get(consumed_key) is not None:
+            return {"consumed": None}
+        await state.compare_and_set(StateChange(consumed_key, 0, {"run_id": run_id}))
+        key = pending.value.get("key") if isinstance(pending.value, Mapping) else None
+        return {"consumed": run_id, "key": key}
