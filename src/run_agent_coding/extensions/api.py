@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
@@ -11,7 +12,7 @@ from typing import TYPE_CHECKING, Literal, Protocol
 from uuid import uuid4
 
 from run_agent_coding.extensions.disposers import Disposer
-from run_agent_coding.host.context_resources import ResourceProvider
+from run_agent_coding.host.context_resources import ExtensionResourceSnapshot, ResourceProvider
 from run_agent_coding.host.contracts import HostServices, TaskHandler
 from run_agent_core.messages import AgentMessage, CustomMessage, ToolResultMessage
 from run_agent_core.tools import AgentTool, AgentToolResult
@@ -613,6 +614,30 @@ class ExtensionContext:
         return self._runtime.session_view.session_id
 
     @property
+    def current_snapshot_id(self) -> str | None:
+        """Latest actual model input, recorded before its tools can run."""
+        self._generation.assert_active()
+        return self._runtime.session_view.current_snapshot_id
+
+    @property
+    def resource_snapshot(self) -> ExtensionResourceSnapshot:
+        """Read fixed contributions belonging to this extension source only."""
+        self._generation.assert_active()
+        snapshot = self._runtime.context_resources.snapshot
+        if snapshot is None:
+            raise ExtensionError("Resources are available after Session resource preparation")
+        return deepcopy(
+            ExtensionResourceSnapshot(
+                tuple(item for item in snapshot.providers if item.source_id == self._source_id),
+                tuple(
+                    item
+                    for item in snapshot.contributions
+                    if item.provider.source_id == self._source_id
+                ),
+            )
+        )
+
+    @property
     def session_name(self) -> str | None:
         """Return the session's human-friendly name, if it has one."""
         self._generation.assert_active()
@@ -862,10 +887,10 @@ class ExtensionAPI:
             trigger_turn=trigger_turn,
         )
 
-    async def append_entry(self, namespace: str, data: dict[str, JSONValue]) -> None:
+    async def append_entry(self, namespace: str, data: dict[str, JSONValue]) -> str:
         """Persist extension-owned data to the session as a custom entry."""
         self._generation.assert_active()
-        await self._runtime.append_custom_entry(namespace, data)
+        return await self._runtime.append_custom_entry(namespace, data)
 
     def notify(self, message: str, level: NotifyLevel = "info") -> None:
         """Show a notification in the UI, if one is attached."""

@@ -14,8 +14,9 @@ from run_agent_core.types import JSONValue
 def _normalize(code: CodeType) -> CodeType:
     return code.replace(
         co_filename="<tool>",
-        co_consts=tuple(_normalize(value) if isinstance(value, CodeType) else value
-                        for value in code.co_consts),
+        co_consts=tuple(
+            _normalize(value) if isinstance(value, CodeType) else value for value in code.co_consts
+        ),
     )
 
 

@@ -37,6 +37,7 @@ class OwnedProcess(Protocol):
     pid: int
     identity: str
     kind: str
+
     def resume(self) -> None: ...
     def poll(self) -> int | None: ...
     def active_count(self) -> int: ...
@@ -48,13 +49,27 @@ class PosixProcess:
     kind = "posix_group"
 
     def __init__(
-        self, command: str, cwd: Path, output: BinaryIO, *, bash: bool, identity: str,
+        self,
+        command: str,
+        cwd: Path,
+        output: BinaryIO,
+        *,
+        bash: bool,
+        identity: str,
     ) -> None:
         self._process = subprocess.Popen(
-            [sys.executable, str(Path(__file__).with_name("process_gate.py")),
-             identity, "bash" if bash else "/bin/sh", command],
-            cwd=cwd, stdin=subprocess.PIPE, stdout=output,
-            stderr=subprocess.STDOUT, start_new_session=True,
+            [
+                sys.executable,
+                str(Path(__file__).with_name("process_gate.py")),
+                identity,
+                "bash" if bash else "/bin/sh",
+                command,
+            ],
+            cwd=cwd,
+            stdin=subprocess.PIPE,
+            stdout=output,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
         )
         self.pid = self._process.pid
         self.identity = str(self.pid)
@@ -78,7 +93,8 @@ class PosixProcess:
     def terminate(self, *, force: bool) -> None:
         with suppress(ProcessLookupError):
             getattr(os, "killpg")(  # noqa: B009 - Windows type stubs
-                self.pid, getattr(signal, "SIGKILL") if force else signal.SIGTERM  # noqa: B009
+                self.pid,
+                getattr(signal, "SIGKILL") if force else signal.SIGTERM,  # noqa: B009
             )
 
     def close(self) -> None:
@@ -128,19 +144,34 @@ class ProcessSupervisor:
             raise ProcessCleanupError("Owned commands have not verified their process exit")
 
     async def run(
-        self, command: str, *, cwd: Path, timeout: float | None = None,
-        cancellation: ToolCancellationToken | None = None, bash: bool = False,
+        self,
+        command: str,
+        *,
+        cwd: Path,
+        timeout: float | None = None,
+        cancellation: ToolCancellationToken | None = None,
+        bash: bool = False,
         output_limit: int = 32 * 1024 * 1024,
     ) -> ProcessResult:
         async with self._run_lock:
             return await self._run(
-                command, cwd=cwd, timeout=timeout, cancellation=cancellation,
-                bash=bash, output_limit=output_limit,
+                command,
+                cwd=cwd,
+                timeout=timeout,
+                cancellation=cancellation,
+                bash=bash,
+                output_limit=output_limit,
             )
 
     async def _run(
-        self, command: str, *, cwd: Path, timeout: float | None,
-        cancellation: ToolCancellationToken | None, bash: bool, output_limit: int,
+        self,
+        command: str,
+        *,
+        cwd: Path,
+        timeout: float | None,
+        cancellation: ToolCancellationToken | None,
+        bash: bool,
+        output_limit: int,
     ) -> ProcessResult:
         if self._closed:
             raise RuntimeError("Process supervisor is closed")
@@ -152,18 +183,31 @@ class ProcessSupervisor:
         identity = uuid4().hex
         recorder = self.recorder_factory() if self.recorder_factory else None
         if recorder is not None:
-            _, interrupted = await settle(recorder({
-                "process_id": identity, "phase": "launching", "host_pid": os.getpid(),
-                "host_identity": current_process_identity(), "cwd": str(cwd.resolve()),
-                "launch_protocol": "journal-gate-v1",
-                "machine_identity": machine_identity(),
-                "kind": "windows_job" if os.name == "nt" else "posix_group",
-                "command_sha256": hashlib.sha256(command.encode()).hexdigest(),
-            }))
+            _, interrupted = await settle(
+                recorder(
+                    {
+                        "process_id": identity,
+                        "phase": "launching",
+                        "host_pid": os.getpid(),
+                        "host_identity": current_process_identity(),
+                        "cwd": str(cwd.resolve()),
+                        "launch_protocol": "journal-gate-v1",
+                        "machine_identity": machine_identity(),
+                        "kind": "windows_job" if os.name == "nt" else "posix_group",
+                        "command_sha256": hashlib.sha256(command.encode()).hexdigest(),
+                    }
+                )
+            )
             if interrupted:
-                await settle(recorder({
-                    "process_id": identity, "phase": "launch_failed", "error": "cancelled",
-                }))
+                await settle(
+                    recorder(
+                        {
+                            "process_id": identity,
+                            "phase": "launch_failed",
+                            "error": "cancelled",
+                        }
+                    )
+                )
                 raise asyncio.CancelledError
 
         def spawn() -> ProcessExecution:
@@ -188,16 +232,27 @@ class ProcessSupervisor:
         self._active[identity] = execution
         try:
             return await self._wait(
-                identity, execution, interrupted=interrupted, timeout=timeout,
-                cancellation=cancellation, output_limit=output_limit, recorder=recorder,
+                identity,
+                execution,
+                interrupted=interrupted,
+                timeout=timeout,
+                cancellation=cancellation,
+                output_limit=output_limit,
+                recorder=recorder,
             )
         finally:
             if identity not in self._active:
                 execution.output.close()
 
     async def _wait(
-        self, identity: str, execution: ProcessExecution, *, interrupted: bool,
-        timeout: float | None, cancellation: ToolCancellationToken | None, output_limit: int,
+        self,
+        identity: str,
+        execution: ProcessExecution,
+        *,
+        interrupted: bool,
+        timeout: float | None,
+        cancellation: ToolCancellationToken | None,
+        output_limit: int,
         recorder: ProcessRecorder | None,
     ) -> ProcessResult:
         process = execution.process
@@ -205,13 +260,20 @@ class ProcessSupervisor:
         timed_out = cancelled = output_limited = False
         try:
             if recorder is not None:
-                await recorder({
-                    "process_id": identity,
-                    "pid": process.pid, "identity": process.identity, "kind": process.kind,
-                    "phase": "started", "native_identity": process_identity(process.pid),
-                })
-            if interrupted or self._closed or (
-                cancellation is not None and cancellation.is_cancelled()
+                await recorder(
+                    {
+                        "process_id": identity,
+                        "pid": process.pid,
+                        "identity": process.identity,
+                        "kind": process.kind,
+                        "phase": "started",
+                        "native_identity": process_identity(process.pid),
+                    }
+                )
+            if (
+                interrupted
+                or self._closed
+                or (cancellation is not None and cancellation.is_cancelled())
             ):
                 raise asyncio.CancelledError
             process.resume()
@@ -226,8 +288,13 @@ class ProcessSupervisor:
                 await asyncio.sleep(0.025)
             output_limited |= os.fstat(execution.output.fileno()).st_size > output_limit
             execution.events.append(
-                "timeout" if timed_out else "cancelled" if cancelled
-                else "output_limit" if output_limited else "root_exited"
+                "timeout"
+                if timed_out
+                else "cancelled"
+                if cancelled
+                else "output_limit"
+                if output_limited
+                else "root_exited"
             )
         except asyncio.CancelledError:
             execution.events.append("cancelled")
@@ -235,20 +302,34 @@ class ProcessSupervisor:
         finally:
             _, cleanup_cancelled = await settle(self._drain(identity))
             if recorder is not None:
-                _, record_cancelled = await settle(recorder({
-                    "process_id": identity,
-                    "pid": process.pid, "identity": process.identity, "kind": process.kind,
-                    "phase": "exited", "exit_code": execution.exit_code,
-                    "events": list(execution.events),
-                }))
+                _, record_cancelled = await settle(
+                    recorder(
+                        {
+                            "process_id": identity,
+                            "pid": process.pid,
+                            "identity": process.identity,
+                            "kind": process.kind,
+                            "phase": "exited",
+                            "exit_code": execution.exit_code,
+                            "events": list(execution.events),
+                        }
+                    )
+                )
                 cleanup_cancelled |= record_cancelled
             if cleanup_cancelled:
                 raise asyncio.CancelledError
         execution.output.seek(0)
         body = execution.output.read(output_limit)
         return ProcessResult(
-            body, execution.exit_code, timed_out, cancelled, output_limited,
-            process.pid, process.identity, process.kind, tuple(execution.events),
+            body,
+            execution.exit_code,
+            timed_out,
+            cancelled,
+            output_limited,
+            process.pid,
+            process.identity,
+            process.kind,
+            tuple(execution.events),
         )
 
     async def _drain(self, identity: str) -> None:

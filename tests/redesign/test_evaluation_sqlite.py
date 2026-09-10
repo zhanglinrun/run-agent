@@ -162,7 +162,9 @@ async def test_switching_provider_preserves_ledger_and_closes_old_instance(tmp_p
             ),
         ) as app:
             assert [event async for event in app.prompt("first")][-1].status == "succeeded"
-            await app.session.select_provider_model(ModelChoice(provider_name="test-b", model="second"))
+            await app.session.select_provider_model(
+                ModelChoice(provider_name="test-b", model="second")
+            )
             assert providers[0].closed
             assert [event async for event in app.prompt("second")][-1].status == "succeeded"
         calls = [row for row in await ledger.read_all() if row["type"] == "provider_call"]

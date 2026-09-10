@@ -27,7 +27,8 @@ __all__ = ["runtime"]
 @pytest.fixture
 def resource_extension(tmp_path):
     extension = tmp_path / "resource_provider.py"
-    extension.write_text('''
+    extension.write_text(
+        """
 from run_agent_coding.extensions import ResourceSelection
 
 def setup(api):
@@ -46,7 +47,9 @@ def setup(api):
                 result.append(ResourceSelection(scope, key, version, key))
         return result
     api.register_resource_provider("notes", select, version="1")
-''', encoding="utf-8")
+""",
+        encoding="utf-8",
+    )
     return extension
 
 
@@ -54,7 +57,10 @@ async def publish(app, text, *, scope="project", key="MEMORY.md"):
     resources = context(app).services.scope(scope).resources
     heads = await resources.snapshot()
     value = await resources.put_immutable(
-        key, text, parent_version=heads.get(key), metadata={"title": key},
+        key,
+        text,
+        parent_version=heads.get(key),
+        metadata={"title": key},
     )
     await resources.advance_head(HeadChange(key, heads.get(key), value.version, "test", {}))
     return value.version
@@ -88,8 +94,10 @@ async def test_explicit_refresh_resume_and_branch_use_exact_versions(tmp_path, r
     async with await CodingApplication.open(
         replace(opts, resume=session_id), provider=provider
     ) as reopened:
+
         async def forbidden(*args):
             raise AssertionError("Resume must not capture latest resource heads")
+
         reopened.session.host_services.capture_resources = forbidden
         await reopened.start()
         assert "memory version one" in reopened.session.system_prompt
@@ -109,7 +117,9 @@ async def test_capture_is_consistent_across_scopes_and_sources(tmp_path, resourc
         runtime = first.session.extension_runtime
         sources = tuple(item.source_id for item in runtime._extensions)
         views = await first.session.host_services.capture_resources(
-            first.session.session_id, sources, runtime._generation.assert_active,
+            first.session.session_id,
+            sources,
+            runtime._generation.assert_active,
         )
         await publish(first, "project-new", key="project")
         frozen = views[sources[0]]
@@ -167,8 +177,10 @@ async def test_activation_conflict_rolls_back_selected_content(
         old = app.session.extension_runtime
         marker = resource_events(app)[-1].id
         await publish(app, "uncommitted context")
+
         async def fail(*args, **kwargs):
             raise OSError("publication failure")
+
         monkeypatch.setattr(app.session.host_services, "publish", fail)
         with pytest.raises(OSError, match="publication failure"):
             await app.command("/reload")
@@ -200,19 +212,23 @@ async def test_changed_provider_contract_rejects_resume_and_stale_api_cannot_reg
 
 async def test_setup_failure_removes_provider_and_selector_exception_aborts_activation(tmp_path):
     extension = tmp_path / "bad.py"
-    extension.write_text('''
+    extension.write_text(
+        """
 def setup(api):
     def select(view):
         raise ValueError("selector failed")
     api.register_resource_provider("bad", select, version="1")
     raise ValueError("setup failed")
-''', encoding="utf-8")
+""",
+        encoding="utf-8",
+    )
     opts = replace(options(tmp_path), extension_paths=(extension,))
     async with await CodingApplication.open(opts, provider=ReplyProvider()) as app:
         await app.start()
         assert not app.session.extension_runtime.context_resources.registrations
     extension.write_text(
-        extension.read_text().replace('    raise ValueError("setup failed")', ''), encoding="utf-8",
+        extension.read_text().replace('    raise ValueError("setup failed")', ""),
+        encoding="utf-8",
     )
     async with await CodingApplication.open(opts, provider=ReplyProvider()) as app:
         with pytest.raises(ValueError, match="selector failed"):
@@ -240,7 +256,8 @@ async def test_background_uses_source_resource_content_after_live_head_changes(
     await runner.run(foreground, asyncio.Event())
     await repo.release(owner, foreground)
     background = await repo.admit(
-        owner, replace(submit(workspace, "background", "isolated task"), lane="background"),
+        owner,
+        replace(submit(workspace, "background", "isolated task"), lane="background"),
         model="test",
     )
     async with await CodingApplication.open(
@@ -270,7 +287,8 @@ async def test_changed_extension_code_blocks_model_and_resume_until_explicit_rel
         await app.start()
         session_id = app.session.session_id
         resource_extension.write_text(
-            resource_extension.read_text() + "\n# changed implementation\n", encoding="utf-8",
+            resource_extension.read_text() + "\n# changed implementation\n",
+            encoding="utf-8",
         )
         with pytest.raises(ExtensionError, match="source changed"):
             _ = [event async for event in app.prompt("must not call model")]
@@ -304,7 +322,9 @@ def test_reload_executes_current_package_sources_even_with_valid_old_pyc(tmp_pat
     helper.write_text('value = "new"\n')
     os.utime(helper, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
     result = load_extensions(
-        RunAgentResourcePaths(root=tmp_path), extra_paths=(package,), include_resource_dirs=False,
+        RunAgentResourcePaths(root=tmp_path),
+        extra_paths=(package,),
+        include_resource_dirs=False,
     )
     assert not result.diagnostics
     actual = []
@@ -321,15 +341,19 @@ async def test_changed_tool_implementation_rejects_resume(tmp_path):
         await app.start()
         session_id = app.session.session_id
     original = create_coding_tools
+
     async def changed(*args, **kwargs):
         return AgentToolResult(content="different implementation")
+
     def changed_tools(**kwargs):
         tools = list(original(**kwargs))
         tools[0] = replace(tools[0], execute_fn=changed)
         return tuple(tools)
+
     with pytest.MonkeyPatch.context() as monkeypatch:
         monkeypatch.setattr("run_agent_coding.session.create_coding_tools", changed_tools)
         with pytest.raises(ValueError, match="implementation differs"):
             await CodingApplication.open(
-                replace(opts, resume=session_id), provider=ReplyProvider(),
+                replace(opts, resume=session_id),
+                provider=ReplyProvider(),
             )

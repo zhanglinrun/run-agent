@@ -90,22 +90,29 @@ class GatewayRepository:
         await self.database.run(initialize, write=True)
 
     async def acquire_owner(
-        self, owner_id: str, *, lease_seconds: float = 30,
+        self,
+        owner_id: str,
+        *,
+        lease_seconds: float = 30,
         process_lock: GatewayProcessLock | None = None,
     ) -> GatewayOwner:
         if not owner_id or lease_seconds <= 0:
             raise ValueError("Owner identity and positive lease are required")
         previous_exited: tuple[str, int] | None = None
         if process_lock is not None:
-            if not process_lock.held or process_lock.path.resolve() != (
-                self.database.path.parent / "gateway.lock"
-            ).resolve():
+            if (
+                not process_lock.held
+                or process_lock.path.resolve()
+                != (self.database.path.parent / "gateway.lock").resolve()
+            ):
                 raise GatewayOwnershipLost("Gateway process lock is not held for this state")
-            prior = await self.database.run(lambda c: c.execute(
-                "SELECT o.owner_id,o.generation,h.process_json FROM gateway_owner o "
-                "JOIN gateway_hosts h ON h.owner_id=o.owner_id AND h.generation=o.generation "
-                "WHERE o.active=1"
-            ).fetchone())
+            prior = await self.database.run(
+                lambda c: c.execute(
+                    "SELECT o.owner_id,o.generation,h.process_json FROM gateway_owner o "
+                    "JOIN gateway_hosts h ON h.owner_id=o.owner_id AND h.generation=o.generation "
+                    "WHERE o.active=1"
+                ).fetchone()
+            )
             if prior is not None:
                 native = json.loads(prior["process_json"])
                 if native["machine_identity"] != machine_identity():
@@ -113,8 +120,13 @@ class GatewayRepository:
                 if process_identity(native["pid"]) == native["identity"]:
                     raise GatewayOwnershipLost("Previous Gateway host process is still alive")
                 previous_exited = prior["owner_id"], prior["generation"]
-        host_json = canonical_json({"pid": os.getpid(), "identity": current_process_identity(),
-                                    "machine_identity": machine_identity()})
+        host_json = canonical_json(
+            {
+                "pid": os.getpid(),
+                "identity": current_process_identity(),
+                "machine_identity": machine_identity(),
+            }
+        )
 
         def acquire(connection: sqlite3.Connection) -> GatewayOwner:
             restored = connection.execute(
@@ -126,8 +138,12 @@ class GatewayRepository:
                 )
             now = self.clock()
             previous = connection.execute("SELECT * FROM gateway_owner").fetchone()
-            if (previous and previous["active"] and previous["expires_at"] > now
-                    and previous_exited != (previous["owner_id"], previous["generation"])):
+            if (
+                previous
+                and previous["active"]
+                and previous["expires_at"] > now
+                and previous_exited != (previous["owner_id"], previous["generation"])
+            ):
                 raise GatewayOwnershipLost("Gateway already has a live owner")
             generation = previous["generation"] + 1 if previous else 1
             connection.execute("UPDATE gateway_routes SET preparing=0")
@@ -180,8 +196,9 @@ class GatewayRepository:
                 "expires_at=excluded.expires_at,active=1,accepting=1",
                 (owner_id, generation, now + lease_seconds),
             )
-            connection.execute("INSERT INTO gateway_hosts VALUES (?,?,?)",
-                               (owner_id, generation, host_json))
+            connection.execute(
+                "INSERT INTO gateway_hosts VALUES (?,?,?)", (owner_id, generation, host_json)
+            )
             connection.execute(
                 "UPDATE gateway_outbox SET status='pending',claimed_by=NULL,claim_generation=NULL "
                 "WHERE status='sending'"
@@ -315,6 +332,7 @@ class GatewayRepository:
         task_id = uuid4().hex
         revision = None
         if submission.lane == "background":
+
             def previous_background(connection: sqlite3.Connection) -> AdmissionReceipt | None:
                 self.assert_owner(connection, owner)
                 row = connection.execute(
@@ -347,7 +365,9 @@ class GatewayRepository:
                 raise AdmissionRejected("Gateway is stopping ordinary admission")
             route = self._route(connection, submission, model=model, provider_name=provider_name)
             if expected_route is not None and expected_route != (
-                route["session_id"], route["epoch"], route["control_generation"]
+                route["session_id"],
+                route["epoch"],
+                route["control_generation"],
             ):
                 raise AdmissionRejected("Session changed or stopped during background preparation")
             origin = route["session_id"]
@@ -414,15 +434,19 @@ class GatewayRepository:
             source_head = connection.execute(
                 "SELECT b.head_id FROM branches b JOIN sessions s "
                 "ON b.session_id=s.session_id AND b.branch_id=s.active_branch_id "
-                "WHERE s.session_id=?", (origin,),
+                "WHERE s.session_id=?",
+                (origin,),
             ).fetchone()[0]
             if submission.lane == "background":
                 assert revision is not None
                 session_id = uuid4().hex
                 workspace = self.workspaces.workspace(task_id, revision)
                 _, source_head, watermark, resource_id = self.sessions.clone_in_transaction(
-                    connection, origin_session_id=origin, session_id=session_id,
-                    cwd=workspace, principal_id=submission.principal_id,
+                    connection,
+                    origin_session_id=origin,
+                    session_id=session_id,
+                    cwd=workspace,
+                    principal_id=submission.principal_id,
                 )
             workspace_id = self._workspace(connection, workspace)
             cursor = connection.execute(
@@ -474,11 +498,19 @@ class GatewayRepository:
                 (session_id,),
             )
             self._outbox(
-                connection, task_id, "accepted", destination,
-                {"status": "accepted", **body, "mode": "steer" if target_run_id else "queue",
-                 "target_run_id": target_run_id, "lane": submission.lane,
-                 "origin_session_id": origin,
-                 "commit": revision.commit if revision else None},
+                connection,
+                task_id,
+                "accepted",
+                destination,
+                {
+                    "status": "accepted",
+                    **body,
+                    "mode": "steer" if target_run_id else "queue",
+                    "target_run_id": target_run_id,
+                    "lane": submission.lane,
+                    "origin_session_id": origin,
+                    "commit": revision.commit if revision else None,
+                },
             )
             self._fault("gateway_admitted")
             return receipt
@@ -486,7 +518,11 @@ class GatewayRepository:
         return await self.database.run(admit, write=True)
 
     async def background_anchor(
-        self, owner: GatewayOwner, submission: Submission, *, model: str,
+        self,
+        owner: GatewayOwner,
+        submission: Submission,
+        *,
+        model: str,
         provider_name: str | None = None,
     ) -> tuple[str, int, int]:
         def anchor(connection: sqlite3.Connection) -> tuple[str, int, int]:
@@ -500,8 +536,10 @@ class GatewayRepository:
             if previous is not None:
                 return previous["origin_session_id"], previous["conversation_epoch"], -1
             row = self._route(connection, submission, model=model, provider_name=provider_name)
-            connection.execute("UPDATE gateway_routes SET preparing=preparing+1 WHERE route_key=?",
-                               (route_key(submission.route),))
+            connection.execute(
+                "UPDATE gateway_routes SET preparing=preparing+1 WHERE route_key=?",
+                (route_key(submission.route),),
+            )
             return row["session_id"], row["epoch"], row["control_generation"]
 
         result, cancelled = await settle(self.database.run(anchor, write=True))
@@ -524,10 +562,15 @@ class GatewayRepository:
         await self.database.run(release, write=True)
 
     async def background_source(
-        self, owner: GatewayOwner, submission: Submission, *, model: str,
+        self,
+        owner: GatewayOwner,
+        submission: Submission,
+        *,
+        model: str,
         provider_name: str | None = None,
     ) -> str | None:
         """Resolve an uninitialized source for local resource preparation, without a model run."""
+
         def source(connection: sqlite3.Connection) -> str | None:
             self.assert_owner(connection, owner)
             if connection.execute(
@@ -558,8 +601,11 @@ class GatewayRepository:
     ) -> None:
         body = canonical_json(report)
         report = json.loads(body)
-        refs = [report["manifest"], report["patch"],
-                *(row["artifact"] for row in report["untracked"])]
+        refs = [
+            report["manifest"],
+            report["patch"],
+            *(row["artifact"] for row in report["untracked"]),
+        ]
         manifest_body = await self.workspaces.artifacts.read(ArtifactRef(**report["manifest"]))
         if json.loads(manifest_body) != {k: v for k, v in report.items() if k != "manifest"}:
             raise ValueError("Background manifest does not match its artifact report")
@@ -575,14 +621,18 @@ class GatewayRepository:
             if task["artifacts_json"] is not None and task["artifacts_json"] != body:
                 raise SessionConflict("Background artifacts already have a different report")
             for ref in refs:
-                connection.execute("INSERT OR IGNORE INTO artifacts VALUES (?,?,?)",
-                                   (ref["digest"], ref["size"], self.clock()))
+                connection.execute(
+                    "INSERT OR IGNORE INTO artifacts VALUES (?,?,?)",
+                    (ref["digest"], ref["size"], self.clock()),
+                )
                 connection.execute(
                     "INSERT OR IGNORE INTO artifact_refs VALUES ('gateway_task',?,?)",
                     (assignment.task_id, ref["digest"]),
                 )
-            connection.execute("UPDATE gateway_tasks SET artifacts_json=? WHERE task_id=?",
-                               (body, assignment.task_id))
+            connection.execute(
+                "UPDATE gateway_tasks SET artifacts_json=? WHERE task_id=?",
+                (body, assignment.task_id),
+            )
             self._fault("gateway_artifacts_registered")
 
         await self.database.run(register, write=True)
@@ -876,7 +926,8 @@ class GatewayRepository:
                 if task["status"] != "running":
                     return None
                 if (boundary.token.run_id, boundary.token.session_id) != (
-                    assignment.run_id, assignment.session_id
+                    assignment.run_id,
+                    assignment.session_id,
                 ):
                     raise SessionConflict("Input boundary belongs to another run")
                 self.sessions.assert_token(connection, boundary.token)
@@ -898,8 +949,11 @@ class GatewayRepository:
                 )
                 entries = (*prefix, entry)
                 receipt = self.sessions.append_in_transaction(
-                    connection, entries, token=boundary.token,
-                    branch_id=boundary.branch_id, expected_head=boundary.expected_head,
+                    connection,
+                    entries,
+                    token=boundary.token,
+                    branch_id=boundary.branch_id,
+                    expected_head=boundary.expected_head,
                 )
                 connection.execute(
                     "UPDATE gateway_tasks SET status='consumed',consumed_entry_id=?,finished_at=? "
@@ -907,11 +961,17 @@ class GatewayRepository:
                     (entry.id, self.clock(), row["task_id"]),
                 )
                 self._outbox(
-                    connection, row["task_id"], "result", row["destination_json"],
+                    connection,
+                    row["task_id"],
+                    "result",
+                    row["destination_json"],
                     {
-                        "task_id": row["task_id"], "status": "consumed",
-                        "run_id": assignment.run_id, "session_id": row["session_id"],
-                        "conversation_epoch": row["conversation_epoch"], "entry_id": entry.id,
+                        "task_id": row["task_id"],
+                        "status": "consumed",
+                        "run_id": assignment.run_id,
+                        "session_id": row["session_id"],
+                        "conversation_epoch": row["conversation_epoch"],
+                        "entry_id": entry.id,
                     },
                 )
                 self._fault("gateway_steering_consumed")
@@ -997,8 +1057,10 @@ class GatewayRepository:
                 "INSERT OR IGNORE INTO execution_revocations VALUES (?,?,?)",
                 (assignment.run_id, "Runner cleanup or completion unconfirmed", self.clock()),
             )
-            connection.execute("UPDATE sessions SET recovery_required=1 WHERE session_id=?",
-                               (assignment.session_id,))
+            connection.execute(
+                "UPDATE sessions SET recovery_required=1 WHERE session_id=?",
+                (assignment.session_id,),
+            )
             self._queue_unconsumed_input(connection, assignment.run_id)
 
         await self.database.run(contain, write=True)
@@ -1100,7 +1162,8 @@ class GatewayRepository:
             self.assert_owner(connection, owner)
             if connection.execute(
                 "SELECT 1 FROM gateway_attempts WHERE released=0 AND owner_id=? "
-                "AND owner_generation=? LIMIT 1", (owner.owner_id, owner.generation),
+                "AND owner_generation=? LIMIT 1",
+                (owner.owner_id, owner.generation),
             ).fetchone():
                 raise SessionConflict("Gateway still owns unreleased runners")
             connection.execute("UPDATE gateway_owner SET active=0,accepting=0")

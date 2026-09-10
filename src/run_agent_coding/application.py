@@ -170,7 +170,8 @@ class CodingApplication:
         message = result.message
         if result.extension_command is not None:
             message = await session.extension_runtime.execute_command(
-                result.extension_command, result.extension_arguments,
+                result.extension_command,
+                result.extension_arguments,
             )
         elif result.new_session_requested:
             message = await session.new_session()

@@ -5,6 +5,7 @@ the core session automatically.
 
 | Directory | Registration |
 | --- | --- |
+| `experience` | Versioned USER/MEMORY/Skill assets, `/experience` and the `memory` tool |
 | `mcp` | MCP Streamable HTTP bridge tool |
 | `observability` | Session-scoped SQLite spans and `/trace` |
 | `permission_policy` | Mutating-tool policy hook |

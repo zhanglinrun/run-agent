@@ -43,8 +43,10 @@ class SessionController:
             if not argument:
                 raise ValueError("Usage: /steer <content>")
             receipt = await self.repository.admit(
-                owner, replace(submission, content=argument, mode="steer"),
-                model=model, provider_name=provider_name,
+                owner,
+                replace(submission, content=argument, mode="steer"),
+                model=model,
+                provider_name=provider_name,
             )
             return {"status": "accepted", **asdict(receipt)}
         if command in {"/stop", "/new", "/tasks"} and argument:
@@ -145,7 +147,8 @@ class SessionController:
                 if binding is not None:
                     connection.execute(
                         "UPDATE gateway_routes SET control_generation=control_generation+1 "
-                        "WHERE route_key=?", (key,),
+                        "WHERE route_key=?",
+                        (key,),
                     )
                     rows = connection.execute(
                         "SELECT * FROM gateway_tasks WHERE session_id=? AND lane='foreground' "

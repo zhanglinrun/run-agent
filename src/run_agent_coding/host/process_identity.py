@@ -36,7 +36,7 @@ def process_identity(pid: int) -> str | None:
             api.CloseHandle(handle)
     try:
         stat = Path(f"/proc/{pid}/stat").read_text()
-        fields = stat[stat.rfind(")") + 2:].split()
+        fields = stat[stat.rfind(")") + 2 :].split()
         if fields[0] == "Z":
             return None
         boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()

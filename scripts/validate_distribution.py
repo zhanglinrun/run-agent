@@ -246,9 +246,21 @@ def check_gateway_cli(launcher: Path, directory: Path) -> dict[str, object]:
     (workspace / "tracked.txt").write_text("clean source\n", encoding="utf-8")
     for arguments in (["init"], ["add", "tracked.txt"], ["commit", "-m", "fixture"]):
         subprocess.run(
-            ["git", "-c", "core.hooksPath=", "-c", "user.name=Distribution Fixture",
-             "-c", "user.email=fixture@example.invalid", "-C", str(workspace), *arguments],
-            capture_output=True, check=True, timeout=15,
+            [
+                "git",
+                "-c",
+                "core.hooksPath=",
+                "-c",
+                "user.name=Distribution Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "-C",
+                str(workspace),
+                *arguments,
+            ],
+            capture_output=True,
+            check=True,
+            timeout=15,
         )
 
     class Handler(BaseHTTPRequestHandler):
@@ -259,16 +271,30 @@ def check_gateway_cli(launcher: Path, directory: Path) -> dict[str, object]:
             self.end_headers()
             chunks = [
                 {"type": "response.output_text.delta", "delta": "offline gateway reply"},
-                {"type": "response.completed", "response": {
-                    "status": "completed", "output": [],
-                    "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
-                }},
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "status": "completed",
+                        "output": [],
+                        "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                    },
+                },
             ]
             if not self.path.endswith("/responses"):
-                chunks = [{"id": "offline", "model": "gpt-4o-mini", "choices": [
-                    {"index": 0, "delta": {"role": "assistant", "content": "offline gateway reply"},
-                     "finish_reason": "stop"}
-                ], "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}]
+                chunks = [
+                    {
+                        "id": "offline",
+                        "model": "gpt-4o-mini",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"role": "assistant", "content": "offline gateway reply"},
+                                "finish_reason": "stop",
+                            }
+                        ],
+                        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                    }
+                ]
             for chunk in chunks:
                 self.wfile.write(("data: " + json.dumps(chunk) + "\n\n").encode())
             self.wfile.write(b"data: [DONE]\n\n")
@@ -279,31 +305,74 @@ def check_gateway_cli(launcher: Path, directory: Path) -> dict[str, object]:
     adapter = directory / "gateway_adapter.py"
     adapter.write_text(GATEWAY_ADAPTER, encoding="utf-8")
     identities = directory / "identities.json"
-    identities.write_text(json.dumps([{
-        "adapter_instance_id": "installed-cli", "account_id": "account",
-        "sender_id": "sender", "principal_id": "local", "workspace": str(workspace),
-    }]), encoding="utf-8")
+    identities.write_text(
+        json.dumps(
+            [
+                {
+                    "adapter_instance_id": "installed-cli",
+                    "account_id": "account",
+                    "sender_id": "sender",
+                    "principal_id": "local",
+                    "workspace": str(workspace),
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    env = {key: value for key, value in os.environ.items() if key.upper() in {
-        "PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP", "PATHEXT",
-        "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "HOME",
-    }}
-    env.update({
-        "OPENAI_API_KEY": "offline-key",
-        "OPENAI_BASE_URL": f"http://127.0.0.1:{server.server_port}/v1",
-        "PYTHONIOENCODING": "utf-8",
-    })
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key.upper()
+        in {
+            "PATH",
+            "SYSTEMROOT",
+            "WINDIR",
+            "COMSPEC",
+            "TEMP",
+            "TMP",
+            "PATHEXT",
+            "USERPROFILE",
+            "HOMEDRIVE",
+            "HOMEPATH",
+            "HOME",
+        }
+    }
+    env.update(
+        {
+            "OPENAI_API_KEY": "offline-key",
+            "OPENAI_BASE_URL": f"http://127.0.0.1:{server.server_port}/v1",
+            "PYTHONIOENCODING": "utf-8",
+        }
+    )
     state = directory / "cli-gateway-state"
     try:
         for index in (1, 2, 3):
             report = directory / f"gateway-deliveries-{index}.json"
             result = subprocess.run(
-                [str(launcher), "gateway", "--extension", str(adapter),
-                 "--identity-map", str(identities), "--state-dir", str(state),
-                 "--cwd", str(directory), "--provider", "openai", "--model", "gpt-4o-mini"],
-                cwd=directory, capture_output=True, text=True, encoding="utf-8", timeout=30,
+                [
+                    str(launcher),
+                    "gateway",
+                    "--extension",
+                    str(adapter),
+                    "--identity-map",
+                    str(identities),
+                    "--state-dir",
+                    str(state),
+                    "--cwd",
+                    str(directory),
+                    "--provider",
+                    "openai",
+                    "--model",
+                    "gpt-4o-mini",
+                ],
+                cwd=directory,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=30,
                 env={**env, "GATEWAY_TEST_INDEX": str(index), "GATEWAY_TEST_REPORT": str(report)},
             )
             assert result.returncode == 0, result.stdout + result.stderr
@@ -314,28 +383,46 @@ def check_gateway_cli(launcher: Path, directory: Path) -> dict[str, object]:
             if index == 3:
                 assert deliveries[1]["content"]["lane"] == "background"
                 assert deliveries[1]["content"]["artifacts"]["manifest"]
-                assert (deliveries[1]["content"]["origin_session_id"]
-                        != deliveries[1]["content"]["session_id"])
+                assert (
+                    deliveries[1]["content"]["origin_session_id"]
+                    != deliveries[1]["content"]["session_id"]
+                )
         with closing(sqlite3.connect(state / "state.sqlite3")) as connection:
             assert connection.execute("SELECT COUNT(*) FROM gateway_tasks").fetchone()[0] == 3
             assert connection.execute("SELECT COUNT(*) FROM gateway_routes").fetchone()[0] == 2
             assert connection.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 3
-            assert connection.execute(
-                "SELECT COUNT(*) FROM gateway_tasks WHERE status='succeeded'"
-            ).fetchone()[0] == 3
-            assert connection.execute(
-                "SELECT COUNT(*) FROM gateway_outbox WHERE status!='sent'"
-            ).fetchone()[0] == 0
-            assert connection.execute(
-                "SELECT COUNT(*) FROM gateway_attempts WHERE released=0"
-            ).fetchone()[0] == 0
-        assert any("prompt 1" in json.dumps(body) and "prompt 2" in json.dumps(body)
-                   for body in requests)
+            assert (
+                connection.execute(
+                    "SELECT COUNT(*) FROM gateway_tasks WHERE status='succeeded'"
+                ).fetchone()[0]
+                == 3
+            )
+            assert (
+                connection.execute(
+                    "SELECT COUNT(*) FROM gateway_outbox WHERE status!='sent'"
+                ).fetchone()[0]
+                == 0
+            )
+            assert (
+                connection.execute(
+                    "SELECT COUNT(*) FROM gateway_attempts WHERE released=0"
+                ).fetchone()[0]
+                == 0
+            )
+        assert any(
+            "prompt 1" in json.dumps(body) and "prompt 2" in json.dumps(body) for body in requests
+        )
         assert not list(directory.rglob("*.jsonl"))
-        return {"launches": 3, "tasks": 3, "sessions": 3, "all_deliveries_sent": True,
-                "duplicate_on_restart": True, "resumed_context": True,
-                "background_first_input_worktree_and_artifacts": True,
-                "provider": "local HTTP fixture; no real model"}
+        return {
+            "launches": 3,
+            "tasks": 3,
+            "sessions": 3,
+            "all_deliveries_sent": True,
+            "duplicate_on_restart": True,
+            "resumed_context": True,
+            "background_first_input_worktree_and_artifacts": True,
+            "provider": "local HTTP fixture; no real model",
+        }
     finally:
         server.shutdown()
         server.server_close()
@@ -363,8 +450,13 @@ def main() -> None:
         assert Path(report["entry_module"]).is_relative_to(python.parent.parent)
         report["launcher"] = str(launcher)
         report["commands"] = []
-        for argv in [["--version"], ["--help"], ["gateway", "--help"],
-                     ["gateway", "recover", "--help"], ["bench", "--help"]]:
+        for argv in [
+            ["--version"],
+            ["--help"],
+            ["gateway", "--help"],
+            ["gateway", "recover", "--help"],
+            ["bench", "--help"],
+        ]:
             result = subprocess.run(
                 [str(launcher), *argv],
                 cwd=directory,
@@ -387,13 +479,22 @@ def main() -> None:
         report["gateway_cli"] = check_gateway_cli(launcher, Path(directory))
         inspection = subprocess.run(
             [str(launcher), "gateway", "recover", "--state-dir", str(Path(directory) / "gateway")],
-            cwd=directory, capture_output=True, text=True, encoding="utf-8", timeout=30, check=True,
+            cwd=directory,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            check=True,
         )
         assert json.loads(inspection.stdout) == []
         report["gateway_recovery_inspection"] = True
         refreshed = subprocess.run(
             [str(launcher), "--refresh-resources", "--print", "unused"],
-            cwd=directory, capture_output=True, text=True, encoding="utf-8", timeout=10,
+            cwd=directory,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=10,
         )
         assert refreshed.returncode != 0 and "requires --session" in refreshed.stderr
         report["refresh_resources_requires_session"] = True

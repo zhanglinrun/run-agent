@@ -628,7 +628,11 @@ def create_bash_tool_definition(
 
         start = monotonic()
         completed = await supervisor.run(
-            shell_command, cwd=root, timeout=timeout, cancellation=signal, bash=bool(prefix),
+            shell_command,
+            cwd=root,
+            timeout=timeout,
+            cancellation=signal,
+            bash=bool(prefix),
         )
         output = completed.output.decode(errors="replace")
         truncation = truncate_tail(output)
@@ -679,8 +683,10 @@ def create_bash_tool_definition(
                 "cancelled": completed.cancelled,
                 "output_limited": completed.output_limited,
                 "process": {
-                    "pid": completed.pid, "identity": completed.identity,
-                    "kind": completed.kind, "events": list(completed.events),
+                    "pid": completed.pid,
+                    "identity": completed.identity,
+                    "kind": completed.kind,
+                    "events": list(completed.events),
                 },
                 "duration_seconds": round(monotonic() - start, 3),
                 "truncation": truncation.to_json(),

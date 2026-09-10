@@ -87,7 +87,9 @@ async def test_new_host_invalidates_old_namespace_even_before_rebinding(resource
     with pytest.raises(ExtensionRetired):
         await state.compare_and_set(StateChange("late", 0, "old host"))
     with pytest.raises(ExtensionRetired):
-        await activate_extension(database, ExtensionToken("s", token.source_id, "host", "generation-100"))
+        await activate_extension(
+            database, ExtensionToken("s", token.source_id, "host", "generation-100")
+        )
 
 
 async def test_resource_snapshot_resolves_frozen_content_after_publish_and_rollback(resources):

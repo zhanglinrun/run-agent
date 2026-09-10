@@ -235,10 +235,15 @@ async def run_agent_loop(
             assistant = None
             request_messages = _provider_context(request_messages)
             if before_model_request is not None:
-                await before_model_request(ModelRequest(
-                    current_model, current_system, tuple(request_messages), tuple(current_tools),
-                    session_id,
-                ))
+                await before_model_request(
+                    ModelRequest(
+                        current_model,
+                        current_system,
+                        tuple(request_messages),
+                        tuple(current_tools),
+                        session_id,
+                    )
+                )
             async for event in _assistant_events(
                 provider=provider,
                 model=current_model,

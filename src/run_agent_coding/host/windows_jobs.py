@@ -26,41 +26,68 @@ class _BasicLimits(ctypes.Structure):
 
 
 class _IoCounters(ctypes.Structure):
-    _fields_ = [(name, ctypes.c_uint64) for name in (
-        "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
-        "ReadTransferCount", "WriteTransferCount", "OtherTransferCount",
-    )]
+    _fields_ = [
+        (name, ctypes.c_uint64)
+        for name in (
+            "ReadOperationCount",
+            "WriteOperationCount",
+            "OtherOperationCount",
+            "ReadTransferCount",
+            "WriteTransferCount",
+            "OtherTransferCount",
+        )
+    ]
 
 
 class _ExtendedLimits(ctypes.Structure):
     _fields_ = [
-        ("BasicLimitInformation", _BasicLimits), ("IoInfo", _IoCounters),
-        ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
-        ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ("BasicLimitInformation", _BasicLimits),
+        ("IoInfo", _IoCounters),
+        ("ProcessMemoryLimit", ctypes.c_size_t),
+        ("JobMemoryLimit", ctypes.c_size_t),
+        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+        ("PeakJobMemoryUsed", ctypes.c_size_t),
     ]
 
 
 class _Accounting(ctypes.Structure):
     _fields_ = [
-        ("TotalUserTime", ctypes.c_int64), ("TotalKernelTime", ctypes.c_int64),
+        ("TotalUserTime", ctypes.c_int64),
+        ("TotalKernelTime", ctypes.c_int64),
         ("ThisPeriodTotalUserTime", ctypes.c_int64),
         ("ThisPeriodTotalKernelTime", ctypes.c_int64),
-        ("TotalPageFaultCount", wintypes.DWORD), ("TotalProcesses", wintypes.DWORD),
-        ("ActiveProcesses", wintypes.DWORD), ("TotalTerminatedProcesses", wintypes.DWORD),
+        ("TotalPageFaultCount", wintypes.DWORD),
+        ("TotalProcesses", wintypes.DWORD),
+        ("ActiveProcesses", wintypes.DWORD),
+        ("TotalTerminatedProcesses", wintypes.DWORD),
     ]
 
 
 class _StartupInfo(ctypes.Structure):
     _fields_ = [
-        ("cb", wintypes.DWORD), ("lpReserved", wintypes.LPWSTR),
-        ("lpDesktop", wintypes.LPWSTR), ("lpTitle", wintypes.LPWSTR),
-        *[(name, wintypes.DWORD) for name in (
-            "dwX", "dwY", "dwXSize", "dwYSize", "dwXCountChars", "dwYCountChars",
-            "dwFillAttribute", "dwFlags",
-        )],
-        ("wShowWindow", wintypes.WORD), ("cbReserved2", wintypes.WORD),
-        ("lpReserved2", ctypes.c_void_p), ("hStdInput", wintypes.HANDLE),
-        ("hStdOutput", wintypes.HANDLE), ("hStdError", wintypes.HANDLE),
+        ("cb", wintypes.DWORD),
+        ("lpReserved", wintypes.LPWSTR),
+        ("lpDesktop", wintypes.LPWSTR),
+        ("lpTitle", wintypes.LPWSTR),
+        *[
+            (name, wintypes.DWORD)
+            for name in (
+                "dwX",
+                "dwY",
+                "dwXSize",
+                "dwYSize",
+                "dwXCountChars",
+                "dwYCountChars",
+                "dwFillAttribute",
+                "dwFlags",
+            )
+        ],
+        ("wShowWindow", wintypes.WORD),
+        ("cbReserved2", wintypes.WORD),
+        ("lpReserved2", ctypes.c_void_p),
+        ("hStdInput", wintypes.HANDLE),
+        ("hStdOutput", wintypes.HANDLE),
+        ("hStdError", wintypes.HANDLE),
     ]
 
 
@@ -69,34 +96,67 @@ class _StartupInfoEx(ctypes.Structure):
 
 
 class _ProcessInfo(ctypes.Structure):
-    _fields_ = [("hProcess", wintypes.HANDLE), ("hThread", wintypes.HANDLE),
-                ("dwProcessId", wintypes.DWORD), ("dwThreadId", wintypes.DWORD)]
+    _fields_ = [
+        ("hProcess", wintypes.HANDLE),
+        ("hThread", wintypes.HANDLE),
+        ("dwProcessId", wintypes.DWORD),
+        ("dwThreadId", wintypes.DWORD),
+    ]
 
 
 class WindowsJobProcess:
     kind = "windows_job"
 
-    def __init__(
-        self, command: str, cwd: Path, output: BinaryIO, *, identity: str
-    ) -> None:
+    def __init__(self, command: str, cwd: Path, output: BinaryIO, *, identity: str) -> None:
         self.identity = "Local\\run-agent-" + identity
         self._api = ctypes.WinDLL("kernel32", use_last_error=True)
         for name, result, arguments in (
             ("CreateJobObjectW", wintypes.HANDLE, [ctypes.c_void_p, wintypes.LPCWSTR]),
-            ("SetInformationJobObject", wintypes.BOOL,
-             [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]),
-            ("InitializeProcThreadAttributeList", wintypes.BOOL,
-             [ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p]),
-            ("UpdateProcThreadAttribute", wintypes.BOOL,
-             [ctypes.c_void_p, wintypes.DWORD, ctypes.c_size_t, ctypes.c_void_p,
-              ctypes.c_size_t, ctypes.c_void_p, ctypes.c_void_p]),
+            (
+                "SetInformationJobObject",
+                wintypes.BOOL,
+                [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD],
+            ),
+            (
+                "InitializeProcThreadAttributeList",
+                wintypes.BOOL,
+                [ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p],
+            ),
+            (
+                "UpdateProcThreadAttribute",
+                wintypes.BOOL,
+                [
+                    ctypes.c_void_p,
+                    wintypes.DWORD,
+                    ctypes.c_size_t,
+                    ctypes.c_void_p,
+                    ctypes.c_size_t,
+                    ctypes.c_void_p,
+                    ctypes.c_void_p,
+                ],
+            ),
             ("DeleteProcThreadAttributeList", None, [ctypes.c_void_p]),
-            ("CreateProcessW", wintypes.BOOL,
-             [wintypes.LPCWSTR, wintypes.LPWSTR, ctypes.c_void_p, ctypes.c_void_p,
-              wintypes.BOOL, wintypes.DWORD, ctypes.c_void_p, wintypes.LPCWSTR,
-              ctypes.c_void_p, ctypes.c_void_p]),
-            ("QueryInformationJobObject", wintypes.BOOL,
-             [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p]),
+            (
+                "CreateProcessW",
+                wintypes.BOOL,
+                [
+                    wintypes.LPCWSTR,
+                    wintypes.LPWSTR,
+                    ctypes.c_void_p,
+                    ctypes.c_void_p,
+                    wintypes.BOOL,
+                    wintypes.DWORD,
+                    ctypes.c_void_p,
+                    wintypes.LPCWSTR,
+                    ctypes.c_void_p,
+                    ctypes.c_void_p,
+                ],
+            ),
+            (
+                "QueryInformationJobObject",
+                wintypes.BOOL,
+                [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p],
+            ),
             ("TerminateJobObject", wintypes.BOOL, [wintypes.HANDLE, wintypes.UINT]),
             ("ResumeThread", wintypes.DWORD, [wintypes.HANDLE]),
             ("CloseHandle", wintypes.BOOL, [wintypes.HANDLE]),
@@ -112,19 +172,27 @@ class WindowsJobProcess:
         try:
             limits = _ExtendedLimits()
             limits.BasicLimitInformation.LimitFlags = 0x2000  # KILL_ON_JOB_CLOSE
-            self._check(self._api.SetInformationJobObject(
-                self._job, 9, ctypes.byref(limits), ctypes.sizeof(limits)
-            ))
+            self._check(
+                self._api.SetInformationJobObject(
+                    self._job, 9, ctypes.byref(limits), ctypes.sizeof(limits)
+                )
+            )
             msvcrt = importlib.import_module("msvcrt")
             with open(os.devnull, "rb") as input_file:
                 handles = []
                 try:
                     current = self._winapi.GetCurrentProcess()
                     for file in (input_file, output):
-                        handles.append(self._winapi.DuplicateHandle(
-                            current, msvcrt.get_osfhandle(file.fileno()), current,
-                            0, True, self._winapi.DUPLICATE_SAME_ACCESS,
-                        ))
+                        handles.append(
+                            self._winapi.DuplicateHandle(
+                                current,
+                                msvcrt.get_osfhandle(file.fileno()),
+                                current,
+                                0,
+                                True,
+                                self._winapi.DUPLICATE_SAME_ACCESS,
+                            )
+                        )
                     shell = os.environ.get("COMSPEC") or str(
                         Path(os.environ["SYSTEMROOT"]) / "System32" / "cmd.exe"
                     )
@@ -143,18 +211,26 @@ class WindowsJobProcess:
         size = ctypes.c_size_t()
         self._api.InitializeProcThreadAttributeList(None, 2, 0, ctypes.byref(size))
         attributes = ctypes.create_string_buffer(size.value)
-        self._check(self._api.InitializeProcThreadAttributeList(
-            attributes, 2, 0, ctypes.byref(size)
-        ))
+        self._check(
+            self._api.InitializeProcThreadAttributeList(attributes, 2, 0, ctypes.byref(size))
+        )
         try:
             inherited = (wintypes.HANDLE * len(handles))(*handles)
             jobs = (wintypes.HANDLE * 1)(self._job)
             # JOB_LIST makes membership atomic with creation. There is no unowned
             # suspended process interval if the parent dies inside CreateProcessW.
             for key, values in ((0x20002, inherited), (0x2000D, jobs)):
-                self._check(self._api.UpdateProcThreadAttribute(
-                    attributes, 0, key, values, ctypes.sizeof(values), None, None,
-                ))
+                self._check(
+                    self._api.UpdateProcThreadAttribute(
+                        attributes,
+                        0,
+                        key,
+                        values,
+                        ctypes.sizeof(values),
+                        None,
+                        None,
+                    )
+                )
             startup = _StartupInfoEx()
             startup.StartupInfo.cb = ctypes.sizeof(startup)
             startup.StartupInfo.dwFlags = (
@@ -168,11 +244,20 @@ class WindowsJobProcess:
             line = ctypes.create_unicode_buffer(
                 f'{subprocess.list2cmdline([shell])} /d /s /c "{command}"'
             )
-            self._check(self._api.CreateProcessW(
-                shell, line, None, None, True,
-                0x4 | 0x80000 | subprocess.CREATE_NO_WINDOW,
-                None, str(cwd), ctypes.byref(startup), ctypes.byref(info),
-            ))
+            self._check(
+                self._api.CreateProcessW(
+                    shell,
+                    line,
+                    None,
+                    None,
+                    True,
+                    0x4 | 0x80000 | subprocess.CREATE_NO_WINDOW,
+                    None,
+                    str(cwd),
+                    ctypes.byref(startup),
+                    ctypes.byref(info),
+                )
+            )
             self._process, self._thread, self.pid = info.hProcess, info.hThread, info.dwProcessId
         finally:
             self._api.DeleteProcThreadAttributeList(attributes)
@@ -197,9 +282,11 @@ class WindowsJobProcess:
 
     def active_count(self) -> int:
         info = _Accounting()
-        self._check(self._api.QueryInformationJobObject(
-            self._job, 1, ctypes.byref(info), ctypes.sizeof(info), None
-        ))
+        self._check(
+            self._api.QueryInformationJobObject(
+                self._job, 1, ctypes.byref(info), ctypes.sizeof(info), None
+            )
+        )
         return int(info.ActiveProcesses)
 
     def terminate(self, *, force: bool) -> None:

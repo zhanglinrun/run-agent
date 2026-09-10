@@ -25,15 +25,25 @@ class SqliteProcessJournal:
                 connection.execute(
                     "INSERT INTO managed_processes(process_id,session_id,run_id,owner_id,"
                     "generation,status,intent_json,updated_at) VALUES (?,?,?,?,?,'launching',?,?)",
-                    (identity, token.session_id, token.run_id, token.owner_id, token.generation,
-                     body, time()),
+                    (
+                        identity,
+                        token.session_id,
+                        token.run_id,
+                        token.owner_id,
+                        token.generation,
+                        body,
+                        time(),
+                    ),
                 )
                 return
             row = connection.execute(
                 "SELECT * FROM managed_processes WHERE process_id=?", (identity,)
             ).fetchone()
             if row is None or (
-                row["session_id"], row["run_id"], row["owner_id"], row["generation"]
+                row["session_id"],
+                row["run_id"],
+                row["owner_id"],
+                row["generation"],
             ) != (token.session_id, token.run_id, token.owner_id, token.generation):
                 raise SessionConflict("Process lifecycle does not belong to its writer")
             if phase == "started":
@@ -42,7 +52,8 @@ class SqliteProcessJournal:
                     raise SessionConflict("Process launch already recorded")
                 connection.execute(
                     "UPDATE managed_processes SET status='running',native_json=?,updated_at=? "
-                    "WHERE process_id=?", (body, time(), identity),
+                    "WHERE process_id=?",
+                    (body, time(), identity),
                 )
             elif phase == "exited":
                 events = payload.get("events")
@@ -52,14 +63,16 @@ class SqliteProcessJournal:
                     raise SessionConflict("Process exit has a different outcome")
                 connection.execute(
                     "UPDATE managed_processes SET status='exited',outcome_json=?,updated_at=? "
-                    "WHERE process_id=?", (body, time(), identity),
+                    "WHERE process_id=?",
+                    (body, time(), identity),
                 )
             elif phase == "launch_failed":
                 if row["status"] != "launching":
                     raise SessionConflict("Running process cannot be reported as a failed launch")
                 connection.execute(
                     "UPDATE managed_processes SET status='launch_failed',"
-                    "outcome_json=?,updated_at=? WHERE process_id=?", (body, time(), identity),
+                    "outcome_json=?,updated_at=? WHERE process_id=?",
+                    (body, time(), identity),
                 )
             else:
                 raise ValueError("Unknown process lifecycle phase")

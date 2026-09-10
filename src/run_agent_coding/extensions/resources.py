@@ -87,20 +87,29 @@ class ContextResourceProviders:
             if identity in seen or item.provider not in self.registrations:
                 raise ValueError("Duplicate or unknown resource provider contribution")
             seen.add(identity)
-            if (selected.scope not in {"session", "project", "user"}
-                    or selected.kind not in {"context", "instructions"}
-                    or not selected.title or len(selected.title) > 128
-                    or "\n" in selected.title or "\r" in selected.title
-                    or not 1 <= selected.max_tokens <= 8192):
+            if (
+                selected.scope not in {"session", "project", "user"}
+                or selected.kind not in {"context", "instructions"}
+                or selected.presentation not in {"content", "index"}
+                or not selected.title
+                or len(selected.title) > 128
+                or "\n" in selected.title
+                or "\r" in selected.title
+                or not 1 <= selected.max_tokens <= 8192
+            ):
                 raise ValueError("Invalid extension context resource metadata or budget")
             body = asdict(resource)
             body.pop("version")
-            if (resource.version != selected.version or resource.key != selected.key
-                    or sha256(canonical_json(body).encode()).hexdigest() != resource.version):
+            if (
+                resource.version != selected.version
+                or resource.key != selected.key
+                or sha256(canonical_json(body).encode()).hexdigest() != resource.version
+            ):
                 raise ValueError("Pinned extension resource content hash mismatch")
-            tokens = estimate_text_tokens(selected.title + "\n" + resource.content)
+            prompt_content = item.prompt_content()
+            tokens = estimate_text_tokens(selected.title + "\n" + prompt_content)
             total_tokens += tokens
-            total_bytes += len(resource.content.encode())
+            total_bytes += len(prompt_content.encode())
             if tokens > selected.max_tokens or total_tokens > 16384 or total_bytes > 128 * 1024:
                 raise ValueError("Extension context resource exceeds its context budget")
 
@@ -109,13 +118,14 @@ class ContextResourceProviders:
         if self.snapshot is None:
             return ()
         return tuple(
-            PromptSection(item.selection.title, item.resource.content)
+            PromptSection(item.selection.title, item.prompt_content())
             for item in self.snapshot.contributions
         )
 
     def payload(self) -> JSONValue:
         if self.snapshot is None:
             raise ValueError("Extension resources have not been prepared")
-        return cast(JSONValue, TypeAdapter(ExtensionResourceSnapshot).dump_python(
-            self.snapshot, mode="json"
-        ))
+        return cast(
+            JSONValue,
+            TypeAdapter(ExtensionResourceSnapshot).dump_python(self.snapshot, mode="json"),
+        )

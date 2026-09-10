@@ -44,11 +44,14 @@ def source_version(entry: Path, package_dir: Path | None) -> str:
         paths = []
         for folder, directories, files in os.walk(root, followlinks=False):
             directories[:] = sorted(d for d in directories if d not in {".git", "__pycache__"})
-            if any((Path(folder) / name).is_symlink() or (Path(folder) / name).is_junction()
-                   for name in directories):
+            if any(
+                (Path(folder) / name).is_symlink() or (Path(folder) / name).is_junction()
+                for name in directories
+            ):
                 raise ValueError("Extension package contains a directory link")
             paths.extend(
-                Path(folder) / name for name in sorted(files)
+                Path(folder) / name
+                for name in sorted(files)
                 if Path(name).suffix in {".py", ".toml"}
             )
     digest = hashlib.sha256()
@@ -56,8 +59,12 @@ def source_version(entry: Path, package_dir: Path | None) -> str:
     for path in paths:
         size = path.stat()
         total += size.st_size
-        if (path.is_symlink() or not stat.S_ISREG(size.st_mode)
-                or len(paths) > 1024 or total > 8 * 1024 * 1024):
+        if (
+            path.is_symlink()
+            or not stat.S_ISREG(size.st_mode)
+            or len(paths) > 1024
+            or total > 8 * 1024 * 1024
+        ):
             raise ValueError("Extension source exceeds its file limit or contains a file link")
         content = path.read_bytes()
         after = path.stat()

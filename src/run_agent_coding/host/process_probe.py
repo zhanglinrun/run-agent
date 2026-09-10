@@ -23,7 +23,11 @@ def _inspect_windows_job(name: str) -> dict[str, Any]:
     api.OpenJobObjectW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
     api.OpenJobObjectW.restype = wintypes.HANDLE
     api.QueryInformationJobObject.argtypes = [
-        wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p,
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.c_void_p,
     ]
     api.CloseHandle.argtypes = [wintypes.HANDLE]
     handle = api.OpenJobObjectW(4, False, name)
@@ -35,11 +39,18 @@ def _inspect_windows_job(name: str) -> dict[str, Any]:
     try:
         accounting = _Accounting()
         if not api.QueryInformationJobObject(
-            handle, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None,
+            handle,
+            1,
+            ctypes.byref(accounting),
+            ctypes.sizeof(accounting),
+            None,
         ):
             raise ctypes.WinError(ctypes.get_last_error())
-        return {"empty": accounting.ActiveProcesses == 0,
-                "reason": "Job membership inspected", "members": accounting.ActiveProcesses}
+        return {
+            "empty": accounting.ActiveProcesses == 0,
+            "reason": "Job membership inspected",
+            "members": accounting.ActiveProcesses,
+        }
     finally:
         api.CloseHandle(handle)
 
@@ -61,8 +72,11 @@ def _inspect_unreleased_gate(intent: dict[str, Any]) -> dict[str, Any]:
                 continue
             if len(arguments) > 2 and arguments[2] == identity.encode():
                 members.append(int(path.name))
-        return {"empty": not members, "reason": "Unreleased startup gate inspected",
-                "members": members}
+        return {
+            "empty": not members,
+            "reason": "Unreleased startup gate inspected",
+            "members": members,
+        }
     return {"empty": False, "reason": "Launch platform differs from recovery host"}
 
 
@@ -104,7 +118,7 @@ def inspect_native_process(intent: dict[str, Any], native: dict[str, Any] | None
                     body = (directory / "stat").read_text()
                 except FileNotFoundError:
                     continue
-                fields = body[body.rfind(")") + 2:].split()
+                fields = body[body.rfind(")") + 2 :].split()
                 if int(fields[2]) == pid and fields[0] != "Z":
                     members.append(int(directory.name))
             return {"empty": not members, "reason": "Process group inspected", "members": members}
@@ -117,8 +131,11 @@ def terminate_orphan(intent: dict[str, Any], native: dict[str, Any] | None) -> d
     check = inspect_native_process(intent, native)
     if check["empty"]:
         return check
-    if (native is None or intent.get("machine_identity") != machine_identity()
-            or intent.get("launch_protocol") != "journal-gate-v1"):
+    if (
+        native is None
+        or intent.get("machine_identity") != machine_identity()
+        or intent.get("launch_protocol") != "journal-gate-v1"
+    ):
         return check
     if process_identity(intent["host_pid"]) == intent["host_identity"]:
         return check
@@ -149,6 +166,8 @@ def terminate_orphan(intent: dict[str, Any], native: dict[str, Any] | None) -> d
         # descriptor. A reused numeric PID must never redirect a recovery signal.
         if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
             return {"empty": False, "reason": "Recovery requires Linux pidfd support"}
+        send_signal = getattr(signal, "pidfd_send_signal")  # noqa: B009 - Windows type stubs
+        kill_signal = getattr(signal, "SIGKILL")  # noqa: B009 - Windows type stubs
         until = monotonic() + 5
         while monotonic() < until:
             current = process_identity(native["pid"])
@@ -165,12 +184,10 @@ def terminate_orphan(intent: dict[str, Any], native: dict[str, Any] | None) -> d
                     continue
                 try:
                     body = (path / "stat").read_text()
-                    fields = body[body.rfind(")") + 2:].split()
+                    fields = body[body.rfind(")") + 2 :].split()
                     if int(fields[2]) == native["pid"] and fields[0] != "Z":
                         members.append(pid)
-                        getattr(signal, "pidfd_send_signal")(  # noqa: B009
-                            descriptor, getattr(signal, "SIGKILL"), None, 0,  # noqa: B009
-                        )
+                        send_signal(descriptor, kill_signal, None, 0)
                 except (FileNotFoundError, ProcessLookupError):
                     pass
                 finally:

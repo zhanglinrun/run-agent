@@ -75,7 +75,8 @@ def crash_worker(tmp_path):
     def launch(mode="claim", command=""):
         return subprocess.Popen(
             [sys.executable, str(worker), str(tmp_path), mode, command],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
 
@@ -87,7 +88,9 @@ async def crashed(worker):
     assert worker.returncode == 77, (output, error)
 
 
-async def test_crash_before_prompt_requires_review_then_next_task_uses_same_history(tmp_path, crash_worker):
+async def test_crash_before_prompt_requires_review_then_next_task_uses_same_history(
+    tmp_path, crash_worker
+):
     await crashed(crash_worker())
     info = json.loads((tmp_path / "ready.json").read_text())
     lock = GatewayProcessLock(tmp_path / "state" / "gateway.lock")
@@ -104,14 +107,23 @@ async def test_crash_before_prompt_requires_review_then_next_task_uses_same_hist
             assert await repo.claim_next(owner) is None
             with pytest.raises(SessionConflict, match="recovery"):
                 await repo.sessions.claim(
-                    info["session_id"], owner_id="cli-bypass", run_id="bypass", takeover=True,
+                    info["session_id"],
+                    owner_id="cli-bypass",
+                    run_id="bypass",
+                    takeover=True,
                 )
             result = await recovery.release(info["run_id"], note="Inspected workspace; no changes")
             assert result["released"]
-            assert (await repo.task(info["first"], principal_id="alice"))["status"] == "outcome_unknown"
+            assert (await repo.task(info["first"], principal_id="alice"))[
+                "status"
+            ] == "outcome_unknown"
             assignment = await repo.claim_next(owner)
-            assert assignment.task_id == info["second"] and assignment.session_id == info["session_id"]
-            host = GatewayCodingRuntime(repo, owner, options(tmp_path), provider_factory=lambda _: ReplyProvider())
+            assert (
+                assignment.task_id == info["second"] and assignment.session_id == info["session_id"]
+            )
+            host = GatewayCodingRuntime(
+                repo, owner, options(tmp_path), provider_factory=lambda _: ReplyProvider()
+            )
             await CodingAssignmentRunner(host).run(assignment, asyncio.Event())
             await repo.release(owner, assignment)
             assert (await repo.task(info["second"], principal_id="alice"))["status"] == "succeeded"
@@ -120,7 +132,9 @@ async def test_crash_before_prompt_requires_review_then_next_task_uses_same_hist
         lock.close()
 
 
-async def test_committed_result_auto_releases_after_dead_host_without_duplicate_delivery(tmp_path, crash_worker):
+async def test_committed_result_auto_releases_after_dead_host_without_duplicate_delivery(
+    tmp_path, crash_worker
+):
     await crashed(crash_worker("complete"))
     info = json.loads((tmp_path / "ready.json").read_text())
     lock = GatewayProcessLock(tmp_path / "state" / "gateway.lock")
@@ -129,16 +143,26 @@ async def test_committed_result_auto_releases_after_dead_host_without_duplicate_
         async with await SqliteDatabase.open(tmp_path / "state" / "state.sqlite3") as database:
             repo = GatewayRepository(database)
             await repo.initialize()
-            before = await database.run(lambda c: dict(c.execute(
-                "SELECT * FROM gateway_outbox WHERE task_id=? AND kind='result'", (info["first"],)
-            ).fetchone()))
+            before = await database.run(
+                lambda c: dict(
+                    c.execute(
+                        "SELECT * FROM gateway_outbox WHERE task_id=? AND kind='result'",
+                        (info["first"],),
+                    ).fetchone()
+                )
+            )
             owner = await repo.acquire_owner("replacement", process_lock=lock)
             await GatewayRecovery(repo, owner).reconcile()
             state = await repo.task(info["first"], principal_id="alice")
             assert state["released"] and state["status"] == "succeeded"
-            after = await database.run(lambda c: dict(c.execute(
-                "SELECT * FROM gateway_outbox WHERE task_id=? AND kind='result'", (info["first"],)
-            ).fetchone()))
+            after = await database.run(
+                lambda c: dict(
+                    c.execute(
+                        "SELECT * FROM gateway_outbox WHERE task_id=? AND kind='result'",
+                        (info["first"],),
+                    ).fetchone()
+                )
+            )
             assert before == after
             await repo.release_owner(owner)
     finally:
@@ -154,14 +178,19 @@ async def test_live_owner_blocks_recovery_and_foreign_machine_is_not_verified(ru
     assert not (await recovery.inspect(assignment.run_id))["previous_host_exited"]
     with pytest.raises(SessionConflict, match="verified stopped"):
         await recovery.release(assignment.run_id, note="cannot override live process")
-    await repo.database.run(lambda c: c.execute(
-        "UPDATE gateway_hosts SET process_json=?",
-        ('{"pid":99999999,"identity":"other","machine_identity":"foreign"}',),
-    ), write=True)
+    await repo.database.run(
+        lambda c: c.execute(
+            "UPDATE gateway_hosts SET process_json=?",
+            ('{"pid":99999999,"identity":"other","machine_identity":"foreign"}',),
+        ),
+        write=True,
+    )
     assert not (await recovery.inspect(assignment.run_id))["processes_empty"]
 
 
-async def test_shell_crash_recovery_checks_native_job_and_preserves_unknown_effect(tmp_path, crash_worker, commands):
+async def test_shell_crash_recovery_checks_native_job_and_preserves_unknown_effect(
+    tmp_path, crash_worker, commands
+):
     command, marker = commands
     worker = crash_worker("running", command())
     try:
@@ -191,9 +220,12 @@ async def test_shell_crash_recovery_checks_native_job_and_preserves_unknown_effe
                 await recovery.release(info["run_id"], note="Reviewed command artifacts")
                 state = await repo.task(info["first"], principal_id="alice")
                 assert state["status"] == "outcome_unknown" and state["released"]
-                assert await database.run(lambda c: c.execute(
-                    "SELECT status FROM managed_processes"
-                ).fetchone()[0]) == "exited"
+                assert (
+                    await database.run(
+                        lambda c: c.execute("SELECT status FROM managed_processes").fetchone()[0]
+                    )
+                    == "exited"
+                )
                 await repo.release_owner(owner)
         finally:
             lock.close()
@@ -215,7 +247,9 @@ async def test_restored_database_does_not_restart_gateway_or_repeat_delivery(run
             await repository.acquire_owner("restored")
 
 
-async def test_recovery_commit_rollback_retains_slot_workspace_and_notification(tmp_path, crash_worker):
+async def test_recovery_commit_rollback_retains_slot_workspace_and_notification(
+    tmp_path, crash_worker
+):
     await crashed(crash_worker())
     info = json.loads((tmp_path / "ready.json").read_text())
     lock = GatewayProcessLock(tmp_path / "state" / "gateway.lock")
@@ -225,47 +259,75 @@ async def test_recovery_commit_rollback_retains_slot_workspace_and_notification(
             repo = GatewayRepository(database)
             await repo.initialize()
             owner = await repo.acquire_owner("rollback", process_lock=lock)
+
             def fail(point):
                 if point == "gateway_recovery_committed":
                     raise RuntimeError("Injected recovery rollback")
+
             repo.fault = fail
             recovery = GatewayRecovery(repo, owner)
             with pytest.raises(RuntimeError, match="rollback"):
                 await recovery.release(info["run_id"], note="reviewed")
             task = await repo.task(info["first"], principal_id="alice")
             assert not task["released"] and task["workspace_status"] == "quarantined"
-            assert await database.run(lambda c: c.execute(
-                "SELECT COUNT(*) FROM gateway_outbox WHERE task_id=? AND kind='result'",
-                (info["first"],),
-            ).fetchone()[0]) == 0
+            assert (
+                await database.run(
+                    lambda c: c.execute(
+                        "SELECT COUNT(*) FROM gateway_outbox WHERE task_id=? AND kind='result'",
+                        (info["first"],),
+                    ).fetchone()[0]
+                )
+                == 0
+            )
             repo.fault = None
             first = await recovery.release(info["run_id"], note="reviewed")
             second = await recovery.release(info["run_id"], note="same review")
             assert first["released"] and second["released"]
-            assert await database.run(lambda c: c.execute(
-                "SELECT COUNT(*) FROM gateway_outbox WHERE task_id=? AND kind='result'",
-                (info["first"],),
-            ).fetchone()[0]) == 1
+            assert (
+                await database.run(
+                    lambda c: c.execute(
+                        "SELECT COUNT(*) FROM gateway_outbox WHERE task_id=? AND kind='result'",
+                        (info["first"],),
+                    ).fetchone()[0]
+                )
+                == 1
+            )
             await repo.release_owner(owner)
     finally:
         lock.close()
 
 
-async def test_recovery_command_inspects_and_releases_without_loading_channels(tmp_path, crash_worker):
+async def test_recovery_command_inspects_and_releases_without_loading_channels(
+    tmp_path, crash_worker
+):
     await crashed(crash_worker())
     info = json.loads((tmp_path / "ready.json").read_text())
+
     def invoke(*arguments):
         return subprocess.run(
-            [sys.executable, "-m", "run_agent_gateway.cli", "recover", "--state-dir",
-             str(tmp_path / "state"), *arguments], capture_output=True, text=True, timeout=15,
+            [
+                sys.executable,
+                "-m",
+                "run_agent_gateway.cli",
+                "recover",
+                "--state-dir",
+                str(tmp_path / "state"),
+                *arguments,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
+
     inspected = await asyncio.to_thread(invoke)
     assert inspected.returncode == 0, inspected.stderr
     report = json.loads(inspected.stdout)[0]
     assert report["run_id"] == info["run_id"] and not report["released"]
     refused = await asyncio.to_thread(invoke, "--release", info["run_id"])
     assert refused.returncode != 0 and "--note" in refused.stderr
-    released = await asyncio.to_thread(invoke, "--release", info["run_id"], "--note", "Reviewed outputs")
+    released = await asyncio.to_thread(
+        invoke, "--release", info["run_id"], "--note", "Reviewed outputs"
+    )
     assert released.returncode == 0, released.stderr
     assert json.loads(released.stdout)[0]["released"]
     assert json.loads((await asyncio.to_thread(invoke)).stdout) == []
@@ -284,12 +346,14 @@ async def test_host_death_before_native_record_never_releases_user_command(tmp_p
         "async def main():\n"
         "    supervisor=ProcessSupervisor(); supervisor.recorder_factory=lambda:record\n"
         "    await supervisor.run(sys.argv[1],cwd=pathlib.Path.cwd())\n"
-        "asyncio.run(main())\n", encoding="utf-8",
+        "asyncio.run(main())\n",
+        encoding="utf-8",
     )
     intent_path = tmp_path / "intent.json"
     child = subprocess.Popen(
         [sys.executable, str(worker), command(), str(intent_path)],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
     )
     await crashed(child)

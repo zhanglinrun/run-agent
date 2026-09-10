@@ -37,7 +37,9 @@ async def test_busy_steer_is_consumed_once_at_next_boundary_with_durable_history
                 async for event in super().stream_response(messages=messages, **kwargs):
                     yield event
                 return
-            observed.append([m.text for m in messages if isinstance(m, (UserMessage, CustomMessage))])
+            observed.append(
+                [m.text for m in messages if isinstance(m, (UserMessage, CustomMessage))]
+            )
             if len(observed) == 1:
                 started.set()
                 await finish.wait()
@@ -55,12 +57,19 @@ async def test_busy_steer_is_consumed_once_at_next_boundary_with_durable_history
         assert (await steer(repo, owner, tmp_path))["duplicate"]
         state = await repo.task(first["task_id"], principal_id="alice")
         assert state["status"] == "steering"
-        assert state["target_run_id"] == (await repo.task(receipt.task_id, principal_id="alice"))["run_id"]
+        assert (
+            state["target_run_id"]
+            == (await repo.task(receipt.task_id, principal_id="alice"))["run_id"]
+        )
         assert len(observed) == 1
         finish.set()
         await eventually(lambda: released(repo, receipt.task_id))
         assert not scheduler.errors and scheduler.failure is None
-        assert observed == [["hello"], ["hello", "correction"], ["hello", "correction", "another correction"]]
+        assert observed == [
+            ["hello"],
+            ["hello", "correction"],
+            ["hello", "correction", "another correction"],
+        ]
         for response in (first, second):
             state = await repo.task(response["task_id"], principal_id="alice")
             assert state["status"] == "consumed" and state["attempt"] == 0
@@ -71,9 +80,22 @@ async def test_busy_steer_is_consumed_once_at_next_boundary_with_durable_history
             )
             assert entry["run_id"] == state["target_run_id"]
         history = (await repo.sessions.read_entries(receipt.session_id)).entries
-        corrections = [e for e in history if isinstance(e, MessageEntry) and isinstance(e.message, CustomMessage)]
+        corrections = [
+            e
+            for e in history
+            if isinstance(e, MessageEntry) and isinstance(e.message, CustomMessage)
+        ]
         assert [e.message.text for e in corrections] == ["correction", "another correction"]
-        assert len([e for e in history if isinstance(e, MessageEntry) and isinstance(e.message, AssistantMessage)]) == 3
+        assert (
+            len(
+                [
+                    e
+                    for e in history
+                    if isinstance(e, MessageEntry) and isinstance(e.message, AssistantMessage)
+                ]
+            )
+            == 3
+        )
     finally:
         finish.set()
         await scheduler.shutdown()
@@ -99,17 +121,33 @@ async def test_steer_transaction_rolls_back_history_receipt_and_state(runtime, t
             await repo.input_source(owner, assignment)(boundary)
         assert (await app.session.storage.get_head()).entry_id == initial
         assert (await repo.task(response["task_id"], principal_id="alice"))["status"] == "steering"
-        assert await repo.database.run(lambda c: c.execute(
-            "SELECT COUNT(*) FROM gateway_outbox WHERE task_id=? AND kind='result'", (response["task_id"],)
-        ).fetchone()[0]) == 0
+        assert (
+            await repo.database.run(
+                lambda c: c.execute(
+                    "SELECT COUNT(*) FROM gateway_outbox WHERE task_id=? AND kind='result'",
+                    (response["task_id"],),
+                ).fetchone()[0]
+            )
+            == 0
+        )
         repo.fault = None
         batch = await repo.input_source(owner, assignment)(boundary)
         assert batch is not None and len(batch.entries) == 1
-        assert await repo.input_source(owner, assignment)(replace(boundary, expected_head=batch.receipt.head_id)) is None
-        await app.session.storage.complete_run(RunOutcome(
-            token=token, branch_id=boundary.branch_id, expected_head=batch.receipt.head_id,
-            entries=(), status="succeeded",
-        ))
+        assert (
+            await repo.input_source(owner, assignment)(
+                replace(boundary, expected_head=batch.receipt.head_id)
+            )
+            is None
+        )
+        await app.session.storage.complete_run(
+            RunOutcome(
+                token=token,
+                branch_id=boundary.branch_id,
+                expected_head=batch.receipt.head_id,
+                entries=(),
+                status="succeeded",
+            )
+        )
     finally:
         repo.fault = None
         await app.aclose()
@@ -205,18 +243,27 @@ async def test_adapter_delivers_accepted_before_consumed_and_exposes_status(runt
             if calls == 1:
                 started.set()
                 await finish.wait()
-            yield AssistantDoneEvent(reason="stop", message=AssistantMessage(content="done", stop_reason="stop"))
+            yield AssistantDoneEvent(
+                reason="stop", message=AssistantMessage(content="done", stop_reason="stop")
+            )
 
     host.provider_factory = lambda _: DelayedProvider()
     adapter = QueueGatewayAdapter("local")
     scheduler = GatewayScheduler(repo, owner, CodingAssignmentRunner(host))
-    gateway = AgentGateway(scheduler, [adapter], IdentityPolicy((IdentityRule("local", "account", "alice", "alice", tmp_path),)), model="test")
+    gateway = AgentGateway(
+        scheduler,
+        [adapter],
+        IdentityPolicy((IdentityRule("local", "account", "alice", "alice", tmp_path),)),
+        model="test",
+    )
     await gateway.start()
     try:
         await adapter.receive_message(InboundMessage("first", "account", "alice", "chat", "hello"))
         await asyncio.wait_for(started.wait(), 5)
         await asyncio.wait_for(adapter.next_sent(), 5)
-        await adapter.receive_message(InboundMessage("steer", "account", "alice", "chat", "/steer correction"))
+        await adapter.receive_message(
+            InboundMessage("steer", "account", "alice", "chat", "/steer correction")
+        )
         accepted = await asyncio.wait_for(adapter.next_sent(), 5)
         assert accepted.content["mode"] == "steer" and accepted.content["status"] == "accepted"
         finish.set()
@@ -241,9 +288,16 @@ async def test_model_error_requeues_unconsumed_steer_for_real_runner(runtime, tm
                 return
             started.set()
             await finish.wait()
-            yield AssistantErrorEvent(reason="error", error=AssistantMessage(
-                content=[], model="test", provider="test", stop_reason="error", error_message="offline error",
-            ))
+            yield AssistantErrorEvent(
+                reason="error",
+                error=AssistantMessage(
+                    content=[],
+                    model="test",
+                    provider="test",
+                    stop_reason="error",
+                    error_message="offline error",
+                ),
+            )
 
     host.provider_factory = lambda _: ErrorProvider()
     scheduler = GatewayScheduler(repo, owner, CodingAssignmentRunner(host))
@@ -261,13 +315,24 @@ async def test_model_error_requeues_unconsumed_steer_for_real_runner(runtime, tm
         assert state["status"] == "succeeded" and state["consumed_entry_id"] is None
         assert state["output"] == "reply: correction"
         history = (await repo.sessions.read_entries(first.session_id)).entries
-        assert len([e for e in history if isinstance(e, MessageEntry) and e.message.text == "correction"]) == 1
+        assert (
+            len(
+                [
+                    e
+                    for e in history
+                    if isinstance(e, MessageEntry) and e.message.text == "correction"
+                ]
+            )
+            == 1
+        )
     finally:
         finish.set()
         await scheduler.shutdown()
 
 
-async def test_cancel_during_input_commit_retains_consumed_history_without_second_task(runtime, tmp_path):
+async def test_cancel_during_input_commit_retains_consumed_history_without_second_task(
+    runtime, tmp_path
+):
     repo, owner, host = runtime
     commit_finished, return_commit = asyncio.Event(), asyncio.Event()
     original_source = repo.input_source
@@ -305,7 +370,9 @@ async def test_cancel_during_input_commit_retains_consumed_history_without_secon
         assert state["status"] == "consumed" and state["attempt"] == 0
         entries = (await repo.sessions.read_entries(first.session_id)).entries
         assert state["consumed_entry_id"] in {e.id for e in entries}
-        assert not any(isinstance(e, MessageEntry) and isinstance(e.message, AssistantMessage) for e in entries)
+        assert not any(
+            isinstance(e, MessageEntry) and isinstance(e.message, AssistantMessage) for e in entries
+        )
     finally:
         return_commit.set()
         await scheduler.shutdown()

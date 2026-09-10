@@ -190,8 +190,13 @@ class SqliteSessionRepository:
         return await self.database.run(lambda connection: self._record(connection, session_id))
 
     def clone_in_transaction(
-        self, connection: sqlite3.Connection, *, origin_session_id: str,
-        session_id: str, cwd: Path, principal_id: str,
+        self,
+        connection: sqlite3.Connection,
+        *,
+        origin_session_id: str,
+        session_id: str,
+        cwd: Path,
+        principal_id: str,
     ) -> tuple[SessionRecord, str | None, int, str | None]:
         """Freeze the active source ancestry into an independent session in this transaction."""
         origin = self._record(connection, origin_session_id)
@@ -204,8 +209,13 @@ class SqliteSessionRepository:
         ).fetchone()
         head, watermark = source["head_id"], source["last_seq"]
         self.create_in_transaction(
-            connection, session_id=session_id, principal_id=principal_id, cwd=cwd,
-            model=origin.model, provider_name=origin.provider_name, project_id=origin.project_id,
+            connection,
+            session_id=session_id,
+            principal_id=principal_id,
+            cwd=cwd,
+            model=origin.model,
+            provider_name=origin.provider_name,
+            project_id=origin.project_id,
         )
         connection.execute(
             "WITH RECURSIVE ancestry(entry_id,parent_id,seq) AS ("
@@ -225,9 +235,13 @@ class SqliteSessionRepository:
             (session_id,),
         ).fetchone()
         resource_id = resource["entry_id"] if resource is not None else None
-        metadata = {**origin.metadata, "origin_session_id": origin_session_id,
-                    "source_head_id": head, "source_watermark": watermark,
-                    "source_resource_entry_id": resource_id}
+        metadata = {
+            **origin.metadata,
+            "origin_session_id": origin_session_id,
+            "source_head_id": head,
+            "source_watermark": watermark,
+            "source_resource_entry_id": resource_id,
+        }
         # A new info entry records the new workspace without rewriting the source events.
         info = SessionInfoEntry(parent_id=head, cwd=str(cwd), title=None)
         sequence = connection.execute(
@@ -235,8 +249,16 @@ class SqliteSessionRepository:
         ).fetchone()[0]
         connection.execute(
             "INSERT INTO entries VALUES (?,?,?,?,?,?,?,?)",
-            (session_id, info.id, sequence, head, "main", f"fork-{session_id}",
-             info.type, entry_body(info)),
+            (
+                session_id,
+                info.id,
+                sequence,
+                head,
+                "main",
+                f"fork-{session_id}",
+                info.type,
+                entry_body(info),
+            ),
         )
         connection.execute(
             "UPDATE branches SET head_id=? WHERE session_id=? AND branch_id='main'",
@@ -340,7 +362,8 @@ class SqliteSessionRepository:
         self.assert_token(connection, outcome.token, allow_revoked=outcome.status == "cancelled")
         if connection.execute(
             "SELECT 1 FROM managed_processes WHERE session_id=? "
-            "AND status IN ('launching','running') LIMIT 1", (outcome.token.session_id,),
+            "AND status IN ('launching','running') LIMIT 1",
+            (outcome.token.session_id,),
         ).fetchone():
             raise SessionConflict("Session has unresolved process ownership")
         revoked = connection.execute(
@@ -448,10 +471,14 @@ class SqliteSessionRepository:
             ).fetchone()
             if row is None:
                 raise KeyError(f"Unknown session: {session_id}")
-            if row["recovery_required"] or connection.execute(
-                "SELECT 1 FROM managed_processes WHERE session_id=? "
-                "AND status IN ('launching','running') LIMIT 1", (session_id,),
-            ).fetchone():
+            if (
+                row["recovery_required"]
+                or connection.execute(
+                    "SELECT 1 FROM managed_processes WHERE session_id=? "
+                    "AND status IN ('launching','running') LIMIT 1",
+                    (session_id,),
+                ).fetchone()
+            ):
                 raise SessionConflict(
                     "Session requires process/workspace recovery before reopening"
                 )

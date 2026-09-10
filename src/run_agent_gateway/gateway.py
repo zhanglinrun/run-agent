@@ -209,9 +209,7 @@ class AgentGateway:
             else:
                 await self._receive(adapter, message)
 
-    async def _finish_preparation(
-        self, task: asyncio.Task[None], route: RouteIdentity
-    ) -> None:
+    async def _finish_preparation(self, task: asyncio.Task[None], route: RouteIdentity) -> None:
         # This monitor is drained, never cancelled. It releases the reservation even
         # when the admission coroutine was cancelled before its first instruction.
         from run_agent_coding.storage.settle import settle

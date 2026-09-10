@@ -122,6 +122,9 @@ class BoundSession(Protocol):
     def session_id(self) -> str | None: ...
 
     @property
+    def current_snapshot_id(self) -> str | None: ...
+
+    @property
     def session_name(self) -> str | None: ...
 
     @property
@@ -152,7 +155,7 @@ class BoundSession(Protocol):
         details: dict[str, JSONValue] | None = None,
     ) -> None: ...
 
-    async def append_custom_entry(self, namespace: str, data: dict[str, JSONValue]) -> None: ...
+    async def append_custom_entry(self, namespace: str, data: dict[str, JSONValue]) -> str: ...
 
     def set_inference_provider(self, route: str | None) -> str: ...
 
@@ -437,9 +440,11 @@ class ExtensionRuntime:
 
     @staticmethod
     def _verify_source(extension: RegisteredExtension) -> None:
-        if (extension.path is not None and extension.code_version is not None
-                and source_version(extension.path, extension.package_dir)
-                != extension.code_version):
+        if (
+            extension.path is not None
+            and extension.code_version is not None
+            and source_version(extension.path, extension.package_dir) != extension.code_version
+        ):
             raise ExtensionError("Extension source changed; explicitly reload before use")
 
     def verify_sources(self) -> None:
@@ -457,17 +462,21 @@ class ExtensionRuntime:
         self._generation.assert_active()
         if self.context_resources.snapshot is not None:
             return
-        sources = tuple(dict.fromkeys(
-            item.source_id for item in self.context_resources.registrations
-        ))
+        sources = tuple(
+            dict.fromkeys(item.source_id for item in self.context_resources.registrations)
+        )
         views = {}
         if sources:
             session = self.session_view
             if session.session_id is None:
                 raise ExtensionError("Context resources require a persistent session identity")
-            views = dict(await session.host_services.capture_resources(
-                session.session_id, sources, self._generation.assert_active,
-            ))
+            views = dict(
+                await session.host_services.capture_resources(
+                    session.session_id,
+                    sources,
+                    self._generation.assert_active,
+                )
+            )
         snapshot = self.context_resources.capture(views)
         self._generation.assert_active()
         self.context_resources.snapshot = snapshot
@@ -992,9 +1001,9 @@ class ExtensionRuntime:
         # queue for whichever run happens next.
         session.queue_follow_up_message(content, custom_type=custom_type, details=details)
 
-    async def append_custom_entry(self, namespace: str, data: dict[str, JSONValue]) -> None:
+    async def append_custom_entry(self, namespace: str, data: dict[str, JSONValue]) -> str:
         """Persist a `CustomEntry` through the bound session."""
-        await self.session_view.append_custom_entry(namespace, data)
+        return await self.session_view.append_custom_entry(namespace, data)
 
     # -- tools ----------------------------------------------------------------
 

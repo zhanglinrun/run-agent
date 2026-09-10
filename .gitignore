@@ -45,3 +45,6 @@ examples/*
 .codegraph/
 AI-Agents-in-Depth-*.pdf
 
+# /until-done 循环的本地状态
+/.until-done/
+

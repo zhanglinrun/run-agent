@@ -320,38 +320,38 @@
     {
       "id": "P4-1",
       "requirement": "建立 extensions/experience，注册资源、工具和命令。",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": ["extensions/experience/extension.py", "extensions/experience/repository.py", "tests/redesign/test_experience.py", "docs/implementation/checkpoint-14.md"]
     },
     {
       "id": "P4-2",
       "requirement": "实现 USER/MEMORY/Skill 模型、作用域、显式写入和删除。",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": ["extensions/experience/models.py", "extensions/experience/repository.py", "tests/redesign/test_experience.py"]
     },
     {
       "id": "P4-3",
       "requirement": "实现版本快照、Markdown 投影、手改导入与冲突提示。",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": ["extensions/experience/projection.py", "tests/redesign/test_experience.py"]
     },
     {
       "id": "P4-4",
       "requirement": "接通固定版本 Skill 加载、事实失效和本地检索。",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": ["extensions/experience/context.py", "extensions/experience/extension.py", "tests/redesign/test_experience.py"]
     },
     {
       "id": "P4-5",
       "requirement": "完成 E01—E03、关闭扩展及 CLI 独立使用验收。",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": ["tests/redesign/test_experience.py", "docs/implementation/experience-tests.xml"]
     },
     {
       "id": "P4-6",
       "requirement": "完成新配置下的 experience 使用说明与示例；确认没有 Mem0 残留入口或旧记忆迁移代码。",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": ["extensions/experience/README.md", "extensions/README.md"]
     },
     {
       "id": "P5-1",

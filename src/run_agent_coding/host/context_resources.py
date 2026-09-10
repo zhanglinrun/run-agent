@@ -18,6 +18,7 @@ class ResourceSelection:
     title: str
     kind: Literal["context", "instructions"] = "context"
     max_tokens: int = 2048
+    presentation: Literal["content", "index"] = "content"
 
 
 class ResourceView:
@@ -55,6 +56,17 @@ class ContextResource:
     provider: ResourceProviderIdentity
     selection: ResourceSelection
     resource: ResourceVersion
+
+    def prompt_content(self) -> str:
+        if self.selection.presentation == "index":
+            description = self.resource.metadata.get("description", "")
+            if not isinstance(description, str) or len(description) > 512:
+                raise ValueError("Resource index description must be at most 512 characters")
+            return (
+                f"{self.selection.scope}/{self.selection.key} "
+                f"[{self.resource.version}]: {description}"
+            )
+        return self.resource.content
 
 
 @dataclass(frozen=True, slots=True)

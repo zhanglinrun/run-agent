@@ -5,13 +5,14 @@ HostServices 由 CodingApplication 的 SessionManager 注入，不启动 Gateway
 ```python
 from run_agent_coding.host.contracts import StateChange, TaskSpec
 
+
 def setup(api):
     async def summarize(payload, task):
         state = task.services.scope("project").state
         previous = await state.get("summary")
-        await state.compare_and_set(StateChange(
-            "summary", previous.version if previous else 0, payload
-        ))
+        await state.compare_and_set(
+            StateChange("summary", previous.version if previous else 0, payload)
+        )
         return {"saved": True}
 
     async def command(args, context):

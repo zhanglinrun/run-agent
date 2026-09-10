@@ -105,6 +105,7 @@ class ScopedServices:
     state: StateService
     resources: ResourceService
     artifacts: ArtifactService
+    projection_key: str
 
 
 class HostServices(Protocol):
@@ -113,6 +114,9 @@ class HostServices(Protocol):
 
     @property
     def snapshots(self) -> SnapshotService: ...
+
+    @property
+    def history(self) -> HistoryService: ...
 
     def scope(self, scope: ServiceScope = "session") -> ScopedServices:
         """Choose one host-bound scope; identities cannot be supplied by tools."""
@@ -193,6 +197,12 @@ class ContextSnapshot:
 class SnapshotService(Protocol):
     async def read(self, snapshot_id: str) -> ContextSnapshot:
         """Read a verified, fixed input belonging to this service's session."""
+        ...
+
+
+class HistoryService(Protocol):
+    async def read_custom(self, entry_id: str) -> CustomEntry:
+        """Read a persisted custom entry belonging to this Session."""
         ...
 
 

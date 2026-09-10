@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
+from hashlib import sha256
 from time import time
 
 from run_agent_coding.host.context_resources import ResourceView
@@ -11,6 +12,7 @@ from run_agent_coding.host.contracts import (
     ArtifactRef,
     ContextSnapshot,
     ExtensionToken,
+    HistoryService,
     HostPublication,
     HostServices,
     ResourceVersion,
@@ -23,12 +25,13 @@ from run_agent_coding.host.contracts import (
 )
 from run_agent_coding.storage.artifacts import ArtifactStore
 from run_agent_coding.storage.resources import NamespaceResources
-from run_agent_coding.storage.sessions import SqliteSessionRepository, canonical_json
+from run_agent_coding.storage.sessions import SqliteSessionRepository, canonical_json, decode_entry
 from run_agent_coding.storage.snapshots import read_snapshot
 from run_agent_coding.storage.sqlite import SqliteDatabase
 from run_agent_coding.storage.state import ExtensionRetired, NamespaceState, assert_extension
 from run_agent_coding.storage.tasks import BoundTaskService, LocalTaskManager
 from run_agent_core.session.contracts import AppendReceipt
+from run_agent_core.session.entries import CustomEntry
 
 
 class SqliteHostServices:
@@ -46,8 +49,12 @@ class SqliteHostServices:
             session = connection.execute(
                 "SELECT * FROM sessions WHERE session_id=?", (session_id,)
             ).fetchone()
-            if (session is None or session["owner_id"] != self.owner_id
-                    or not session["owner_active"] or session["owner_expires_at"] <= time()):
+            if (
+                session is None
+                or session["owner_id"] != self.owner_id
+                or not session["owner_active"]
+                or session["owner_expires_at"] <= time()
+            ):
                 raise ExtensionRetired("Only the active host can capture extension resources")
             scopes = _service_scopes(session["principal_id"], session["project_id"], session_id)
             result: dict[str, ResourceView] = {}
@@ -62,7 +69,8 @@ class SqliteHostServices:
                         "v.source_id=r.source_id AND v.scope=r.scope AND "
                         "v.resource_key=r.resource_key AND v.version=r.head_version "
                         "WHERE r.source_id=? AND r.scope=? AND r.head_version IS NOT NULL "
-                        "ORDER BY r.resource_key LIMIT 1025", (source, scope),
+                        "ORDER BY r.resource_key LIMIT 1025",
+                        (source, scope),
                     ).fetchall()
                     total_count += len(rows)
                     total_bytes += sum(row[2] or 0 for row in rows)
@@ -213,6 +221,7 @@ class BoundHostServices:
         self._assert_active = assert_active
         self._tasks = BoundTaskService(tasks, token, handlers, self, assert_active)
         self._snapshots = BoundSnapshots(database, token, assert_active)
+        self._history = BoundHistory(database, token, assert_active)
         self._scopes: dict[ServiceScope, ScopedServices] = {}
         for name, scope in scopes.items():
             scoped_artifacts = ScopedArtifacts(database, artifacts, token, scope, assert_active)
@@ -227,6 +236,7 @@ class BoundHostServices:
                     scoped_artifacts.read,
                 ),
                 scoped_artifacts,
+                sha256(canonical_json([token.source_id, scope]).encode()).hexdigest(),
             )
 
     def scope(self, scope: ServiceScope = "session") -> ScopedServices:
@@ -244,6 +254,35 @@ class BoundHostServices:
     def snapshots(self) -> SnapshotService:
         self._assert_active()
         return self._snapshots
+
+    @property
+    def history(self) -> HistoryService:
+        self._assert_active()
+        return self._history
+
+
+class BoundHistory:
+    def __init__(
+        self, database: SqliteDatabase, token: ExtensionToken, assert_active: Callable[[], None]
+    ) -> None:
+        self._database, self._token, self._assert_active = database, token, assert_active
+
+    async def read_custom(self, entry_id: str) -> CustomEntry:
+        def read(connection: sqlite3.Connection) -> CustomEntry:
+            self._assert_active()
+            assert_extension(connection, self._token)
+            row = connection.execute(
+                "SELECT * FROM entries WHERE session_id=? AND entry_id=?",
+                (self._token.session_id, entry_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError("Entry is missing or belongs to another session")
+            entry = decode_entry(row)
+            if not isinstance(entry, CustomEntry):
+                raise ValueError("Entry is not a custom record")
+            return entry
+
+        return await self._database.run(read)
 
 
 class BoundSnapshots:

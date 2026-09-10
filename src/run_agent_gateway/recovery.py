@@ -37,14 +37,18 @@ class GatewayRecovery:
                 "FROM gateway_attempts a JOIN gateway_tasks t ON a.task_id=t.task_id "
                 "JOIN gateway_workspaces w ON t.workspace_id=w.workspace_id "
                 "LEFT JOIN gateway_hosts h ON h.owner_id=a.owner_id "
-                "AND h.generation=a.owner_generation WHERE a.run_id=?", (run_id,),
+                "AND h.generation=a.owner_generation WHERE a.run_id=?",
+                (run_id,),
             ).fetchone()
             if row is None:
                 raise KeyError("Unknown Gateway execution")
-            processes = [dict(p) for p in connection.execute(
-                "SELECT * FROM managed_processes WHERE session_id=? ORDER BY process_id",
-                (row["session_id"],),
-            ).fetchall()]
+            processes = [
+                dict(p)
+                for p in connection.execute(
+                    "SELECT * FROM managed_processes WHERE session_id=? ORDER BY process_id",
+                    (row["session_id"],),
+                ).fetchall()
+            ]
             return {"attempt": dict(row), "processes": processes}
 
         return await self.repository.database.run(read)
@@ -70,14 +74,19 @@ class GatewayRecovery:
                     check = {"empty": True, "reason": "Durable process completion"}
                 else:
                     check = await asyncio.to_thread(
-                        inspect_native_process, json.loads(row["intent_json"]),
+                        inspect_native_process,
+                        json.loads(row["intent_json"]),
                         json.loads(row["native_json"]) if row["native_json"] else None,
                     )
                 checks.append({"process_id": row["process_id"], **check})
         report = {
-            "run_id": run_id, "task_id": task["task_id"], "task_status": task["task_status"],
-            "session_id": task["session_id"], "workspace": task["path"],
-            "previous_host_exited": host_dead, "processes": checks,
+            "run_id": run_id,
+            "task_id": task["task_id"],
+            "task_status": task["task_status"],
+            "session_id": task["session_id"],
+            "workspace": task["path"],
+            "previous_host_exited": host_dead,
+            "processes": checks,
             "processes_empty": host_dead and all(p["empty"] for p in checks),
             "fingerprint": self._fingerprint(snapshot),
             "review_required": task["task_status"] not in {"succeeded", "failed", "cancelled"},
@@ -87,9 +96,14 @@ class GatewayRecovery:
         return report
 
     async def inspect_all(self) -> list[dict[str, Any]]:
-        ids = await self.repository.database.run(lambda c: [r[0] for r in c.execute(
-            "SELECT run_id FROM gateway_attempts WHERE released=0 ORDER BY started_at"
-        ).fetchall()])
+        ids = await self.repository.database.run(
+            lambda c: [
+                r[0]
+                for r in c.execute(
+                    "SELECT run_id FROM gateway_attempts WHERE released=0 ORDER BY started_at"
+                ).fetchall()
+            ]
+        )
         return [await self.inspect(run_id) for run_id in ids]
 
     async def reconcile(self) -> list[dict[str, Any]]:
@@ -115,7 +129,8 @@ class GatewayRecovery:
         for row in snapshot["processes"]:
             if row["status"] in {"launching", "running"}:
                 await asyncio.to_thread(
-                    terminate_orphan, json.loads(row["intent_json"]),
+                    terminate_orphan,
+                    json.loads(row["intent_json"]),
                     json.loads(row["native_json"]) if row["native_json"] else None,
                 )
         result = await self.inspect(run_id)
@@ -131,6 +146,7 @@ class GatewayRecovery:
                 "checked_at=excluded.checked_at",
                 (report["run_id"], canonical_json(report), self.repository.clock()),
             )
+
         await self.repository.database.run(save, write=True)
 
     async def release(self, run_id: str, *, note: str) -> dict[str, Any]:
@@ -167,10 +183,13 @@ class GatewayRecovery:
             ).fetchone()
             if session_owner["owner_active"] and session_owner["owner_id"] != task["owner_id"]:
                 raise SessionConflict("Another writer has reopened this session")
-            rows = [dict(p) for p in connection.execute(
-                "SELECT * FROM managed_processes WHERE session_id=? ORDER BY process_id",
-                (task["session_id"],),
-            ).fetchall()]
+            rows = [
+                dict(p)
+                for p in connection.execute(
+                    "SELECT * FROM managed_processes WHERE session_id=? ORDER BY process_id",
+                    (task["session_id"],),
+                ).fetchall()
+            ]
             if rows != snapshot["processes"]:
                 raise SessionConflict("Process journal changed during recovery inspection")
             now = self.repository.clock()
@@ -178,24 +197,36 @@ class GatewayRecovery:
                 if row["status"] in {"launching", "running"}:
                     connection.execute(
                         "UPDATE managed_processes SET status='exited',outcome_json=?,updated_at=? "
-                        "WHERE process_id=?", (canonical_json({
-                         "phase": "reconciled", "events": ["empty"],
-                         "recovery_run_id": run_id, "effect": "unknown"}), now, row["process_id"]),
+                        "WHERE process_id=?",
+                        (
+                            canonical_json(
+                                {
+                                    "phase": "reconciled",
+                                    "events": ["empty"],
+                                    "recovery_run_id": run_id,
+                                    "effect": "unknown",
+                                }
+                            ),
+                            now,
+                            row["process_id"],
+                        ),
                     )
             connection.execute(
                 "UPDATE sessions SET owner_active=0,generation=generation+1,recovery_required=0 "
                 "WHERE session_id=?",
                 (task["session_id"],),
             )
-            connection.execute("UPDATE extension_owners SET active=0 WHERE session_id=?",
-                               (task["session_id"],))
+            connection.execute(
+                "UPDATE extension_owners SET active=0 WHERE session_id=?", (task["session_id"],)
+            )
             connection.execute(
                 "UPDATE gateway_attempts SET released=1,status=? WHERE run_id=?",
                 (task["task_status"], run_id),
             )
             connection.execute(
                 "UPDATE gateway_workspaces SET status='available',run_id=NULL,reason=NULL "
-                "WHERE workspace_id=? AND run_id=?", (task["workspace_id"], run_id),
+                "WHERE workspace_id=? AND run_id=?",
+                (task["workspace_id"], run_id),
             )
             connection.execute(
                 "INSERT INTO gateway_recovery VALUES (?,?,?,?,?,1) ON CONFLICT(run_id) DO UPDATE "
@@ -205,14 +236,22 @@ class GatewayRecovery:
             )
             if report["review_required"]:
                 self.repository._outbox(
-                    connection, task["task_id"], "result", task["destination_json"], {
-                    "task_id": task["task_id"], "run_id": run_id, "status": "outcome_unknown",
-                    "session_id": task["session_id"],
-                    "origin_session_id": task["origin_session_id"],
-                    "conversation_epoch": task["conversation_epoch"], "lane": task["lane"],
-                    "error": "Execution interrupted; external effects require review",
-                    "workspace_released": True,
-                })
+                    connection,
+                    task["task_id"],
+                    "result",
+                    task["destination_json"],
+                    {
+                        "task_id": task["task_id"],
+                        "run_id": run_id,
+                        "status": "outcome_unknown",
+                        "session_id": task["session_id"],
+                        "origin_session_id": task["origin_session_id"],
+                        "conversation_epoch": task["conversation_epoch"],
+                        "lane": task["lane"],
+                        "error": "Execution interrupted; external effects require review",
+                        "workspace_released": True,
+                    },
+                )
             self.repository._fault("gateway_recovery_committed")
 
         await self.repository.database.run(release, write=True)

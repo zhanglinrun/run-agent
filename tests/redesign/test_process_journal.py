@@ -23,7 +23,10 @@ async def test_process_journal_fences_identity_and_blocks_unresolved_completion(
     async with await SqliteDatabase.open(tmp_path / "state.sqlite3") as database:
         sessions = SqliteSessionRepository(database)
         await sessions.create_session(
-            cwd=tmp_path, model="test", session_id="session", principal_id="local",
+            cwd=tmp_path,
+            model="test",
+            session_id="session",
+            principal_id="local",
         )
         token = await sessions.claim("session", owner_id="host", run_id="initial")
         token = await sessions.begin_run(token, branch_id="main", run_id="run")
@@ -33,9 +36,13 @@ async def test_process_journal_fences_identity_and_blocks_unresolved_completion(
         with pytest.raises(SessionConflict, match="unresolved process"):
             await sessions.complete_run(outcome)
         with pytest.raises(SessionConflict, match="writer"):
-            await journal.record(replace(token, owner_id="other"), {
-                "process_id": "p", "phase": "started",
-            })
+            await journal.record(
+                replace(token, owner_id="other"),
+                {
+                    "process_id": "p",
+                    "phase": "started",
+                },
+            )
         with pytest.raises(ValueError, match="verified empty"):
             await journal.record(token, {"process_id": "p", "phase": "exited"})
         await journal.record(token, {"process_id": "p", "phase": "started", "pid": 123})
@@ -97,12 +104,15 @@ async def test_killed_coding_host_leaves_durable_identity_but_no_live_child(tmp_
         "        extensions_enabled=False)\n"
         "    async with await CodingApplication.open(options,provider=Provider()) as app:\n"
         "        async for event in app.prompt('run command'): pass\n"
-        "asyncio.run(main())\n", encoding="utf-8",
+        "asyncio.run(main())\n",
+        encoding="utf-8",
     )
     with (tmp_path / "coding.log").open("wb") as log:
         host = subprocess.Popen(
             [sys.executable, str(worker), command(), str(tmp_path)],
-            stdout=log, stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NO_WINDOW,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         try:
             pid = await child_started(marker)
@@ -124,8 +134,13 @@ async def test_killed_coding_host_leaves_durable_identity_but_no_live_child(tmp_
             assert process_identity(intent["host_pid"]) is None
             assert process_identity(native["pid"]) is None
             with sqlite3.connect(database_path) as connection:
-                assert connection.execute("SELECT status FROM managed_processes").fetchone()[0] == "running"
-                assert connection.execute("SELECT status FROM executions").fetchone()[0] == "running"
+                assert (
+                    connection.execute("SELECT status FROM managed_processes").fetchone()[0]
+                    == "running"
+                )
+                assert (
+                    connection.execute("SELECT status FROM executions").fetchone()[0] == "running"
+                )
         finally:
             if host.poll() is None:
                 host.kill()

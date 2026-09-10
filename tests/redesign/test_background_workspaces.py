@@ -515,7 +515,9 @@ async def test_preparation_cancelled_before_start_releases_its_reservation(runti
     value = replace(submit(workspace), lane="background")
     await repo.background_anchor(owner, value, model="test")
     gateway = AgentGateway(
-        GatewayScheduler(repo, owner, CodingAssignmentRunner(host)), [], IdentityPolicy(()),
+        GatewayScheduler(repo, owner, CodingAssignmentRunner(host)),
+        [],
+        IdentityPolicy(()),
         model="test",
     )
 
@@ -547,9 +549,11 @@ async def test_background_duplicate_bypasses_full_preparation_capacity(runtime, 
 
     adapter = QueueGatewayAdapter("local")
     gateway = AgentGateway(
-        GatewayScheduler(repo, owner, CodingAssignmentRunner(host)), [adapter],
+        GatewayScheduler(repo, owner, CodingAssignmentRunner(host)),
+        [adapter],
         IdentityPolicy((IdentityRule("local", "account", "alice", "alice", workspace),)),
-        model="test", prepare_background=prepare,
+        model="test",
+        prepare_background=prepare,
     )
     # Hold the existing task in the waiting queue while exercising channel admissions.
     consumer = asyncio.create_task(gateway._consume(adapter))
@@ -568,9 +572,11 @@ async def test_background_duplicate_bypasses_full_preparation_capacity(runtime, 
         )
 
         async def status_recorded():
-            return await repo.database.run(lambda c: c.execute(
-                "SELECT 1 FROM gateway_inbox WHERE source_message_id='status'"
-            ).fetchone())
+            return await repo.database.run(
+                lambda c: c.execute(
+                    "SELECT 1 FROM gateway_inbox WHERE source_message_id='status'"
+                ).fetchone()
+            )
 
         await eventually(status_recorded)
         assert preparations == 2 and gateway.rejections == []
@@ -578,6 +584,9 @@ async def test_background_duplicate_bypasses_full_preparation_capacity(runtime, 
     finally:
         await gateway.shutdown()
     assert not gateway._preparations
-    assert await repo.database.run(lambda c: c.execute(
-        "SELECT SUM(preparing) FROM gateway_routes"
-    ).fetchone()[0]) == 0
+    assert (
+        await repo.database.run(
+            lambda c: c.execute("SELECT SUM(preparing) FROM gateway_routes").fetchone()[0]
+        )
+        == 0
+    )
