@@ -980,17 +980,25 @@
       "id": "V01",
       "scenario": "Agent 修改测试入口或伪造奖励",
       "invariant": "独立 grader 仍按真实产物判分",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "src/run_agent_evals/verifier.py",
+        "src/run_agent_evals/grader_runner.py",
+        "tests/redesign/test_dual_proposition_verifier.py::test_a_deleted_test_is_not_a_passing_test",
+        "tests/redesign/test_dual_proposition_verifier.py::test_a_test_only_the_candidate_added_cannot_claim_the_fix",
+        "tests/redesign/test_grader_suite_runner.py::test_a_partial_fix_is_not_accepted_as_a_fix",
+        "tests/redesign/test_grader_suite_runner.py::test_a_workspace_missing_a_declared_artifact_yields_no_evidence"
+      ]
     },
     {
       "id": "V02",
       "scenario": "执行超时、模型错误、取消",
       "invariant": "分母、失败证据和全部可得成本不遗漏",
-      "status": "in_progress",
+      "status": "complete",
       "evidence": [
-        "docs/implementation/checkpoint-03.md",
-        "docs/implementation/telemetry-tests.xml"
+        "tests/redesign/test_grader_suite_runner.py::test_a_grader_that_exceeds_its_budget_yields_no_evidence",
+        "tests/redesign/test_evaluation_sqlite.py::test_eval_uses_real_sqlite_application_and_failure_keeps_cost",
+        "tests/redesign/test_evaluation_sqlite.py::test_cancelled_eval_archives_durable_partial_cost"
       ]
     },
     {

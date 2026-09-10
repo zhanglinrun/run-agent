@@ -134,3 +134,34 @@ python scripts/verify.py                   # 连续 6 次 exit 0，10/10 步
 
 `distcheck` 的动作在本地全部实测可跑：`build`（8.1s）、`wheel-audit`（0.1s）、
 `install`（0.1s，缓存命中）、`pip-check`（0.4s）、`dist-check`（9.9s）。
+
+## 五、第 7 项决策：有理由的降级（非「已满足」）
+
+**决策**：不新增 GitHub Agentic Workflow 的 agent job。依据用户裁定（建议 (c) 获准）。
+
+理由：
+
+1. 该项的**意图**是「每次变更都由与本地一致的闸门独立复核」。已由 `python scripts/verify.py`
+   在 `push` / `pull_request` 上满足，且本地与 CI 跑的是**同一份文件**。
+2. 补齐有意义的 agent job 需要 `pull-requests: write` 或仓库 secret —— 两者都在 ask-before 内。
+3. 引入 agent bot 会带来额外 secret 面与可能是无用的自动化，而本仓库的 agent 在本地运行，
+   CI 的职责是独立复核。
+
+**因此第 7 项记录为降级，不计为已满足。** 若将来需要 PR 内联报告或自动修复，应作为独立
+决策重新提出，并同时确定 secret 与写权限边界。
+
+## 六、结论
+
+| # | 项 | 判定 |
+|---|---|---|
+| 1 | 唯一 gate 来源 | ✅ |
+| 2 | 本地开发套件 | ✅ |
+| 3 | 发布就绪套件（确定性） | ✅ 本轮成立（连续 7 次 exit 0） |
+| 4 | 变更文件执行 | ✅ 含已文档化的高爆破半径升级 |
+| 5 | 确定性缓存 | ✅ 实测命中 |
+| 6 | 适用处安全并行 | ⚠️ 实测判定不适用（可并行组 0.6s；tests 71.5s 并行不安全） |
+| 7 | GitHub Agentic Workflow | ⚠️ **有理由降级**，不计为已满足 |
+| 8 | 本地↔GitHub 对齐 | ⚠️ 实质已修；新版 CI 未在 GitHub 实跑，环境差异（符号链接）本地不可消除 |
+
+**bootstrap 对本 scope 的结论**：第 1–6 项满足且可核验；第 7 项经裁定降级；
+第 8 项实质对齐但需一次真实 CI 运行才能宣告验证完成。可以进入 RED。

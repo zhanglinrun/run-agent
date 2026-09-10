@@ -4,6 +4,16 @@ version = "1"
 kind = "migration"
 budget_seconds = 180
 artifacts = ["settings.py", "client.py", "defaults.py"]
+# The tasks' declared FAIL_TO_PASS set: every one of these must go from failing to
+# passing before the change counts as a fix. Naming them is what stops a candidate
+# that flips one incidental test from being accepted.
+fail_to_pass = [
+    "test_override_is_honoured_in_milliseconds",
+    "test_the_default_is_thirty_thousand_milliseconds",
+    "test_the_old_key_is_gone",
+    "test_the_client_migrated_with_the_settings",
+    "test_the_defaults_module_still_exports_the_value",
+]
 
 [grader]
 command = ["{python}", "-m", "pytest", "-q", "grader"]

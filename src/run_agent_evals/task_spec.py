@@ -42,6 +42,7 @@ class TaskSpec:
     reference: Path
     grader_command: tuple[str, ...]
     root: Path
+    fail_to_pass: tuple[str, ...] = ()
 
     @property
     def resolved_grader_command(self) -> tuple[str, ...]:
@@ -81,6 +82,7 @@ def load_task_spec(directory: Path) -> TaskSpec:
         reference=root / "reference",
         grader_command=command,
         root=root,
+        fail_to_pass=tuple(str(item) for item in task.get("fail_to_pass") or ()),
     )
 
 
@@ -110,7 +112,7 @@ def materialize_environment(spec: TaskSpec, destination: Path) -> None:
     shutil.copytree(spec.environment, target)
 
 
-def _seed_grading_directory(spec: TaskSpec, workspace: Path, destination: Path) -> None:
+def seed_grading_directory(spec: TaskSpec, workspace: Path, destination: Path) -> None:
     """Build the grading tree from pristine environment, declared artifacts and grader."""
     shutil.copytree(spec.environment, destination)
     for artifact in spec.artifacts:
@@ -130,10 +132,16 @@ def _grader_environment(directory: Path) -> dict[str, str]:
     return {**os.environ, "PYTHONPATH": os.pathsep.join(parts)}
 
 
-def _run_grader(spec: TaskSpec, directory: Path) -> subprocess.CompletedProcess[str]:
-    """Run the task's grader with the grading root on PYTHONPATH."""
+def run_grader(
+    spec: TaskSpec, directory: Path, extra: tuple[str, ...] = ()
+) -> subprocess.CompletedProcess[str]:
+    """Run the task's grader with the grading root on PYTHONPATH.
+
+    ``extra`` appends arguments for callers that need a richer report than the exit
+    code, such as a JUnit file listing every test that ran.
+    """
     return subprocess.run(
-        spec.resolved_grader_command,
+        (*spec.resolved_grader_command, *extra),
         cwd=directory,
         env=_grader_environment(directory),
         capture_output=True,
@@ -150,11 +158,11 @@ def admit_task(spec: TaskSpec, workspace: Path) -> AdmissionOutcome:
     container = Path(tempfile.mkdtemp(prefix=f"admit-{spec.id}-"))
     destination = container / "grading"
     try:
-        _seed_grading_directory(spec, Path(workspace), destination)
+        seed_grading_directory(spec, Path(workspace), destination)
     except (OSError, FileNotFoundError) as problem:
         return AdmissionOutcome(False, f"cannot prepare grading: {problem}", "", str(destination))
     try:
-        completed = _run_grader(spec, destination)
+        completed = run_grader(spec, destination)
     except subprocess.TimeoutExpired:
         return AdmissionOutcome(False, "grader exceeded the task budget", "", str(destination))
     output = f"{completed.stdout}{completed.stderr}"

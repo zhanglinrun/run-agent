@@ -18,7 +18,7 @@ here stays deterministic and free of subprocesses.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -80,16 +80,32 @@ class SuiteResult:
 
 @dataclass(frozen=True)
 class DualProposition:
-    """Both propositions, plus the ways each can fail, for one candidate change."""
+    """Both propositions, plus the ways each can fail, for one candidate change.
+
+    ``targets`` is the set of tests the task declares must go from failing to passing.
+    Without it a candidate that flips one incidental test would count as a proven fix,
+    which is why the declared set, not the observed one, decides ``is_fix_proven``.
+    """
 
     fail_to_pass: frozenset[str]
     pass_to_pass: frozenset[str]
     newly_failing: frozenset[str]
     still_failing: frozenset[str]
     flaky: frozenset[str]
+    targets: frozenset[str] = frozenset()
+
+    @property
+    def unmet_targets(self) -> frozenset[str]:
+        """Declared targets that did not go from failing to passing."""
+        met = self.fail_to_pass
+        return frozenset(
+            target for target in self.targets if not any(k.endswith(f"::{target}") for k in met)
+        )
 
     @property
     def is_fix_proven(self) -> bool:
+        if self.targets:
+            return not self.unmet_targets
         return bool(self.fail_to_pass)
 
     @property
@@ -101,7 +117,9 @@ class DualProposition:
         return self.is_fix_proven and self.is_regression_free
 
 
-def classify(pristine: SuiteResult, candidate: SuiteResult) -> DualProposition:
+def classify(
+    pristine: SuiteResult, candidate: SuiteResult, targets: Iterable[str] = ()
+) -> DualProposition:
     """Decide both propositions from the suite's report on two states.
 
     ``pristine`` is the task before any change, ``candidate`` the workspace the agent
@@ -117,6 +135,7 @@ def classify(pristine: SuiteResult, candidate: SuiteResult) -> DualProposition:
         newly_failing=(pristine.passing & candidate.failing) | vanished,
         still_failing=(pristine.failing & candidate.failing) | no_longer_reported,
         flaky=pristine.flaky | candidate.flaky,
+        targets=frozenset(targets),
     )
 
 
@@ -143,5 +162,9 @@ class DualPropositionVerifier:
             runs.append(await self.runner.run(workspace))
         return SuiteResult.of(runs=tuple(runs))
 
-    async def verify(self, pristine: object, candidate: object) -> DualProposition:
-        return classify(await self._observe(pristine), await self._observe(candidate))
+    async def verify(
+        self, pristine: object, candidate: object, targets: Iterable[str] = ()
+    ) -> DualProposition:
+        return classify(
+            await self._observe(pristine), await self._observe(candidate), targets=targets
+        )
