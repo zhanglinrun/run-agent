@@ -1,85 +1,82 @@
-"""CodingSession adapter for host-level turn scheduling."""
+"""Execute assigned Coding runs, reconciling durable outcomes before releasing ownership."""
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
-from inspect import isawaitable
 
-from run_agent_coding.session import CodingSession
-from run_agent_core.events import MessageEndEvent
-from run_agent_core.messages import AssistantMessage
-from run_agent_gateway.models import TurnRequest, TurnResult
-
-SessionResolver = Callable[[str], CodingSession | Awaitable[CodingSession]]
+from run_agent_coding.application import CodingApplication
+from run_agent_coding.storage.settle import settle
+from run_agent_gateway.contracts import Assignment
+from run_agent_gateway.runtime import GatewayCodingRuntime
 
 
-class CodingSessionTurnRunner:
-    """Resolve one CodingSession per id and execute its public prompt stream."""
+class CodingAssignmentRunner:
+    def __init__(self, runtime: GatewayCodingRuntime) -> None:
+        self.runtime = runtime
+        self.applications: dict[str, CodingApplication] = {}
+        self.quarantined: dict[str, CodingApplication] = {}
 
-    def __init__(self, resolve_session: SessionResolver) -> None:
-        self._resolve_session = resolve_session
-
-    async def run(self, request: TurnRequest, cancellation: asyncio.Event) -> TurnResult:
-        if cancellation.is_set():
-            return TurnResult.cancelled(request)
-        resolved = self._resolve_session(request.session_id)
-        session = await resolved if isawaitable(resolved) else resolved
-        if request.content.strip() == "/new":
-            await session.new_session()
-            return TurnResult.succeeded(
-                request,
-                output="已开始新对话。此前聊天上下文已归档，长期记忆不受影响。",
-                metadata={"command": "new"},
-            )
-        final: AssistantMessage | None = None
-
-        async def consume() -> None:
-            nonlocal final
-            async for event in session.prompt(request.content):
-                if isinstance(event, MessageEndEvent) and isinstance(
-                    event.message,
-                    AssistantMessage,
-                ):
-                    final = event.message
-
-        consume_task = asyncio.create_task(consume())
-        cancel_task = asyncio.create_task(cancellation.wait())
+    async def run(self, assignment: Assignment, cancellation: asyncio.Event) -> None:
+        repository, owner = self.runtime.repository, self.runtime.owner
+        application: CodingApplication | None = None
+        consume: asyncio.Task[None] | None = None
+        waiter: asyncio.Task[bool] | None = None
+        error: BaseException | None = None
         try:
-            done, pending = await asyncio.wait(
-                {consume_task, cancel_task},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if cancel_task in done and cancellation.is_set() and not consume_task.done():
-                session.cancel()
-                await consume_task
-            else:
-                await consume_task
-            for task in pending:
-                task.cancel()
-        except asyncio.CancelledError:
-            session.cancel()
-            consume_task.cancel()
-            raise
-        finally:
-            if not cancel_task.done():
-                cancel_task.cancel()
+            if cancellation.is_set():
+                await repository.complete(owner, assignment, status="cancelled")
+                return
+            application = await self.runtime.open(assignment)
+            self.applications[assignment.run_id] = application
 
-        if cancellation.is_set():
-            return TurnResult.cancelled(request)
-        if final is None:
-            return TurnResult.failed(request, error="coding session produced no assistant message")
-        if final.stop_reason in {"error", "aborted"}:
-            return TurnResult.failed(
-                request,
-                error=final.error_message or f"assistant stopped with {final.stop_reason}",
-                output=final.text,
-            )
-        return TurnResult.succeeded(
-            request,
-            output=final.text,
-            metadata={"model": final.model, "stop_reason": final.stop_reason},
+            async def prompt() -> None:
+                assert application is not None
+                async for _ in application.prompt(assignment.content, run_id=assignment.run_id):
+                    pass
+
+            consume = asyncio.create_task(prompt(), name=f"gateway-prompt:{assignment.run_id}")
+            waiter = asyncio.create_task(cancellation.wait())
+            done, _ = await asyncio.wait({consume, waiter}, return_when=asyncio.FIRST_COMPLETED)
+            if waiter in done and not consume.done():
+                application.session.cancel()
+                consume.cancel()
+            await consume
+        except BaseException as exc:
+            error = exc
+        finally:
+            if waiter is not None:
+                waiter.cancel()
+                await asyncio.gather(waiter, return_exceptions=True)
+            if consume is not None and not consume.done():
+                assert application is not None
+                application.session.cancel()
+                consume.cancel()
+
+                async def drain() -> None:
+                    await asyncio.gather(consume, return_exceptions=True)
+
+                await settle(drain())
+            self.applications.pop(assignment.run_id, None)
+            if application is not None:
+                try:
+                    await application.aclose()
+                except BaseException:
+                    self.quarantined[assignment.run_id] = application
+                    raise
+                finally:
+                    await application.manager.aclose()
+        state = await repository.task(assignment.task_id, principal_id=assignment.principal_id)
+        if state["status"] in {"succeeded", "failed", "cancelled"}:
+            return
+        # An input/setup error may precede begin_run. Once a Coding execution
+        # exists, complete() refuses an outcome-free shortcut.
+        status = "cancelled" if state["status"] == "cancelling" else "failed"
+        await repository.complete(
+            owner,
+            assignment,
+            status=status,
+            error=(str(error) or type(error).__name__) if error else "Prompt produced no outcome",
         )
 
 
-__all__ = ["CodingSessionTurnRunner", "SessionResolver"]
+__all__ = ["CodingAssignmentRunner"]

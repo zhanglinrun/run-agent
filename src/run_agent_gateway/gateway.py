@@ -1,180 +1,358 @@
-"""Pluggable message gateway over the turn scheduler."""
+"""Bounded channel host with durable admission, independent controls and Outbox sending."""
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
+from collections import OrderedDict
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
-from typing import Protocol
-from uuid import uuid4
+from typing import Any, Protocol
 
 from run_agent_core.types import JSONValue
-from run_agent_gateway.models import TurnLane, TurnRequest, TurnResult
-from run_agent_gateway.scheduler import TurnScheduler
+from run_agent_gateway.contracts import AdmissionRejected, RouteIdentity, Submission
+from run_agent_gateway.controller import CONTROL_COMMANDS, SessionController
+from run_agent_gateway.identity import IdentityPolicy
+from run_agent_gateway.outbox import Delivery, OutboxRepository
+from run_agent_gateway.routing import route_key
+from run_agent_gateway.scheduler import GatewayScheduler
 
 
 @dataclass(frozen=True, slots=True)
 class InboundMessage:
-    channel: str
-    conversation_id: str
+    source_message_id: str
+    account_id: str
+    sender_id: str
+    chat_id: str
     text: str
-    id: str = field(default_factory=lambda: uuid4().hex)
-    lane: TurnLane = "foreground"
-    session_id: str | None = None
-    metadata: dict[str, JSONValue] = field(default_factory=dict)
-
-
-@dataclass(frozen=True, slots=True)
-class OutboundMessage:
-    channel: str
-    conversation_id: str
-    text: str
-    request_id: str
-    status: str
+    thread_id: str = ""
     metadata: dict[str, JSONValue] = field(default_factory=dict)
 
 
 class GatewayAdapter(Protocol):
     @property
     def name(self) -> str: ...
-
     def messages(self) -> AsyncIterator[InboundMessage]: ...
-
-    async def send(self, message: OutboundMessage) -> None: ...
-
+    async def send(self, delivery: Delivery) -> dict[str, Any]: ...
     async def close(self) -> None: ...
 
 
-class AgentGateway:
-    """Fan in adapter messages and fan out scheduled turn results."""
+class BoundedIngress:
+    """SDK callbacks enqueue synchronously; overload is explicit and allocates no tasks."""
 
-    def __init__(self, scheduler: TurnScheduler, adapters: Sequence[GatewayAdapter]) -> None:
-        names = [adapter.name for adapter in adapters]
-        if len(set(names)) != len(names):
-            raise ValueError("gateway adapter names must be unique")
-        self._scheduler = scheduler
-        self._adapters = tuple(adapters)
-        self._consumer_tasks: list[asyncio.Task[None]] = []
-        self._delivery_tasks: set[asyncio.Task[None]] = set()
-        self._started = False
-
-    async def start(self) -> None:
-        if self._started:
-            return
-        self._started = True
-        self._consumer_tasks = [
-            asyncio.create_task(
-                self._consume(adapter),
-                name=f"run-agent-gateway:{adapter.name}",
-            )
-            for adapter in self._adapters
-        ]
-
-    async def shutdown(self, *, grace_period: float = 5.0) -> None:
-        if not self._started:
-            await self._scheduler.shutdown(grace_period=grace_period)
-            return
-        await asyncio.gather(*(adapter.close() for adapter in self._adapters))
-        if self._consumer_tasks:
-            await asyncio.gather(*self._consumer_tasks, return_exceptions=True)
-        await self._scheduler.shutdown(grace_period=grace_period)
-        if self._delivery_tasks:
-            await asyncio.gather(*tuple(self._delivery_tasks), return_exceptions=True)
-        self._consumer_tasks.clear()
-        self._delivery_tasks.clear()
-        self._started = False
-
-    async def wait_closed(self) -> None:
-        """Wait until every adapter input stream closes."""
-        if not self._started:
-            return
-        await asyncio.gather(*self._consumer_tasks)
-
-    async def _consume(self, adapter: GatewayAdapter) -> None:
-        async for message in adapter.messages():
-            task = asyncio.create_task(
-                self._dispatch(adapter, message),
-                name=f"run-agent-gateway-delivery:{adapter.name}:{message.conversation_id}",
-            )
-            self._delivery_tasks.add(task)
-            task.add_done_callback(self._delivery_tasks.discard)
-
-    async def _dispatch(self, adapter: GatewayAdapter, message: InboundMessage) -> None:
-        session_id = message.session_id or f"{message.channel}:{message.conversation_id}"
-        request = TurnRequest(
-            id=message.id,
-            session_id=session_id,
-            content=message.text,
-            lane=message.lane,
-            metadata={
-                **message.metadata,
-                "channel": message.channel,
-                "conversation_id": message.conversation_id,
-            },
-        )
-        try:
-            result = await self._scheduler.run(request)
-        except Exception as exc:  # noqa: BLE001 - scheduler is the gateway host boundary
-            result = TurnResult.failed(request, error=str(exc) or type(exc).__name__)
-        await adapter.send(_outbound_message(message, result))
-
-
-def _outbound_message(message: InboundMessage, result: TurnResult) -> OutboundMessage:
-    text = result.output
-    if result.status != "succeeded" and not text:
-        text = result.error or result.status
-    return OutboundMessage(
-        channel=message.channel,
-        conversation_id=message.conversation_id,
-        text=text,
-        request_id=result.request_id,
-        status=result.status,
-        metadata=result.metadata,
-    )
-
-
-class QueueGatewayAdapter:
-    """In-memory adapter for tests, embedding, and local host integration."""
-
-    def __init__(self, name: str) -> None:
-        self._name = name
-        self._incoming: asyncio.Queue[InboundMessage | None] = asyncio.Queue()
-        self._outgoing: asyncio.Queue[OutboundMessage] = asyncio.Queue()
+    def __init__(self, *, ordinary_capacity: int = 128, control_capacity: int = 32) -> None:
+        if ordinary_capacity < 1 or control_capacity < 1:
+            raise ValueError("Ingress capacities must be positive")
+        self._ordinary: asyncio.Queue[tuple[int, InboundMessage]] = asyncio.Queue(ordinary_capacity)
+        self._control: asyncio.Queue[tuple[int, InboundMessage]] = asyncio.Queue(control_capacity)
+        self._sequence = 0
+        self._wake = asyncio.Event()
         self._closed = False
 
-    @property
-    def name(self) -> str:
-        return self._name
-
-    async def receive_message(self, message: InboundMessage) -> None:
+    def put(self, message: InboundMessage) -> None:
         if self._closed:
-            raise RuntimeError("gateway adapter is closed")
-        await self._incoming.put(message)
+            raise AdmissionRejected("Adapter input is closed")
+        command = message.text.strip().partition(" ")[0]
+        queue = self._control if command in CONTROL_COMMANDS else self._ordinary
+        self._sequence += 1
+        try:
+            queue.put_nowait((self._sequence, message))
+        except asyncio.QueueFull as exc:
+            raise AdmissionRejected(
+                "Adapter input capacity is full; message was not accepted"
+            ) from exc
+        self._wake.set()
 
-    async def next_sent(self) -> OutboundMessage:
-        return await self._outgoing.get()
-
-    async def send(self, message: OutboundMessage) -> None:
-        await self._outgoing.put(message)
-
-    async def close(self) -> None:
-        if self._closed:
-            return
+    def close(self) -> None:
         self._closed = True
-        await self._incoming.put(None)
+        self._wake.set()
 
     async def messages(self) -> AsyncIterator[InboundMessage]:
         while True:
-            message = await self._incoming.get()
-            if message is None:
+            self._wake.clear()
+            queue = self._control if not self._control.empty() else self._ordinary
+            if not queue.empty():
+                sequence, message = queue.get_nowait()
+                if message.text.strip().partition(" ")[0] in {"/stop", "/new", "/steer"}:
+                    # A destructive control cannot move earlier inputs into the next
+                    # epoch. Drain their short admissions before applying the barrier.
+                    # Include other senders because the host may configure shared chats.
+                    # Idle steering becomes ordinary input and keeps arrival order too.
+                    before: list[InboundMessage] = []
+                    remaining: list[tuple[int, InboundMessage]] = []
+                    while not self._ordinary.empty():
+                        order, pending = self._ordinary.get_nowait()
+                        if order < sequence and (
+                            pending.account_id,
+                            pending.chat_id,
+                            pending.thread_id,
+                        ) == (message.account_id, message.chat_id, message.thread_id):
+                            before.append(pending)
+                        else:
+                            remaining.append((order, pending))
+                    for item in remaining:
+                        self._ordinary.put_nowait(item)
+                    for pending in before:
+                        yield pending
+                yield message
+            elif self._closed:
                 return
-            yield message
+            else:
+                await self._wake.wait()
 
 
-__all__ = [
-    "AgentGateway",
-    "GatewayAdapter",
-    "InboundMessage",
-    "OutboundMessage",
-    "QueueGatewayAdapter",
-]
+class AgentGateway:
+    def __init__(
+        self,
+        scheduler: GatewayScheduler,
+        adapters: Sequence[GatewayAdapter],
+        identity_policy: IdentityPolicy,
+        *,
+        model: str,
+        provider_name: str | None = None,
+        send_timeout: float = 15,
+    ) -> None:
+        if len({adapter.name for adapter in adapters}) != len(adapters):
+            raise ValueError("Gateway adapter instance names must be unique")
+        if send_timeout <= 0:
+            raise ValueError("Send timeout must be positive")
+        self.scheduler, self.policy = scheduler, identity_policy
+        self.repository, self.owner = scheduler.repository, scheduler.owner
+        self.controller = SessionController(self.repository)
+        self.outbox = OutboxRepository(self.repository)
+        self.adapters = {adapter.name: adapter for adapter in adapters}
+        self.model, self.provider_name = model, provider_name
+        self.send_timeout = send_timeout
+        self._consumers: list[asyncio.Task[None]] = []
+        self._sender: asyncio.Task[None] | None = None
+        self._rejection_sender: asyncio.Task[None] | None = None
+        self._rejected: asyncio.Queue[tuple[GatewayAdapter, Delivery]] = asyncio.Queue(32)
+        self._delivery_wake = asyncio.Event()
+        self._closing = False
+        self._started = False
+        self._shutdown_task: asyncio.Task[None] | None = None
+        self.rejections: list[str] = []
+
+    async def start(self) -> None:
+        if self._started:
+            raise RuntimeError("Gateway already started")
+        await self.controller.reconcile(self.owner)
+        await self.scheduler.start()
+        self._started = True
+        self._sender = asyncio.create_task(self._deliver(), name="gateway-outbox")
+        self._rejection_sender = asyncio.create_task(
+            self._send_rejections(), name="gateway-rejections"
+        )
+        self._consumers = [
+            asyncio.create_task(self._consume(adapter), name=f"gateway-input:{adapter.name}")
+            for adapter in self.adapters.values()
+        ]
+
+    async def _consume(self, adapter: GatewayAdapter) -> None:
+        async for message in adapter.messages():
+            if self._closing:
+                return
+            try:
+                rule, route = self.policy.resolve(
+                    adapter.name,
+                    message.account_id,
+                    message.sender_id,
+                    message.chat_id,
+                    message.thread_id,
+                )
+                text = message.text.strip()
+                command, _, argument = text.partition(" ")
+                submission = Submission(
+                    route,
+                    rule.principal_id,
+                    message.source_message_id,
+                    argument.strip() if command == "/queue" else text,
+                    rule.workspace,
+                    metadata=message.metadata,
+                )
+                if command in CONTROL_COMMANDS:
+                    await self.controller.handle(
+                        self.owner, submission, model=self.model, provider_name=self.provider_name
+                    )
+                elif command == "/background":
+                    raise AdmissionRejected(f"{command} is not enabled in this Gateway build")
+                else:
+                    await self.repository.admit(
+                        self.owner, submission, model=self.model, provider_name=self.provider_name
+                    )
+                self.scheduler.wake()
+                self._delivery_wake.set()
+            except (PermissionError, ValueError, KeyError, RuntimeError) as exc:
+                self.rejections.append(str(exc))
+                del self.rejections[:-64]
+                # A rejection is not a durable business receipt. Never claim accepted
+                # if identity validation or the admission transaction did not succeed.
+                route = RouteIdentity(
+                    adapter.name,
+                    message.account_id,
+                    message.chat_id,
+                    message.thread_id,
+                    message.sender_id,
+                )
+                delivery = Delivery(
+                    "rejected-"
+                    + hashlib.sha256(
+                        (route_key(route) + message.source_message_id).encode()
+                    ).hexdigest(),
+                    None,
+                    "rejected",
+                    {
+                        "source_message_id": message.source_message_id,
+                        "account_id": message.account_id,
+                        "chat_id": message.chat_id,
+                        "thread_id": message.thread_id,
+                        "adapter_instance_id": adapter.name,
+                    },
+                    {"status": "rejected", "error": str(exc)},
+                    1,
+                )
+                try:
+                    self._rejected.put_nowait((adapter, delivery))
+                except asyncio.QueueFull:
+                    self.rejections[-1] += "; rejection delivery queue full"
+
+    async def _send_rejections(self) -> None:
+        while True:
+            adapter, delivery = await self._rejected.get()
+            try:
+                async with asyncio.timeout(self.send_timeout):
+                    await adapter.send(delivery)
+            except Exception:
+                pass
+
+    async def _deliver(self) -> None:
+        while True:
+            self._delivery_wake.clear()
+            deliveries = await self.outbox.claim(self.owner, limit=16)
+            if deliveries:
+                # A fixed batch bounds tasks even when a channel is unavailable.
+                await asyncio.gather(*(self._send(delivery) for delivery in deliveries))
+                continue
+            if self._closing:
+                return
+            try:
+                async with asyncio.timeout(0.25):
+                    await self._delivery_wake.wait()
+            except TimeoutError:
+                pass
+
+    async def _send(self, delivery: Delivery) -> None:
+        adapter = self.adapters.get(str(delivery.destination.get("adapter_instance_id")))
+        if adapter is None:
+            await self.outbox.fail(self.owner, delivery, "Destination adapter unavailable")
+            return
+        try:
+            async with asyncio.timeout(self.send_timeout):
+                receipt = await adapter.send(delivery)
+        except Exception as exc:
+            await self.outbox.fail(self.owner, delivery, str(exc))
+        else:
+            await self.outbox.acknowledge(self.owner, delivery, receipt)
+
+    async def wait_closed(self) -> None:
+        while any(not task.done() for task in self._consumers):
+            if self.scheduler.failure is not None:
+                raise RuntimeError("Gateway scheduler failed") from self.scheduler.failure
+            if self._sender is not None and self._sender.done():
+                await self._sender
+                raise RuntimeError("Gateway delivery worker exited unexpectedly")
+            for task in self._consumers:
+                if task.done():
+                    task.result()
+            await asyncio.sleep(0.1)
+        await asyncio.gather(*self._consumers)
+
+    async def shutdown(self, *, grace_period: float = 5) -> None:
+        from run_agent_coding.storage.settle import settle
+
+        if self._shutdown_task is None:
+            self._shutdown_task = asyncio.create_task(self._shutdown(grace_period))
+
+        async def close() -> None:
+            assert self._shutdown_task is not None
+            await self._shutdown_task
+
+        await settle(close())
+
+    async def _shutdown(self, grace_period: float) -> None:
+        try:
+            await self._shutdown_owned(grace_period)
+        finally:
+            await self.scheduler.close_lease()
+
+    async def _shutdown_owned(self, grace_period: float) -> None:
+        # Keep channels available until outcomes have committed and sending has drained.
+        for task in self._consumers:
+            task.cancel()
+        await asyncio.gather(*self._consumers, return_exceptions=True)
+        try:
+            await self.scheduler.shutdown(grace_period=grace_period, retain_lease=True)
+            await self.controller.reconcile(self.owner)
+        finally:
+            self._closing = True
+            self._delivery_wake.set()
+            try:
+                if self._sender is not None:
+                    _, pending = await asyncio.wait({self._sender}, timeout=max(0.1, grace_period))
+                    if pending:
+                        self._sender.cancel()
+                        _, pending = await asyncio.wait(pending, timeout=max(0.1, grace_period))
+                    if pending:
+                        raise RuntimeError("Gateway delivery worker did not exit")
+                    if not self._sender.cancelled():
+                        self._sender.result()
+            finally:
+                if self._rejection_sender is not None:
+                    self._rejection_sender.cancel()
+                    await asyncio.gather(self._rejection_sender, return_exceptions=True)
+                results = await asyncio.gather(
+                    *(adapter.close() for adapter in self.adapters.values()), return_exceptions=True
+                )
+                for result in results:
+                    if isinstance(result, BaseException):
+                        raise result
+        await self.repository.release_owner(self.owner)
+
+
+class QueueGatewayAdapter:
+    """Bounded local adapter with channel-style delivery idempotency."""
+
+    def __init__(self, name: str, *, capacity: int = 128) -> None:
+        if capacity < 1:
+            raise ValueError("Adapter capacity must be positive")
+        self.name = name
+        self.ingress = BoundedIngress(ordinary_capacity=capacity)
+        self._outgoing: asyncio.Queue[Delivery] = asyncio.Queue(capacity)
+        self._sent: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self._closed = False
+
+    async def receive_message(self, message: InboundMessage) -> None:
+        self.ingress.put(message)
+
+    async def next_sent(self) -> Delivery:
+        return await self._outgoing.get()
+
+    async def send(self, delivery: Delivery) -> dict[str, Any]:
+        if self._closed:
+            raise RuntimeError("Adapter is closed")
+        previous = self._sent.get(delivery.delivery_id)
+        if previous is not None:
+            return previous
+        await self._outgoing.put(delivery)
+        receipt = {"message_id": delivery.delivery_id}
+        self._sent[delivery.delivery_id] = receipt
+        if len(self._sent) > 4096:
+            self._sent.popitem(last=False)
+        return receipt
+
+    async def close(self) -> None:
+        self._closed = True
+        self.ingress.close()
+
+    def messages(self) -> AsyncIterator[InboundMessage]:
+        return self.ingress.messages()

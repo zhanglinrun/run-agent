@@ -73,10 +73,6 @@ async def _runtime(args: argparse.Namespace) -> int:
     report = await run_runtime_benchmarks(
         root,
         RuntimeBenchmarkConfig(
-            scheduler_requests=args.scheduler_requests,
-            scheduler_sessions=args.scheduler_sessions,
-            foreground_limit=args.foreground_limit,
-            background_limit=args.background_limit,
             tool_calls=args.tool_calls,
             tool_repeats=args.tool_repeats,
             tool_delay_ms=args.tool_delay_ms,
@@ -118,13 +114,9 @@ def _parser() -> argparse.ArgumentParser:
     rebuild.add_argument("output_root", type=Path)
     runtime = commands.add_parser(
         "runtime",
-        help="Benchmark scheduler, parallel tools, and tracing with frozen evidence.",
+        help="Microbenchmark parallel tools and tracing with frozen evidence.",
     )
     runtime.add_argument("--output-root", type=Path)
-    runtime.add_argument("--scheduler-requests", type=int, default=10_000)
-    runtime.add_argument("--scheduler-sessions", type=int, default=100)
-    runtime.add_argument("--foreground-limit", type=int, default=32)
-    runtime.add_argument("--background-limit", type=int, default=8)
     runtime.add_argument("--tool-calls", type=int, default=8)
     runtime.add_argument("--tool-repeats", type=int, default=9)
     runtime.add_argument("--tool-delay-ms", type=float, default=20.0)

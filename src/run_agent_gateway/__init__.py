@@ -1,6 +1,14 @@
-"""Gateway, scheduling, and CodingSession host adapters."""
+"""Optional durable Gateway host and its channel extension contract."""
 
-from run_agent_gateway.coding import CodingSessionTurnRunner, SessionResolver
+from run_agent_gateway.contracts import (
+    AdmissionReceipt,
+    AdmissionRejected,
+    Assignment,
+    GatewayLimits,
+    GatewayOwner,
+    RouteIdentity,
+    Submission,
+)
 from run_agent_gateway.extensions import (
     GATEWAY_EXTENSION_API_VERSION,
     GatewayExtensionAPI,
@@ -9,41 +17,36 @@ from run_agent_gateway.extensions import (
 )
 from run_agent_gateway.gateway import (
     AgentGateway,
+    BoundedIngress,
     GatewayAdapter,
     InboundMessage,
-    OutboundMessage,
     QueueGatewayAdapter,
 )
-from run_agent_gateway.models import TurnLane, TurnRequest, TurnResult, TurnStatus
-from run_agent_gateway.runtime import CodingSessionPool
-from run_agent_gateway.scheduler import (
-    SchedulerClosedError,
-    SchedulerOverloadedError,
-    TurnHandle,
-    TurnRunner,
-    TurnScheduler,
-)
+from run_agent_gateway.identity import IdentityPolicy, IdentityRule
+from run_agent_gateway.outbox import Delivery
+from run_agent_gateway.repository import GatewayRepository
+from run_agent_gateway.scheduler import GatewayScheduler
 
 __all__ = [
-    "AgentGateway",
-    "CodingSessionTurnRunner",
-    "CodingSessionPool",
-    "GatewayAdapter",
     "GATEWAY_EXTENSION_API_VERSION",
+    "AdmissionReceipt",
+    "AdmissionRejected",
+    "AgentGateway",
+    "Assignment",
+    "BoundedIngress",
+    "Delivery",
+    "GatewayAdapter",
     "GatewayExtensionAPI",
     "GatewayExtensionError",
     "GatewayExtensionHost",
+    "GatewayLimits",
+    "GatewayOwner",
+    "GatewayRepository",
+    "GatewayScheduler",
+    "IdentityPolicy",
+    "IdentityRule",
     "InboundMessage",
-    "OutboundMessage",
     "QueueGatewayAdapter",
-    "SchedulerClosedError",
-    "SchedulerOverloadedError",
-    "SessionResolver",
-    "TurnHandle",
-    "TurnLane",
-    "TurnRequest",
-    "TurnResult",
-    "TurnRunner",
-    "TurnScheduler",
-    "TurnStatus",
+    "RouteIdentity",
+    "Submission",
 ]

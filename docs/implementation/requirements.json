@@ -268,8 +268,8 @@
     {
       "id": "P3-2",
       "requirement": "实现 SessionController，接通 status/steer/stop/cancel/new。",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": ["docs/implementation/checkpoint-08.md", "docs/implementation/gateway-runtime-tests.xml", "tests/redesign/test_gateway_steering.py", "tests/redesign/test_gateway_runtime.py"]
     },
     {
       "id": "P3-3",
@@ -310,8 +310,8 @@
     {
       "id": "P3-9",
       "requirement": "删除 stdin_jsonl 渠道示例和配置，测试改用进程内消息 Adapter；从 run gateway 启动新版网关。",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": ["docs/implementation/checkpoint-08.md", "docs/implementation/distribution-check-08.json", "scripts/validate_distribution.py"]
     },
     {
       "id": "P4-1",
@@ -573,15 +573,15 @@
       "id": "G02",
       "scenario": "运行中 status/steer/stop",
       "invariant": "Controller 不被长 prompt 阻塞，回执真实",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": ["docs/implementation/checkpoint-08.md", "docs/implementation/gateway-runtime-tests.xml", "tests/redesign/test_gateway_runtime.py", "tests/redesign/test_gateway_steering.py"]
     },
     {
       "id": "G03",
       "scenario": "steer 与运行结束竞争",
       "invariant": "消费或转队列恰有一个确定结果",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": ["docs/implementation/checkpoint-08.md", "docs/implementation/gateway-runtime-tests.xml", "tests/redesign/test_gateway_steering.py"]
     },
     {
       "id": "G04",

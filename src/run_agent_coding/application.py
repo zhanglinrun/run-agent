@@ -9,6 +9,7 @@ from pathlib import Path
 from run_agent_coding.commands import CommandResult, format_reload_summary
 from run_agent_coding.events import CodingSessionEvent
 from run_agent_coding.extensions.api import StderrUiBridge, UiBridge
+from run_agent_coding.host.inputs import InputSource
 from run_agent_coding.paths import RunAgentPaths
 from run_agent_coding.project_trust import TrustDefault, TrustOverride
 from run_agent_coding.provider_config import ProviderSettings, load_provider_settings
@@ -57,6 +58,7 @@ class CodingApplication:
         settings: ProviderSettings | None = None,
         committer: OutcomeCommitter | None = None,
         provider_transform: Callable[[ModelProvider, str], ModelProvider] | None = None,
+        input_source: InputSource | None = None,
     ) -> CodingApplication:
         paths = options.paths or (manager.paths if manager is not None else RunAgentPaths())
         owns_manager = manager is None
@@ -80,6 +82,7 @@ class CodingApplication:
                 CodingSessionConfig(
                     provider=provider,
                     provider_transform=provider_transform,
+                    input_source=input_source,
                     model=options.model or record.model,
                     storage=storage,
                     telemetry=await manager.telemetry(),

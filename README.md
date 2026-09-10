@@ -35,7 +35,7 @@ run bench --help
 
 ## 会话与存储
 
-交互、print 和 Gateway 会话池使用共享的 Coding 应用生命周期和 SQLite 会话实现。默认数据库为 `~/.run/state.sqlite3`；`--state-dir <目录>` 可指定独立状态目录。
+交互、print 和 Gateway 使用共享的 Coding 应用生命周期和 SQLite 会话实现。Gateway 只为实际运行的任务打开应用，任务结束后收敛资源，再按持久会话恢复下一轮。默认数据库为 `~/.run/state.sqlite3`；`--state-dir <目录>` 可指定独立状态目录。
 
 - 数据库工作线程执行有界请求与短事务；会话历史按序号分页读取。
 - 消息批次与分支头一起提交；创建分支及其摘要可原子完成。
@@ -44,7 +44,15 @@ run bench --help
 - `/new`、`/resume`、`/tree`、`/branch <entry-id>`、`/name`、`/model`、`/thinking`、`/compact`、`/reload` 通过统一应用路径处理。
 - `/export` 生成可阅读的 HTML；新版数据库备份与恢复由 SQLite 一致性快照和产物清单承担。
 
-新版会话不读取、迁移或写出旧格式，不保留旧命令和 Textual 组件 API。旧版本开发状态不作为新版恢复输入。目前观测与评测的部分旧文件存储仍待替换，详见执行记录。
+新版会话不读取、迁移或写出旧格式，不保留旧命令和 Textual 组件 API。旧版本开发状态不作为新版恢复输入。调用账本、轨迹和评测执行记录也写入 SQLite；评测的清单、报告与产物保留为可复核文件。
+
+## Gateway
+
+`run gateway` 已使用持久准入、会话队首调度、短控制事务和 Outbox。普通消息与 `/queue` 排队执行；`/status`、`/tasks`、`/stop`、`/cancel <task_id>`、`/new` 不等待模型返回。身份由显式的渠道映射配置提供，默认按发送者隔离群聊会话。
+
+`/steer <内容>` 在忙时绑定当前运行，先返回 `accepted`，在消息与消费回执原子写入后返回 `consumed`。原运行结束而尚未消费的纠正会保持原接收顺序转为普通任务；空闲时直接排队。`consumed` 表示已进入运行的持久历史，不代表模型已执行成功；运行结果另行通知。
+
+飞书启动方法和身份映射示例见 [Gateway 扩展说明](examples/gateway_extensions/README.md)。目前 `/background` 入口仍明确拒绝；独立后台 worktree、未知外部副作用的人工恢复、进程树核对与混合负载验收尚未完成，详见 [执行记录](docs/implementation/checkpoint-08.md)。
 
 ## 分层与扩展
 

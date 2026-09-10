@@ -14,6 +14,7 @@ from run_agent_core.loop import (
     AfterToolCall,
     AgentLoopTurnUpdate,
     BeforeToolCall,
+    MessageSource,
     PrepareNextTurn,
     PrepareNextTurnContext,
     ShouldStopAfterTurn,
@@ -62,6 +63,7 @@ class AgentHarnessConfig:
     should_stop_after_turn: ShouldStopAfterTurn | None = None
     transform_context: TransformContext | None = None
     before_model_request: BeforeModelRequest | None = None
+    steering_source: MessageSource | None = None
 
 
 class SimpleCancellationToken:
@@ -264,7 +266,13 @@ class AgentHarness:
                 "AgentHarness is already running; use steer() or follow_up() to queue messages."
             )
 
-    def _drain_steering_messages(self) -> tuple[AgentMessage, ...]:
+    async def _drain_steering_messages(self) -> tuple[AgentMessage, ...]:
+        if self._config.steering_source is not None:
+            result = self._config.steering_source()
+            if isawaitable(result):
+                result = await result
+            if result:
+                return tuple(result)
         return self._drain_queue(self._steering_queue)
 
     def _drain_follow_up_messages(self) -> tuple[AgentMessage, ...]:

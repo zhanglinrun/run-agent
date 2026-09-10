@@ -12,7 +12,7 @@ from types import ModuleType
 
 from run_agent_gateway.gateway import GatewayAdapter
 
-GATEWAY_EXTENSION_API_VERSION = 1
+GATEWAY_EXTENSION_API_VERSION = 2
 
 
 class GatewayExtensionError(RuntimeError):

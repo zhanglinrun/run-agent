@@ -56,6 +56,7 @@ from run_agent_coding.extensions.provider_registry import DynamicProviderRegistr
 from run_agent_coding.extensions.providers import DynamicProvider, ProviderModel
 from run_agent_coding.extensions.runtime import ExtensionRuntime
 from run_agent_coding.host.contracts import HostServicesRegistry, SessionActivation
+from run_agent_coding.host.inputs import CommittedInput, InputBoundary, InputSource
 from run_agent_coding.models_dev_store import ModelsDevRefreshResult, refresh_models_dev_catalog
 from run_agent_coding.paths import RunAgentPaths
 from run_agent_coding.project_trust import (
@@ -162,6 +163,7 @@ from run_agent_core.session.contracts import (
     RunOutcome,
     RunStatus,
     RunToken,
+    SessionConflict,
     StaleRunToken,
 )
 from run_agent_core.session.entries import SessionEntry
@@ -398,6 +400,7 @@ class CodingSessionConfig:
     # Shared preparation keeps transcript/trust/index writes staged until
     # PreparedCodingSession.adopt() reaches its durable commit point.
     defer_authoritative_writes: bool = False
+    input_source: InputSource | None = None
 
 
 class CodingSession:
@@ -523,6 +526,43 @@ class CodingSession:
         self._harness.config.transform_context = self._transform_context
         self._harness.config.prepare_next_turn = self._prepare_next_turn
         self._harness.config.before_model_request = self._record_model_context
+        self._harness.config.steering_source = (
+            self._read_host_input if self._config.input_source is not None else None
+        )
+
+    async def _read_host_input(self) -> tuple[AgentMessage, ...]:
+        source = self._config.input_source
+        assert source is not None
+        prefix = tuple(entry.model_copy(deep=True) for entry in self._completion_entries)
+        boundary = InputBoundary(
+            self._writer_token(),
+            self.storage.branch_id,
+            self._completion_expected_head if prefix else self._last_parent_id,
+            prefix,
+        )
+        async def receive() -> CommittedInput | None:
+            return await source(boundary)
+
+        batch, cancelled = await settle(receive())
+        messages: list[AgentMessage] = []
+        if batch is not None:
+            # The prefix was a possible final reply. New input makes it intermediate;
+            # the host has committed both that prefix and its input receipt atomically.
+            for index, (entry, seq) in enumerate(
+                zip(batch.entries, batch.receipt.sequences, strict=True)
+            ):
+                self._entries[entry.id] = entry.model_copy(deep=True, update={"seq": seq})
+                if index >= len(prefix):
+                    if not isinstance(entry, MessageEntry):
+                        raise TypeError("A host input must be a message entry")
+                    messages.append(entry.message)
+                    self._persisted_message_ids.add(id(entry.message))
+            self._completion_entries.clear()
+            self._last_parent_id = batch.receipt.head_id
+            await self._refresh_persisted_state(leaf_id=self._last_parent_id)
+        if cancelled:
+            raise asyncio.CancelledError
+        return tuple(messages)
 
     async def _record_model_context(self, request: ModelRequest, *, purpose: str = "agent") -> None:
         """Commit the exact model input before handing it to a physical Provider."""
@@ -3340,8 +3380,32 @@ class CodingSession:
     async def _finish_run(
         self, events: AsyncIterator[AgentEvent] | None, *, context: AgentCallDiagnosticContext
     ) -> AgentSettledEvent:
-        await self._reconcile_run_persistence(events, context=context)
-        return await self._dispatch_agent_settled()
+        try:
+            await self._reconcile_run_persistence(events, context=context)
+            if await self.storage.run_is_revoked():
+                await self._discard_revoked_history()
+            return await self._dispatch_agent_settled()
+        except SessionConflict:
+            if not await self.storage.run_is_revoked():
+                raise
+            # Stop can commit between any persistence operation and completion.
+            # The event iterator has exited; only the already durable head survives.
+            await self._discard_revoked_history()
+            return await self._dispatch_agent_settled()
+
+    async def _discard_revoked_history(self) -> None:
+        self._completion_entries.clear()
+        self._completion_expected_head = None
+        self._pending_message_writes.clear()
+        self._ended_message_ids.clear()
+        self._persisted_message_ids.clear()
+        self._harness.clear_queues()
+        await self._reload_entry_cache()
+        head = await self.storage.get_head()
+        await self._refresh_persisted_state(leaf_id=head.entry_id)
+        self._last_parent_id = head.entry_id
+        self._run_status = "cancelled"
+        self._run_error = "Execution revoked by host"
 
     async def _dispatch_agent_settled(self) -> AgentSettledEvent:
         if self._pending_message_writes:
@@ -3374,7 +3438,11 @@ class CodingSession:
             self._run_error or (final.error_message if final is not None else None),
             self._last_snapshot_id,
         )
-        if self._config.session_manager is not None and self.session_id is not None:
+        if (
+            status != "cancelled"
+            and self._config.session_manager is not None
+            and self.session_id is not None
+        ):
             await self._config.session_manager.touch_session(
                 self.session_id,
                 model=self.model,

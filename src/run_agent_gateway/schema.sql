@@ -40,7 +40,9 @@ CREATE TABLE gateway_tasks (
     content TEXT NOT NULL,
     metadata_json TEXT NOT NULL CHECK(json_valid(metadata_json)),
     destination_json TEXT NOT NULL CHECK(json_valid(destination_json)),
-    status TEXT NOT NULL CHECK(status IN ('queued','running','cancelling','cancelled','succeeded','failed','interrupted','outcome_unknown','blocked')),
+    status TEXT NOT NULL CHECK(status IN ('queued','steering','consumed','running','cancelling','cancelled','succeeded','failed','interrupted','outcome_unknown','blocked')),
+    target_run_id TEXT REFERENCES gateway_attempts(run_id),
+    consumed_entry_id TEXT,
     attempt INTEGER NOT NULL DEFAULT 0,
     generation INTEGER NOT NULL DEFAULT 0,
     run_id TEXT,
@@ -52,20 +54,33 @@ CREATE TABLE gateway_tasks (
 );
 CREATE INDEX gateway_tasks_ready ON gateway_tasks(status,lane,session_id,seq);
 CREATE INDEX gateway_tasks_principal ON gateway_tasks(principal_id,status,lane);
+CREATE INDEX gateway_tasks_steering ON gateway_tasks(target_run_id,status,seq);
 
 CREATE TABLE gateway_session_order (
     session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
     last_dispatched INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE gateway_controls (
+    control_id TEXT PRIMARY KEY,
+    principal_id TEXT NOT NULL,
+    route_key TEXT NOT NULL,
+    command TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('waiting','completed')),
+    response_json TEXT NOT NULL CHECK(json_valid(response_json)),
+    created_at REAL NOT NULL
+);
+
 CREATE TABLE gateway_inbox (
     adapter_instance_id TEXT NOT NULL,
     source_message_id TEXT NOT NULL,
     payload_hash TEXT NOT NULL,
-    task_id TEXT NOT NULL REFERENCES gateway_tasks(task_id),
+    task_id TEXT REFERENCES gateway_tasks(task_id),
+    control_id TEXT REFERENCES gateway_controls(control_id),
     receipt_json TEXT NOT NULL CHECK(json_valid(receipt_json)),
     created_at REAL NOT NULL,
-    PRIMARY KEY(adapter_instance_id,source_message_id)
+    PRIMARY KEY(adapter_instance_id,source_message_id),
+    CHECK((task_id IS NULL) != (control_id IS NULL))
 );
 
 CREATE TABLE gateway_attempts (
@@ -85,7 +100,8 @@ CREATE INDEX gateway_attempts_active ON gateway_attempts(released,owner_id);
 
 CREATE TABLE gateway_outbox (
     delivery_id TEXT PRIMARY KEY,
-    task_id TEXT NOT NULL REFERENCES gateway_tasks(task_id),
+    task_id TEXT REFERENCES gateway_tasks(task_id),
+    control_id TEXT REFERENCES gateway_controls(control_id),
     kind TEXT NOT NULL CHECK(kind IN ('accepted','result','control')),
     destination_json TEXT NOT NULL CHECK(json_valid(destination_json)),
     content_json TEXT NOT NULL CHECK(json_valid(content_json)),
@@ -99,6 +115,8 @@ CREATE TABLE gateway_outbox (
     error TEXT,
     created_at REAL NOT NULL,
     sent_at REAL,
-    UNIQUE(task_id,kind)
+    UNIQUE(task_id,kind),
+    UNIQUE(control_id,kind),
+    CHECK((task_id IS NULL) != (control_id IS NULL))
 );
 CREATE INDEX gateway_outbox_ready ON gateway_outbox(status,next_attempt_at);

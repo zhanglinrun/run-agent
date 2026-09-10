@@ -13,10 +13,11 @@ from time import time
 from typing import Any, cast
 from uuid import uuid4
 
+from run_agent_coding.host.inputs import CommittedInput, InputBoundary, InputSource
 from run_agent_coding.storage.handle import OutcomeCommitter
 from run_agent_coding.storage.sessions import SqliteSessionRepository, canonical_json
 from run_agent_coding.storage.sqlite import SqliteDatabase
-from run_agent_core.messages import AssistantMessage
+from run_agent_core.messages import AssistantMessage, CustomMessage
 from run_agent_core.session.contracts import CompletionReceipt, RunOutcome, SessionConflict
 from run_agent_core.session.entries import MessageEntry
 from run_agent_gateway.contracts import (
@@ -32,7 +33,9 @@ from run_agent_gateway.contracts import (
 )
 from run_agent_gateway.routing import route_key
 
-TERMINAL = frozenset({"succeeded", "failed", "cancelled", "interrupted", "outcome_unknown"})
+TERMINAL = frozenset(
+    {"succeeded", "failed", "cancelled", "interrupted", "outcome_unknown", "consumed"}
+)
 
 
 class GatewayRepository:
@@ -60,7 +63,7 @@ class GatewayRepository:
                 "SELECT value_json FROM host_metadata WHERE key='gateway.schema'"
             ).fetchone()
             if row is not None:
-                if json.loads(row[0]) != {"version": 1}:
+                if json.loads(row[0]) != {"version": 3}:
                     raise ValueError("Unsupported Gateway schema")
                 return
             for statement in schema.split(";"):
@@ -68,7 +71,7 @@ class GatewayRepository:
                     connection.execute(statement)
             connection.execute(
                 "INSERT INTO host_metadata VALUES ('gateway.schema',?)",
-                (canonical_json({"version": 1}),),
+                (canonical_json({"version": 3}),),
             )
 
         await self.database.run(initialize, write=True)
@@ -122,6 +125,7 @@ class GatewayRepository:
                     "UPDATE extension_owners SET active=0 WHERE session_id=?",
                     (run["session_id"],),
                 )
+                self._queue_unconsumed_input(connection, run["run_id"])
             connection.execute(
                 "INSERT INTO gateway_owner(singleton,owner_id,generation,expires_at,"
                 "active,accepting) "
@@ -185,6 +189,9 @@ class GatewayRepository:
         provider_name: str | None,
     ) -> sqlite3.Row:
         key = route_key(submission.route)
+        destination = canonical_json(
+            {**asdict(submission.route), "source_message_id": submission.source_message_id}
+        )
         row = connection.execute(
             "SELECT * FROM gateway_routes WHERE route_key=?", (key,)
         ).fetchone()
@@ -202,13 +209,19 @@ class GatewayRepository:
                 "INSERT INTO gateway_routes(route_key,principal_id,session_id,epoch,"
                 "destination_json) "
                 "VALUES (?,?,?,1,?)",
-                (key, submission.principal_id, session_id, key),
+                (key, submission.principal_id, session_id, destination),
             )
             row = connection.execute(
                 "SELECT * FROM gateway_routes WHERE route_key=?", (key,)
             ).fetchone()
         if row["principal_id"] != submission.principal_id:
             raise PermissionError("Route belongs to a different authenticated principal")
+        if submission.lane == "foreground":
+            session = self.sessions._record(connection, row["session_id"])
+            if os.path.normcase(str(Path(session.cwd).resolve())) != os.path.normcase(
+                str(submission.workspace.resolve())
+            ):
+                raise AdmissionRejected("Route is bound to a different workspace")
         if row["pending_new"]:
             raise AdmissionRejected("Previous session is stopping before route replacement")
         return cast(sqlite3.Row, row)
@@ -222,6 +235,9 @@ class GatewayRepository:
         provider_name: str | None = None,
     ) -> AdmissionReceipt:
         key = route_key(submission.route)
+        destination = canonical_json(
+            {**asdict(submission.route), "source_message_id": submission.source_message_id}
+        )
         if (
             not submission.principal_id
             or len(submission.principal_id.encode()) > 256
@@ -229,6 +245,8 @@ class GatewayRepository:
             or len(submission.source_message_id.encode()) > 256
             or not submission.content.strip()
             or submission.lane not in {"foreground", "background"}
+            or submission.mode not in {"queue", "steer"}
+            or (submission.mode == "steer" and submission.lane != "foreground")
         ):
             raise AdmissionRejected("Invalid identity, content or task category")
         payload = canonical_json(
@@ -239,6 +257,7 @@ class GatewayRepository:
                 "workspace": str(submission.workspace.resolve()),
                 "lane": submission.lane,
                 "metadata": submission.metadata,
+                "mode": submission.mode,
             }
         )
         if len(payload.encode()) > self.limits.payload_bytes:
@@ -254,7 +273,7 @@ class GatewayRepository:
                 (submission.route.adapter_instance_id, submission.source_message_id),
             ).fetchone()
             if previous:
-                if previous["payload_hash"] != digest:
+                if previous["payload_hash"] != digest or previous["task_id"] is None:
                     raise DuplicateConflict("Source message ID was reused with different content")
                 return AdmissionReceipt(**json.loads(previous["receipt_json"]), duplicate=True)
             if not owned["accepting"]:
@@ -263,7 +282,8 @@ class GatewayRepository:
             origin = route["session_id"]
             counts = dict(
                 connection.execute(
-                    "SELECT lane,COUNT(*) FROM gateway_tasks WHERE status='queued' GROUP BY lane"
+                    "SELECT lane,COUNT(*) FROM gateway_tasks "
+                    "WHERE status IN ('queued','steering') GROUP BY lane"
                 ).fetchall()
             )
             total = sum(counts.values())
@@ -278,11 +298,13 @@ class GatewayRepository:
             ):
                 raise AdmissionRejected("Waiting capacity reserved for the other lane or full")
             per_session = connection.execute(
-                "SELECT COUNT(*) FROM gateway_tasks WHERE origin_session_id=? AND status='queued'",
+                "SELECT COUNT(*) FROM gateway_tasks WHERE origin_session_id=? "
+                "AND status IN ('queued','steering')",
                 (origin,),
             ).fetchone()[0]
             per_principal = connection.execute(
-                "SELECT COUNT(*) FROM gateway_tasks WHERE principal_id=? AND status='queued'",
+                "SELECT COUNT(*) FROM gateway_tasks WHERE principal_id=? "
+                "AND status IN ('queued','steering')",
                 (submission.principal_id,),
             ).fetchone()[0]
             if per_session >= self.limits.per_session or per_principal >= self.limits.per_principal:
@@ -296,14 +318,24 @@ class GatewayRepository:
                 if roots >= self.limits.background_roots_per_principal:
                     raise AdmissionRejected("Principal background root task limit reached")
             backlog = connection.execute(
-                "SELECT COUNT(*) FROM gateway_outbox WHERE status IN ('pending','sending')"
+                "SELECT COUNT(*) FROM gateway_outbox WHERE task_id IS NOT NULL "
+                "AND status IN ('pending','sending')"
             ).fetchone()[0]
             reserved_results = connection.execute(
-                "SELECT COUNT(*) FROM gateway_tasks "
-                "WHERE status IN ('queued','running','cancelling')"
+                "SELECT COALESCE(SUM(CASE WHEN status='steering' THEN 2 ELSE 1 END),0) "
+                "FROM gateway_tasks WHERE status IN ('queued','steering','running','cancelling')"
             ).fetchone()[0]
-            if backlog + reserved_results + 2 > self.limits.outbox_pending:
+            delivery_reservation = 3 if submission.mode == "steer" else 2
+            if backlog + reserved_results + delivery_reservation > self.limits.outbox_pending:
                 raise AdmissionRejected("Delivery backlog is full")
+            target = None
+            if submission.mode == "steer":
+                target = connection.execute(
+                    "SELECT run_id FROM gateway_tasks WHERE session_id=? "
+                    "AND lane='foreground' AND status='running'",
+                    (origin,),
+                ).fetchone()
+            target_run_id = target["run_id"] if target is not None else None
             session_id = origin
             if submission.lane == "background":
                 session_id = uuid4().hex
@@ -326,7 +358,8 @@ class GatewayRepository:
                 "INSERT INTO gateway_tasks(task_id,route_key,principal_id,session_id,"
                 "origin_session_id,"
                 "conversation_epoch,source_head_id,lane,workspace_id,content,metadata_json,"
-                "destination_json,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'queued',?)",
+                "destination_json,status,target_run_id,created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     task_id,
                     key,
@@ -339,7 +372,9 @@ class GatewayRepository:
                     workspace_id,
                     submission.content,
                     metadata_json,
-                    key,
+                    destination,
+                    "steering" if target_run_id else "queued",
+                    target_run_id,
                     self.clock(),
                 ),
             )
@@ -349,7 +384,8 @@ class GatewayRepository:
             body = asdict(receipt)
             body.pop("duplicate")
             connection.execute(
-                "INSERT INTO gateway_inbox VALUES (?,?,?,?,?,?)",
+                "INSERT INTO gateway_inbox(adapter_instance_id,source_message_id,payload_hash,"
+                "task_id,receipt_json,created_at) VALUES (?,?,?,?,?,?)",
                 (
                     submission.route.adapter_instance_id,
                     submission.source_message_id,
@@ -363,7 +399,11 @@ class GatewayRepository:
                 "INSERT OR IGNORE INTO gateway_session_order(session_id) VALUES (?)",
                 (session_id,),
             )
-            self._outbox(connection, task_id, "accepted", key, {"status": "accepted", **body})
+            self._outbox(
+                connection, task_id, "accepted", destination,
+                {"status": "accepted", **body, "mode": "steer" if target_run_id else "queue",
+                 "target_run_id": target_run_id},
+            )
             self._fault("gateway_admitted")
             return receipt
 
@@ -372,16 +412,19 @@ class GatewayRepository:
     def _outbox(
         self,
         connection: sqlite3.Connection,
-        task_id: str,
+        task_id: str | None,
         kind: str,
         destination: str,
         content: dict[str, Any],
+        *,
+        control_id: str | None = None,
     ) -> str:
         frozen = canonical_json(content)
         digest = hashlib.sha256(frozen.encode()).hexdigest()
         previous = connection.execute(
-            "SELECT delivery_id,content_hash FROM gateway_outbox WHERE task_id=? AND kind=?",
-            (task_id, kind),
+            "SELECT delivery_id,content_hash FROM gateway_outbox "
+            "WHERE task_id IS ? AND control_id IS ? AND kind=?",
+            (task_id, control_id, kind),
         ).fetchone()
         if previous:
             if previous["content_hash"] != digest:
@@ -389,15 +432,28 @@ class GatewayRepository:
             return cast(str, previous["delivery_id"])
         delivery_id = uuid4().hex
         connection.execute(
-            "INSERT INTO gateway_outbox(delivery_id,task_id,kind,destination_json,content_json,"
-            "content_hash,status,next_attempt_at,created_at) VALUES (?,?,?,?,?,?,'pending',?,?)",
-            (delivery_id, task_id, kind, destination, frozen, digest, self.clock(), self.clock()),
+            "INSERT INTO gateway_outbox(delivery_id,task_id,control_id,kind,destination_json,"
+            "content_json,content_hash,status,next_attempt_at,created_at) "
+            "VALUES (?,?,?,?,?,?,?,'pending',?,?)",
+            (
+                delivery_id,
+                task_id,
+                control_id,
+                kind,
+                destination,
+                frozen,
+                digest,
+                self.clock(),
+                self.clock(),
+            ),
         )
         return delivery_id
 
     async def claim_next(self, owner: GatewayOwner) -> Assignment | None:
         def claim(connection: sqlite3.Connection) -> Assignment | None:
             owned = self.assert_owner(connection, owner)
+            if not owned["accepting"]:
+                return None
             counts = dict(
                 connection.execute(
                     "SELECT t.lane,COUNT(*) FROM gateway_attempts a JOIN gateway_tasks t "
@@ -411,7 +467,7 @@ class GatewayRepository:
                 "ON t.workspace_id=w.workspace_id JOIN gateway_session_order s "
                 "ON t.session_id=s.session_id WHERE t.status='queued' AND w.status='available' "
                 "AND NOT EXISTS (SELECT 1 FROM gateway_tasks p WHERE p.session_id=t.session_id "
-                "AND p.seq<t.seq AND p.status IN ('queued','blocked')) "
+                "AND p.seq<t.seq AND p.status IN ('queued','steering','blocked')) "
                 "AND NOT EXISTS (SELECT 1 FROM gateway_attempts a JOIN gateway_tasks r "
                 "ON a.task_id=r.task_id WHERE r.session_id=t.session_id AND a.released=0) "
                 "ORDER BY s.last_dispatched,t.seq"
@@ -597,9 +653,88 @@ class GatewayRepository:
                 },
             )
             self._fault("gateway_outbox_inserted")
+            self._queue_unconsumed_input(connection, assignment.run_id)
             return receipt
 
         return await self.database.run(complete, write=True)
+
+    def _queue_unconsumed_input(self, connection: sqlite3.Connection, run_id: str) -> None:
+        rows = connection.execute(
+            "SELECT * FROM gateway_tasks WHERE target_run_id=? AND status='steering' ORDER BY seq",
+            (run_id,),
+        ).fetchall()
+        for row in rows:
+            connection.execute(
+                "UPDATE gateway_tasks SET status='queued' WHERE task_id=?", (row["task_id"],)
+            )
+            self._outbox(
+                connection,
+                row["task_id"],
+                "control",
+                row["destination_json"],
+                {
+                    "task_id": row["task_id"],
+                    "status": "queued",
+                    "session_id": row["session_id"],
+                    "conversation_epoch": row["conversation_epoch"],
+                    "target_run_id": run_id,
+                    "reason": "Target run ended before consuming this input",
+                },
+            )
+        if rows:
+            self._fault("gateway_steering_requeued")
+
+    def input_source(self, owner: GatewayOwner, assignment: Assignment) -> InputSource:
+        async def read(boundary: InputBoundary) -> CommittedInput | None:
+            def consume(connection: sqlite3.Connection) -> CommittedInput | None:
+                task = self._assignment(connection, owner, assignment, cancelling=True)
+                if task["status"] != "running":
+                    return None
+                if (boundary.token.run_id, boundary.token.session_id) != (
+                    assignment.run_id, assignment.session_id
+                ):
+                    raise SessionConflict("Input boundary belongs to another run")
+                self.sessions.assert_token(connection, boundary.token)
+                row = connection.execute(
+                    "SELECT * FROM gateway_tasks WHERE target_run_id=? AND status='steering' "
+                    "ORDER BY seq LIMIT 1",
+                    (assignment.run_id,),
+                ).fetchone()
+                if row is None:
+                    return None
+                prefix = boundary.pending_entries
+                entry = MessageEntry(
+                    parent_id=prefix[-1].id if prefix else boundary.expected_head,
+                    message=CustomMessage(
+                        custom_type="gateway.steering",
+                        content=row["content"],
+                        details={"task_id": row["task_id"], "target_run_id": assignment.run_id},
+                    ),
+                )
+                entries = (*prefix, entry)
+                receipt = self.sessions.append_in_transaction(
+                    connection, entries, token=boundary.token,
+                    branch_id=boundary.branch_id, expected_head=boundary.expected_head,
+                )
+                connection.execute(
+                    "UPDATE gateway_tasks SET status='consumed',consumed_entry_id=?,finished_at=? "
+                    "WHERE task_id=?",
+                    (entry.id, self.clock(), row["task_id"]),
+                )
+                self._outbox(
+                    connection, row["task_id"], "result", row["destination_json"],
+                    {
+                        "task_id": row["task_id"], "status": "consumed",
+                        "run_id": assignment.run_id, "session_id": row["session_id"],
+                        "conversation_epoch": row["conversation_epoch"], "entry_id": entry.id,
+                    },
+                )
+                self._fault("gateway_steering_consumed")
+                return CommittedInput(entries, receipt)
+
+            return await self.database.run(consume, write=True)
+
+        return read
 
     def committer(self, owner: GatewayOwner, assignment: Assignment) -> OutcomeCommitter:
         """Bind the Coding completion seam to this durable attempt and its Outbox."""
@@ -655,8 +790,34 @@ class GatewayRepository:
 
         await self.database.run(release, write=True)
 
+    async def contain(self, owner: GatewayOwner, assignment: Assignment, *, error: str) -> None:
+        """Preserve the reservation when completion or resource cleanup is unconfirmed."""
+
+        def contain(connection: sqlite3.Connection) -> None:
+            self._assignment(connection, owner, assignment, cancelling=True)
+            connection.execute(
+                "UPDATE gateway_attempts SET status='outcome_unknown' WHERE run_id=?",
+                (assignment.run_id,),
+            )
+            connection.execute(
+                "UPDATE gateway_tasks SET status='outcome_unknown',error=? WHERE run_id=? "
+                "AND status IN ('running','cancelling')",
+                (error[:4096], assignment.run_id),
+            )
+            connection.execute(
+                "UPDATE gateway_workspaces SET status='quarantined',reason=? WHERE run_id=?",
+                (error[:4096], assignment.run_id),
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO execution_revocations VALUES (?,?,?)",
+                (assignment.run_id, "Runner cleanup or completion unconfirmed", self.clock()),
+            )
+            self._queue_unconsumed_input(connection, assignment.run_id)
+
+        await self.database.run(contain, write=True)
+
     def _cancel(self, connection: sqlite3.Connection, task: sqlite3.Row) -> str:
-        if task["status"] == "queued":
+        if task["status"] in {"queued", "steering"}:
             connection.execute(
                 "UPDATE gateway_tasks SET status='cancelled',error='Cancelled before execution',"
                 "finished_at=? WHERE task_id=?",
@@ -717,7 +878,7 @@ class GatewayRepository:
                 raise PermissionError("Route belongs to another principal")
             rows = connection.execute(
                 "SELECT * FROM gateway_tasks WHERE session_id=? AND lane='foreground' "
-                "AND status IN ('queued','running','cancelling')",
+                "AND status IN ('queued','steering','running','cancelling')",
                 (binding["session_id"],),
             ).fetchall()
             return {row["task_id"]: self._cancel(connection, row) for row in rows}
@@ -727,7 +888,10 @@ class GatewayRepository:
     @staticmethod
     def _task(connection: sqlite3.Connection, task_id: str, principal_id: str) -> sqlite3.Row:
         row = connection.execute(
-            "SELECT * FROM gateway_tasks WHERE task_id=? AND principal_id=?",
+            "SELECT t.*,a.status AS execution_status,a.released,w.status AS workspace_status,"
+            "w.reason AS workspace_error FROM gateway_tasks t LEFT JOIN gateway_attempts a "
+            "ON a.run_id=t.run_id JOIN gateway_workspaces w ON w.workspace_id=t.workspace_id "
+            "WHERE t.task_id=? AND t.principal_id=?",
             (task_id, principal_id),
         ).fetchone()
         if row is None:

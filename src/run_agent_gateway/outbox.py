@@ -17,7 +17,7 @@ from run_agent_gateway.repository import GatewayRepository
 @dataclass(frozen=True, slots=True)
 class Delivery:
     delivery_id: str
-    task_id: str
+    task_id: str | None
     kind: str
     destination: dict[str, Any]
     content: dict[str, Any]
@@ -37,8 +37,13 @@ class OutboxRepository:
             rows = connection.execute(
                 "SELECT o.* FROM gateway_outbox o "
                 "WHERE o.status='pending' AND o.next_attempt_at<=? "
-                "AND NOT EXISTS (SELECT 1 FROM gateway_outbox p WHERE p.task_id=o.task_id "
-                "AND p.kind='accepted' AND o.kind='result' AND p.status IN ('pending','sending')) "
+                "AND NOT EXISTS (SELECT 1 FROM gateway_outbox p WHERE "
+                "((p.task_id=o.task_id AND o.kind IN ('result','control')) OR "
+                "(p.control_id=o.control_id AND o.kind='control')) "
+                "AND p.kind='accepted' AND p.status IN ('pending','sending')) "
+                "AND NOT EXISTS (SELECT 1 FROM gateway_outbox p WHERE "
+                "p.task_id=o.task_id AND o.kind='result' AND p.kind='control' "
+                "AND p.status IN ('pending','sending')) "
                 "ORDER BY o.next_attempt_at,o.created_at,o.delivery_id LIMIT ?",
                 (self.gateway.clock(), limit),
             ).fetchall()

@@ -137,6 +137,19 @@ class SqliteSessionHandle:
                 raise asyncio.CancelledError
             return self.token
 
+    async def run_is_revoked(self) -> bool:
+        """Whether the host revoked this execution, without restoring write authority."""
+        self._check()
+        run_id = self.token.run_id
+        return await self.repository.database.run(
+            lambda connection: (
+                connection.execute(
+                    "SELECT 1 FROM execution_revocations WHERE run_id=?", (run_id,)
+                ).fetchone()
+                is not None
+            )
+        )
+
     async def complete_run(self, outcome: RunOutcome) -> CompletionReceipt:
         self._check()
 

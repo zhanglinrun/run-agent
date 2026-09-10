@@ -3,8 +3,13 @@
 import argparse
 import hashlib
 import json
+import os
+import sqlite3
 import subprocess
 import tempfile
+import threading
+from contextlib import closing
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 SMOKE = """
@@ -24,6 +29,11 @@ from run_agent_core.provider_events import AssistantDoneEvent
 from run_agent_gateway.contracts import RouteIdentity, Submission
 from run_agent_gateway.repository import GatewayRepository
 from run_agent_gateway.outbox import OutboxRepository
+from run_agent_gateway import AgentGateway, GatewayScheduler, IdentityPolicy, IdentityRule
+from run_agent_gateway import InboundMessage, QueueGatewayAdapter
+from run_agent_gateway.coding import CodingAssignmentRunner
+from run_agent_gateway.runtime import GatewayCodingRuntime
+from run_agent_gateway.controller import SessionController
 scripts = {e.name:e.value for e in distribution('run-agent-harness').entry_points
            if e.group == 'console_scripts'}
 assert scripts == {'run':'run_agent_entry:main'}, scripts
@@ -60,6 +70,51 @@ async def check():
         async def stream_response(self, **kwargs):
             yield AssistantDoneEvent(reason='stop', message=AssistantMessage(
                 content=[TextContent(text='installed-wheel')], model='test', stop_reason='stop'))
+    started, finish = asyncio.Event(), asyncio.Event()
+    class SteeringProvider(Provider):
+        async def stream_response(self, **kwargs):
+            if not any(message.text.startswith('Create a concise session name')
+                       for message in kwargs['messages']) and not started.is_set():
+                started.set()
+                await finish.wait()
+            async for event in super().stream_response(**kwargs):
+                yield event
+    gateway_paths = RunAgentPaths(home=pathlib.Path('gateway'), agents_home=pathlib.Path('agents'))
+    gateway_options = ApplicationOptions(cwd=pathlib.Path.cwd(), paths=gateway_paths,
+        model='test', provider_name='test', extensions_enabled=False)
+    async with await SqliteDatabase.open(gateway_paths.database_path) as database:
+        repository = GatewayRepository(database)
+        await repository.initialize()
+        owner = await repository.acquire_owner('installed-runtime')
+        runtime = GatewayCodingRuntime(repository, owner, gateway_options,
+                                       provider_factory=lambda _: SteeringProvider())
+        scheduler = GatewayScheduler(repository, owner, CodingAssignmentRunner(runtime))
+        adapter = QueueGatewayAdapter('installed')
+        policy = IdentityPolicy((IdentityRule('installed','account','local','local',
+                                              pathlib.Path.cwd()),))
+        host = AgentGateway(scheduler, [adapter], policy, model='test')
+        await host.start()
+        try:
+            await adapter.receive_message(InboundMessage('runtime-message','account',
+                                                         'local','chat','installed prompt'))
+            accepted = await asyncio.wait_for(adapter.next_sent(), 5)
+            await asyncio.wait_for(started.wait(), 5)
+            await adapter.receive_message(InboundMessage('steer-message','account',
+                                                         'local','chat','/steer correction'))
+            steering = await asyncio.wait_for(adapter.next_sent(), 5)
+            assert steering.content['mode'] == 'steer'
+            finish.set()
+            deliveries = [await asyncio.wait_for(adapter.next_sent(), 5) for _ in range(2)]
+            consumed = next(item for item in deliveries if item.task_id == steering.task_id)
+            result = next(item for item in deliveries if item.task_id == accepted.task_id)
+            assert consumed.content['status'] == 'consumed'
+            assert accepted.content['status'] == 'accepted'
+            assert result.content['output'] == 'installed-wheel'
+            assert result.task_id == accepted.task_id
+            assert not scheduler.errors
+        finally:
+            finish.set()
+            await host.shutdown()
     paths = RunAgentPaths(home=pathlib.Path('application'), agents_home=pathlib.Path('agents'))
     skill_root = paths.home / 'skills' / 'installed'
     skill_root.mkdir(parents=True)
@@ -115,8 +170,137 @@ print(json.dumps({'entry_module':run_agent_entry.__file__, 'scripts':scripts,
                   'sqlite_telemetry':True, 'no_jsonl_output':True,
                   'host_services_and_reload':True, 'context_snapshot':True,
                   'skill_package_and_resume':True, 'extension_disposer':True,
-                  'gateway_transactions':True}))
+                  'gateway_transactions':True, 'gateway_live_coding_and_outbox':True,
+                  'gateway_steering_consumed':True}))
 """
+
+
+GATEWAY_ADAPTER = """
+import asyncio, json, os
+from pathlib import Path
+from run_agent_gateway import InboundMessage
+
+class Adapter:
+    name = 'installed-cli'
+
+    def __init__(self):
+        self.result = asyncio.Event()
+        self.status = asyncio.Event()
+        self.deliveries = []
+
+    async def messages(self):
+        index = os.environ['GATEWAY_TEST_INDEX']
+        if index != '1':
+            yield InboundMessage('cli-1', 'account', 'sender', 'chat', 'prompt 1')
+        yield InboundMessage('cli-' + index, 'account', 'sender', 'chat', 'prompt ' + index)
+        await asyncio.wait_for(self.result.wait(), 15)
+        yield InboundMessage('status-' + index, 'account', 'sender', 'chat', '/status')
+        await asyncio.wait_for(self.status.wait(), 5)
+
+    async def send(self, delivery):
+        self.deliveries.append({'task_id':delivery.task_id, 'kind':delivery.kind,
+                                'content':delivery.content})
+        if delivery.kind == 'result':
+            self.result.set()
+        if delivery.content.get('status') == 'status':
+            self.status.set()
+        return {'id':delivery.delivery_id}
+
+    async def close(self):
+        Path(os.environ['GATEWAY_TEST_REPORT']).write_text(json.dumps(self.deliveries),
+                                                         encoding='utf-8')
+
+def setup_gateway(api):
+    api.register_adapter(Adapter())
+"""
+
+
+def check_gateway_cli(launcher: Path, directory: Path) -> dict[str, object]:
+    requests: list[object] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            requests.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.end_headers()
+            chunks = [
+                {"type": "response.output_text.delta", "delta": "offline gateway reply"},
+                {"type": "response.completed", "response": {
+                    "status": "completed", "output": [],
+                    "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                }},
+            ]
+            if not self.path.endswith("/responses"):
+                chunks = [{"id": "offline", "model": "gpt-4o-mini", "choices": [
+                    {"index": 0, "delta": {"role": "assistant", "content": "offline gateway reply"},
+                     "finish_reason": "stop"}
+                ], "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}]
+            for chunk in chunks:
+                self.wfile.write(("data: " + json.dumps(chunk) + "\n\n").encode())
+            self.wfile.write(b"data: [DONE]\n\n")
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    adapter = directory / "gateway_adapter.py"
+    adapter.write_text(GATEWAY_ADAPTER, encoding="utf-8")
+    identities = directory / "identities.json"
+    identities.write_text(json.dumps([{
+        "adapter_instance_id": "installed-cli", "account_id": "account",
+        "sender_id": "sender", "principal_id": "local", "workspace": str(directory),
+    }]), encoding="utf-8")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    env = {key: value for key, value in os.environ.items() if key.upper() in {
+        "PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP", "PATHEXT",
+        "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "HOME",
+    }}
+    env.update({
+        "OPENAI_API_KEY": "offline-key",
+        "OPENAI_BASE_URL": f"http://127.0.0.1:{server.server_port}/v1",
+        "PYTHONIOENCODING": "utf-8",
+    })
+    state = directory / "cli-gateway-state"
+    try:
+        for index in (1, 2):
+            report = directory / f"gateway-deliveries-{index}.json"
+            result = subprocess.run(
+                [str(launcher), "gateway", "--extension", str(adapter),
+                 "--identity-map", str(identities), "--state-dir", str(state),
+                 "--cwd", str(directory), "--provider", "openai", "--model", "gpt-4o-mini"],
+                cwd=directory, capture_output=True, text=True, encoding="utf-8", timeout=30,
+                env={**env, "GATEWAY_TEST_INDEX": str(index), "GATEWAY_TEST_REPORT": str(report)},
+            )
+            assert result.returncode == 0, result.stdout + result.stderr
+            deliveries = json.loads(report.read_text(encoding="utf-8"))
+            assert [d["kind"] for d in deliveries] == ["accepted", "result", "control"]
+            assert deliveries[1]["content"]["output"] == "offline gateway reply"
+            assert len(deliveries[2]["content"]["tasks"]) == index
+        with closing(sqlite3.connect(state / "state.sqlite3")) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM gateway_tasks").fetchone()[0] == 2
+            assert connection.execute("SELECT COUNT(*) FROM gateway_routes").fetchone()[0] == 1
+            assert connection.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+            assert connection.execute(
+                "SELECT COUNT(*) FROM gateway_tasks WHERE status='succeeded'"
+            ).fetchone()[0] == 2
+            assert connection.execute(
+                "SELECT COUNT(*) FROM gateway_outbox WHERE status!='sent'"
+            ).fetchone()[0] == 0
+            assert connection.execute(
+                "SELECT COUNT(*) FROM gateway_attempts WHERE released=0"
+            ).fetchone()[0] == 0
+        assert any("prompt 1" in json.dumps(body) and "prompt 2" in json.dumps(body)
+                   for body in requests)
+        assert not list(directory.rglob("*.jsonl"))
+        return {"launches": 2, "tasks": 2, "sessions": 1, "all_deliveries_sent": True,
+                "duplicate_on_restart": True, "resumed_context": True,
+                "provider": "local HTTP fixture; no real model"}
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def main() -> None:
@@ -160,6 +344,7 @@ def main() -> None:
             )
         for obsolete in ["run-agent", "run-agent-gateway", "run-agent-bench"]:
             assert not launcher.with_name(obsolete + launcher.suffix).exists()
+        report["gateway_cli"] = check_gateway_cli(launcher, Path(directory))
     report["scope"] = (
         "Wheel import, schema, persistence, command routing, application completion and resume; "
         "terminal interactions and real model execution are separate gates."

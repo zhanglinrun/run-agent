@@ -124,6 +124,18 @@ class _ToolQueueItem:
     outcome: _ToolCallOutcome | None = None
 
 
+MessageSource = Callable[[], Sequence[AgentMessage] | Awaitable[Sequence[AgentMessage]]]
+
+
+async def _read_messages(source: MessageSource | None) -> tuple[AgentMessage, ...]:
+    if source is None:
+        return ()
+    result = source()
+    if isawaitable(result):
+        result = await result
+    return tuple(result)
+
+
 async def run_agent_loop(
     *,
     provider: ModelProvider,
@@ -136,7 +148,7 @@ async def run_agent_loop(
     max_turns: int | None = None,
     signal: CancellationToken | None = None,
     session_id: str | None = None,
-    get_steering_messages: Callable[[], Sequence[AgentMessage]] | None = None,
+    get_steering_messages: MessageSource | None = None,
     get_follow_up_messages: Callable[[], Sequence[AgentMessage]] | None = None,
     before_tool_call: BeforeToolCall | None = None,
     after_tool_call: AfterToolCall | None = None,
@@ -184,7 +196,7 @@ async def run_agent_loop(
 
     turn = 1
     first_turn = True
-    pending = tuple(get_steering_messages() if get_steering_messages else ())
+    pending = await _read_messages(get_steering_messages)
 
     while True:
         has_more_tools = True
@@ -315,7 +327,7 @@ async def run_agent_loop(
                     yield AgentEndEvent(messages=new_messages)
                     return
 
-            pending = tuple(get_steering_messages() if get_steering_messages else ())
+            pending = await _read_messages(get_steering_messages)
 
         follow_ups = tuple(get_follow_up_messages() if get_follow_up_messages else ())
         if follow_ups:

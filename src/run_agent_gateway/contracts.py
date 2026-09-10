@@ -29,6 +29,7 @@ class Submission:
     workspace: Path
     lane: Lane = "foreground"
     metadata: dict[str, JSONValue] = field(default_factory=dict)
+    mode: Literal["queue", "steer"] = "queue"
 
 
 @dataclass(frozen=True, slots=True)

@@ -7,17 +7,22 @@ Install the optional dependency with ``pip install -e ".[feishu]"`` and set
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import os
+import threading
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
 from lark_oapi.channel import FeishuChannel, SendOpts
 from lark_oapi.ws import client as ws_client_module
 
 from run_agent_core.types import JSONValue
-from run_agent_gateway import InboundMessage, OutboundMessage
+from run_agent_gateway import AdmissionRejected, BoundedIngress, Delivery, InboundMessage
+from run_agent_gateway.controller import CONTROL_COMMANDS
 
-GATEWAY_EXTENSION_API_VERSION = 1
+GATEWAY_EXTENSION_API_VERSION = 2
 GATEWAY_EXTENSION_NAME = "feishu"
 
 
@@ -69,7 +74,11 @@ class FeishuAdapter:
             domain=domain,
             transport="ws",
         )
-        self._incoming: asyncio.Queue[InboundMessage | None] = asyncio.Queue()
+        self.name = env.get("FEISHU_INSTANCE_ID", "feishu")
+        self._account_id = app_id
+        self._incoming = BoundedIngress()
+        self._ordinary_callbacks = threading.BoundedSemaphore(128)
+        self._control_callbacks = threading.BoundedSemaphore(32)
         self._loop: asyncio.AbstractEventLoop | None = None
         self._closed = False
         self._started = False
@@ -79,7 +88,26 @@ class FeishuAdapter:
         loop = self._loop
         if self._closed or loop is None:
             return
-        loop.call_soon_threadsafe(self._enqueue_message, message)
+        command = str(getattr(message, "content_text", "")).strip().partition(" ")[0]
+        capacity = (
+            self._control_callbacks if command in CONTROL_COMMANDS else self._ordinary_callbacks
+        )
+        if not capacity.acquire(blocking=False):
+            logging.getLogger(__name__).warning(
+                "Feishu ingress full; message not business-accepted"
+            )
+            return
+
+        def enqueue() -> None:
+            try:
+                self._enqueue_message(message)
+            finally:
+                capacity.release()
+
+        try:
+            loop.call_soon_threadsafe(enqueue)
+        except RuntimeError:
+            capacity.release()
 
     def _enqueue_message(self, message: Any) -> None:
         if self._closed:
@@ -90,6 +118,8 @@ class FeishuAdapter:
 
         conversation = message.conversation
         sender = message.sender
+        if getattr(sender, "is_bot", False):
+            return
         content = getattr(message, "content", None)
         metadata: dict[str, JSONValue] = {
             "chat_type": str(getattr(conversation, "chat_type", "unknown")),
@@ -106,15 +136,22 @@ class FeishuAdapter:
         if thread_id:
             metadata["thread_id"] = str(thread_id)
 
-        self._incoming.put_nowait(
-            InboundMessage(
-                id=str(message.id),
-                channel=self.name,
-                conversation_id=str(conversation.chat_id),
-                text=text,
-                metadata=metadata,
+        try:
+            self._incoming.put(
+                InboundMessage(
+                    source_message_id=str(message.id),
+                    account_id=self._account_id,
+                    sender_id=str(getattr(sender, "open_id", "")),
+                    chat_id=str(conversation.chat_id),
+                    thread_id=str(thread_id or ""),
+                    text=text,
+                    metadata=metadata,
+                )
             )
-        )
+        except AdmissionRejected:
+            logging.getLogger(__name__).warning(
+                "Feishu ingress full; message not business-accepted"
+            )
 
     async def messages(self) -> AsyncIterator[InboundMessage]:
         if self._closed:
@@ -124,26 +161,38 @@ class FeishuAdapter:
         self._started = True
         self._loop = asyncio.get_running_loop()
         await self._channel.start_background()
-        while True:
-            message = await self._incoming.get()
-            if message is None:
-                return
+        async for message in self._incoming.messages():
             yield message
 
-    async def send(self, message: OutboundMessage) -> None:
+    async def send(self, delivery: Delivery) -> dict[str, Any]:
         if self._closed:
             raise RuntimeError("Feishu adapter is closed")
-        result = await self._channel.send(
-            message.conversation_id,
-            {"markdown": message.text},
-            SendOpts(
-                reply_to=message.request_id,
-                reply_target_gone="fresh",
-            ),
+        if delivery.destination.get("account_id") != self._account_id:
+            raise ValueError("Delivery belongs to a different Feishu account")
+        body = delivery.content
+        text = str(
+            body.get("output")
+            or body.get("error")
+            or json.dumps(body, ensure_ascii=False, indent=2)
         )
-        if not result.success:
-            detail = result.error or "unknown Feishu API error"
-            raise RuntimeError(f"Feishu message delivery failed: {detail}")
+        chunks = [text[start : start + 1500] for start in range(0, len(text), 1500)]
+        message_ids = []
+        for index, chunk in enumerate(chunks):
+            result = await self._channel.send(
+                delivery.destination["chat_id"],
+                {"text": chunk},
+                SendOpts(
+                    reply_to=delivery.destination.get("source_message_id"),
+                    reply_in_thread=bool(delivery.destination.get("thread_id")),
+                    uuid=str(uuid5(NAMESPACE_URL, f"{delivery.delivery_id}/{index}")),
+                    reply_target_gone="fail",
+                ),
+            )
+            if not result.success:
+                detail = result.error or "unknown Feishu API error"
+                raise RuntimeError(f"Feishu message delivery failed: {detail}")
+            message_ids.append(result.message_id)
+        return {"message_ids": message_ids}
 
     async def close(self) -> None:
         if self._closed:
@@ -151,7 +200,7 @@ class FeishuAdapter:
         self._closed = True
         self._unsubscribe()
         await asyncio.to_thread(self._channel.stop)
-        self._incoming.put_nowait(None)
+        self._incoming.close()
 
 
 def _required(environment: Mapping[str, str], name: str) -> str:

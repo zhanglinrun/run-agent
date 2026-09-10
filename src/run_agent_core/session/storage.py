@@ -49,6 +49,8 @@ class SessionStorage(Protocol):
 
     async def begin_run(self, run_id: str) -> RunToken: ...
 
+    async def run_is_revoked(self) -> bool: ...
+
     async def complete_run(self, outcome: RunOutcome) -> CompletionReceipt: ...
 
     async def record_context(
@@ -100,6 +102,10 @@ class InMemorySessionStorage:
 
     async def get_head(self) -> BranchHead:
         return BranchHead(self.session_id, self.branch_id, self._heads[self.branch_id])
+
+    async def run_is_revoked(self) -> bool:
+        self._check(self.token)
+        return False
 
     async def read_entries(self, *, after_seq: int = 0, limit: int = 1000) -> EntryPage:
         if after_seq < 0 or not 1 <= limit <= 10_000:

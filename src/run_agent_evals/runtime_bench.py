@@ -1,4 +1,4 @@
-"""Evidence-backed deterministic benchmarks for scheduler, tools, and tracing."""
+"""Evidence-backed deterministic microbenchmarks for tools and tracing."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import hashlib
 import json
 import os
 import platform
-from collections import defaultdict
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -36,21 +35,16 @@ from run_agent_core.provider_events import (
 from run_agent_core.tools import AgentTool, AgentToolResult
 from run_agent_core.types import JSONValue
 from run_agent_evals.evidence import repository_evidence
-from run_agent_gateway import TurnRequest, TurnResult, TurnScheduler
 from run_agent_observability import TraceRecorder, percentile
 
-RUNTIME_MANIFEST_SCHEMA = "run-agent.runtime-benchmark.manifest.v1"
-RUNTIME_SAMPLES_SCHEMA = "run-agent.runtime-benchmark.samples.v1"
-RUNTIME_INVENTORY_SCHEMA = "run-agent.runtime-benchmark.inventory.v1"
-RUNTIME_REPORT_SCHEMA = "run-agent.runtime-benchmark.report.v1"
+RUNTIME_MANIFEST_SCHEMA = "run-agent.runtime-benchmark.manifest.v2"
+RUNTIME_SAMPLES_SCHEMA = "run-agent.runtime-benchmark.samples.v2"
+RUNTIME_INVENTORY_SCHEMA = "run-agent.runtime-benchmark.inventory.v2"
+RUNTIME_REPORT_SCHEMA = "run-agent.runtime-benchmark.report.v2"
 
 
 @dataclass(frozen=True, slots=True)
 class RuntimeBenchmarkConfig:
-    scheduler_requests: int = 10_000
-    scheduler_sessions: int = 100
-    foreground_limit: int = 32
-    background_limit: int = 8
     tool_calls: int = 8
     tool_repeats: int = 9
     tool_delay_ms: float = 20.0
@@ -58,10 +52,6 @@ class RuntimeBenchmarkConfig:
 
     def __post_init__(self) -> None:
         positive_ints = {
-            "scheduler_requests": self.scheduler_requests,
-            "scheduler_sessions": self.scheduler_sessions,
-            "foreground_limit": self.foreground_limit,
-            "background_limit": self.background_limit,
             "tool_calls": self.tool_calls,
             "tool_repeats": self.tool_repeats,
             "trace_repeats": self.trace_repeats,
@@ -69,8 +59,6 @@ class RuntimeBenchmarkConfig:
         for name, value in positive_ints.items():
             if value < 1:
                 raise ValueError(f"{name} must be at least 1")
-        if self.scheduler_sessions > self.scheduler_requests:
-            raise ValueError("scheduler_sessions cannot exceed scheduler_requests")
         if self.tool_delay_ms < 0:
             raise ValueError("tool_delay_ms cannot be negative")
 
@@ -84,28 +72,6 @@ class RuntimeBenchmarkReport:
     summary: dict[str, Any]
 
 
-class _SchedulerRunner:
-    def __init__(self) -> None:
-        self.started_by_session: defaultdict[str, list[int]] = defaultdict(list)
-        self.active = 0
-        self.max_active = 0
-
-    async def run(self, request: TurnRequest, cancellation: asyncio.Event) -> TurnResult:
-        sequence = request.metadata.get("sequence")
-        if not isinstance(sequence, int):
-            raise ValueError("benchmark request is missing its sequence")
-        self.started_by_session[request.session_id].append(sequence)
-        self.active += 1
-        self.max_active = max(self.max_active, self.active)
-        try:
-            await asyncio.sleep(0)
-            if cancellation.is_set():
-                return TurnResult.cancelled(request)
-            return TurnResult.succeeded(request, output=str(sequence))
-        finally:
-            self.active -= 1
-
-
 async def run_runtime_benchmarks(
     root: str | Path,
     config: RuntimeBenchmarkConfig | None = None,
@@ -117,12 +83,10 @@ async def run_runtime_benchmarks(
     manifest = _manifest_payload(benchmark_config)
     _freeze_json(benchmark_root / "manifest.json", manifest, label="runtime manifest")
 
-    scheduler = await _scheduler_samples(benchmark_config)
     tools = await _tool_samples(benchmark_config)
     trace, trace_paths = await _trace_samples(benchmark_root, benchmark_config)
     samples: dict[str, Any] = {
         "schema": RUNTIME_SAMPLES_SCHEMA,
-        "scheduler": scheduler,
         "tools": tools,
         "trace": trace,
     }
@@ -168,58 +132,6 @@ def rebuild_runtime_benchmark(root: str | Path) -> RuntimeBenchmarkReport:
         report_digest=str(stored["report_digest"]),
         summary=summary,
     )
-
-
-async def _scheduler_samples(config: RuntimeBenchmarkConfig) -> dict[str, Any]:
-    runner = _SchedulerRunner()
-    scheduler = TurnScheduler(
-        runner,
-        foreground_limit=config.foreground_limit,
-        background_limit=config.background_limit,
-        max_queued=config.scheduler_requests,
-    )
-    requests = [
-        TurnRequest(
-            id=f"turn-{index:05d}",
-            session_id=f"session-{index % config.scheduler_sessions:03d}",
-            content=str(index // config.scheduler_sessions),
-            lane="background" if index % 5 == 0 else "foreground",
-            metadata={"sequence": index // config.scheduler_sessions},
-        )
-        for index in range(config.scheduler_requests)
-    ]
-    started = perf_counter()
-    handles = [scheduler.submit(request) for request in requests]
-    results = await asyncio.gather(*(handle.result() for handle in handles))
-    wall_ms = (perf_counter() - started) * 1000
-    await asyncio.sleep(0)
-    accepted = scheduler.accepted_count
-    completed = scheduler.completed_count
-    await scheduler.shutdown()
-    request_by_id = {request.id: request for request in requests}
-    rows = [
-        {
-            "request_id": result.request_id,
-            "session_id": result.session_id,
-            "sequence": request_by_id[result.request_id].metadata["sequence"],
-            "status": result.status,
-            "queue_latency_ms": result.queue_latency_ms,
-            "end_to_end_latency_ms": max(
-                0.0,
-                result.finished_at - request_by_id[result.request_id].submitted_at,
-            )
-            * 1000,
-        }
-        for result in results
-    ]
-    return {
-        "requests": rows,
-        "started_by_session": dict(sorted(runner.started_by_session.items())),
-        "accepted_count": accepted,
-        "completed_count": completed,
-        "max_active": runner.max_active,
-        "wall_ms": wall_ms,
-    }
 
 
 async def _tool_samples(config: RuntimeBenchmarkConfig) -> dict[str, Any]:
@@ -380,25 +292,6 @@ async def _measure_tool_batch(
 
 
 def _summarize_samples(samples: Mapping[str, Any]) -> dict[str, Any]:
-    scheduler = _mapping(samples, "scheduler")
-    rows = _sequence_of_mappings(scheduler, "requests")
-    ids = [str(row["request_id"]) for row in rows]
-    expected_ids = {f"turn-{index:05d}" for index in range(len(rows))}
-    observed_ids = set(ids)
-    missing = expected_ids - observed_ids
-    duplicates = len(ids) - len(observed_ids)
-    failures = sum(row.get("status") != "succeeded" for row in rows)
-    queue_latencies = [float(row.get("queue_latency_ms") or 0.0) for row in rows]
-    end_to_end = [float(row.get("end_to_end_latency_ms") or 0.0) for row in rows]
-    started_by_session = _mapping(scheduler, "started_by_session")
-    order_violations = sum(
-        list(values) != sorted(values)
-        for values in started_by_session.values()
-        if isinstance(values, list)
-    )
-    request_count = len(rows)
-    wall_ms = float(scheduler.get("wall_ms", 0.0))
-
     tools = _mapping(samples, "tools")
     sequential_rows = _sequence_of_mappings(tools, "sequential")
     parallel_rows = _sequence_of_mappings(tools, "parallel")
@@ -417,27 +310,6 @@ def _summarize_samples(samples: Mapping[str, Any]) -> dict[str, Any]:
     payload_bytes = [int(value) for value in _sequence(trace, "payload_bytes")]
     span_counts = [int(value) for value in _sequence(trace, "span_counts")]
     return {
-        "scheduler": {
-            "requests": request_count,
-            "accepted": int(scheduler.get("accepted_count", 0)),
-            "completed": int(scheduler.get("completed_count", 0)),
-            "missing": len(missing),
-            "duplicates": duplicates,
-            "failed": failures,
-            "session_order_violations": order_violations,
-            "acceptance_rate": (
-                (request_count - failures - len(missing) - duplicates) / request_count
-                if request_count
-                else 0.0
-            ),
-            "max_active": int(scheduler.get("max_active", 0)),
-            "wall_ms": wall_ms,
-            "throughput_requests_per_second": request_count / (wall_ms / 1000) if wall_ms else 0.0,
-            "queue_p50_ms": percentile(queue_latencies, 0.50),
-            "queue_p95_ms": percentile(queue_latencies, 0.95),
-            "end_to_end_p50_ms": percentile(end_to_end, 0.50),
-            "end_to_end_p95_ms": percentile(end_to_end, 0.95),
-        },
         "tools": {
             "kind": str(tools.get("kind", "unknown")),
             "calls_per_batch": int(tools.get("calls_per_batch", 0)),
@@ -485,7 +357,6 @@ def _manifest_payload(config: RuntimeBenchmarkConfig) -> dict[str, Any]:
         "cpu_count": os.cpu_count(),
         "config": asdict(config),
         "methodology": {
-            "scheduler": "production TurnScheduler with an asyncio-yielding deterministic runner",
             "tools": "production agent loop with a synthetic fixed-delay async read tool",
             "trace": "SQLite TraceRecorder including durable flush, paired with an untraced loop",
         },
