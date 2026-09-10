@@ -458,8 +458,15 @@
     {
       "id": "P5-2",
       "requirement": "注册隔离复盘 worker，限定预算、证据和候选写入能力。",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "extensions/experience/worker.py",
+        "extensions/experience/review.py",
+        "tests/redesign/test_review_worker.py::test_the_budget_defaults_to_four_requests_and_counts_retries",
+        "tests/redesign/test_review_worker.py::test_only_one_review_runs_per_principal",
+        "tests/redesign/test_review_pipeline.py::test_the_review_worker_consumes_a_queued_request_exactly_once",
+        "tests/redesign/test_task_origin_kind.py::test_the_origin_kind_survives_storage_and_is_queryable"
+      ]
     },
     {
       "id": "P5-3",
@@ -615,9 +622,11 @@
       "id": "A05",
       "scenario": "扩展关闭/退出",
       "invariant": "任务取消、预算和资源收敛结果可查",
-      "status": "in_progress",
+      "status": "complete",
       "evidence": [
-        "tests/redesign/test_acceptance_extensions.py::test_extension_shutdown_reports_concrete_convergence"
+        "tests/redesign/test_task_budget.py::test_a_closed_extension_still_reports_status_budget_and_convergence",
+        "tests/redesign/test_acceptance_extensions.py::test_extension_shutdown_reports_concrete_convergence",
+        "src/run_agent_coding/host/contracts.py"
       ]
     },
     {

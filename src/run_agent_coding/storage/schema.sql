@@ -206,6 +206,7 @@ CREATE TABLE extension_tasks (
     snapshot_id TEXT,
     origin_kind TEXT NOT NULL DEFAULT 'user'
         CHECK(origin_kind IN ('user','review','evaluation','naming')),
+    budget_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(budget_json)),
     status TEXT NOT NULL CHECK(status IN ('queued','running','cancelling','cancelled','succeeded','failed','interrupted')),
     result_json TEXT CHECK(result_json IS NULL OR json_valid(result_json)),
     error TEXT,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from run_agent_coding.host.evaluation import EvaluationService
 from run_agent_core.session.contracts import AppendReceipt, RunToken
@@ -152,6 +152,35 @@ class HostServicesRegistry(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class TaskBudget:
+    """Ceilings a managed task declares; the host records it and it stays queryable.
+
+    A non-positive token ceiling means uncapped, so a caller has to switch the cap
+    off explicitly rather than get an unbounded task by omission.
+    """
+
+    max_requests: int = 4
+    max_tokens: int = 20_000
+
+    @property
+    def unlimited_tokens(self) -> bool:
+        """True when the caller explicitly switched the token ceiling off."""
+        return self.max_tokens <= 0
+
+    def as_json(self) -> dict[str, int]:
+        """The persisted form, so the declaration survives a reopen."""
+        return {"max_requests": self.max_requests, "max_tokens": self.max_tokens}
+
+    @classmethod
+    def from_json(cls, payload: Mapping[str, Any]) -> TaskBudget:
+        """Read a persisted declaration back, falling back to the defaults."""
+        return cls(
+            max_requests=int(payload.get("max_requests") or 4),
+            max_tokens=int(payload.get("max_tokens") or 0),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class TaskSpec:
     handler: str
     payload: JSONValue
@@ -159,6 +188,7 @@ class TaskSpec:
     # The host, not the extension, decides whether this is ordinary user work or
     # an auxiliary task. Auxiliary tasks are excluded from triggering reviews.
     origin_kind: str = "user"
+    budget: TaskBudget = TaskBudget()
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,6 +199,7 @@ class TaskInfo:
     result: JSONValue = None
     error: str | None = None
     origin_kind: str = "user"
+    budget: TaskBudget = TaskBudget()
 
 
 @dataclass(frozen=True, slots=True)

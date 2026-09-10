@@ -14,6 +14,7 @@ from uuid import uuid4
 from run_agent_coding.host.contracts import (
     ExtensionToken,
     HostServices,
+    TaskBudget,
     TaskContext,
     TaskHandler,
     TaskInfo,
@@ -77,7 +78,13 @@ class LocalTaskManager:
             raise TaskRejected("Task handler or payload exceeds admission limits")
         if spec.origin_kind not in TASK_ORIGIN_KINDS:
             raise TaskRejected(f"Unknown task origin kind: {spec.origin_kind}")
-        frozen = TaskSpec(spec.handler, json.loads(payload), spec.snapshot_id, spec.origin_kind)
+        frozen = TaskSpec(
+            spec.handler,
+            json.loads(payload),
+            spec.snapshot_id,
+            spec.origin_kind,
+            spec.budget,
+        )
         task_id = uuid4().hex
 
         async def admit() -> None:
@@ -100,7 +107,7 @@ class LocalTaskManager:
                             )
                     connection.execute(
                         "INSERT INTO extension_tasks "
-                        "VALUES (?,?,?,?,?,?,?,?,?,'queued',NULL,NULL,?,NULL)",
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,'queued',NULL,NULL,?,NULL)",
                         (
                             task_id,
                             token.session_id,
@@ -111,6 +118,7 @@ class LocalTaskManager:
                             payload,
                             frozen.snapshot_id,
                             frozen.origin_kind,
+                            canonical_json(frozen.budget.as_json()),
                             time(),
                         ),
                     )
@@ -215,7 +223,8 @@ class LocalTaskManager:
     async def status(self, token: ExtensionToken, task_id: str) -> TaskInfo:
         def read(connection: sqlite3.Connection) -> TaskInfo:
             row = connection.execute(
-                "SELECT handler,status,result_json,error,origin_kind FROM extension_tasks "
+                "SELECT handler,status,result_json,error,origin_kind,budget_json "
+                "FROM extension_tasks "
                 "WHERE task_id=? AND session_id=? AND source_id=?",
                 (task_id, token.session_id, token.source_id),
             ).fetchone()
@@ -228,6 +237,7 @@ class LocalTaskManager:
                 json.loads(row[2]) if row[2] else None,
                 row[3],
                 row[4],
+                TaskBudget.from_json(json.loads(row[5])),
             )
 
         return await self.database.run(read)
