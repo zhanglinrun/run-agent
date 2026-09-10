@@ -8,8 +8,32 @@ T-024 的 `validationSteps` 写着「拆分仍 >200 行的文件（含 `src/run_
 
 ```
 files over 200 LOC: 79
-total excess lines: 25,830
+ total excess lines: 25,830
+
+functions total: 2981
+functions over 30 LOC: 370  (12.4%)
 ```
+
+**函数级违约比文件级更能说明问题。** 下面这十二个尤其突出：
+
+| LOC | 函数 |
+|---|---|
+| **302** | `src/run_agent_coding/session.py:804 _load` |
+| 260 | `src/run_agent_ai/anthropic.py:111 _stream_provider_events` |
+| 248 | `src/run_agent_coding/session.py:2415 reload` |
+| 247 | `src/run_agent_ai/anthropic.py:122 iterator` |
+| 230 | `src/run_agent_coding/session.py:3225 prompt` |
+| 226 | `src/run_agent_gateway/repository.py:294 admit` |
+| 211 | `extensions/experience/extension.py:57 setup` |
+| 205 | `src/run_agent_core/loop.py:139 run_agent_loop` |
+| 198 | `src/run_agent_coding/tools.py:190 create_read_tool_definition` |
+| 188 | `scripts/validate_distribution.py:242 check_gateway_cli` |
+| 180 | `src/run_agent_gateway/controller.py:30 handle` |
+| 174 | `src/run_agent_ai/openai_codex.py:504 _codex_provider_events` |
+
+注意其中几个就在**本轮动过的范围内**：`extensions/experience/extension.py:setup`
+（211 行）与 `repository.py:admit`（226 行）属于 P5 的交付物 ——
+它们的文件大小（268/238）掩盖了真正的问题在函数粒度上。
 
 ### 最大的 15 个
 
@@ -48,6 +72,7 @@ total excess lines: 25,830
 
 | 批次 | 对象 | 理由 |
 |---|---|---|
+| 0 | **先拆函数而非文件** | 370 个超长函数里，多个在已合规文件内；先抽小函数能同时降低文件体积 |
 | 1 | `catalog_loader`、`models_dev*`、`prompt_templates`、`image_processing` | 纯数据/格式转换，无运行时耦合 |
 | 2 | `run_agent_ai/*`（各 provider 实现 500–1369 行） | 边界清晰，可抽出共享的 HTTP/流式层 |
 | 3 | `run_agent_gateway/*` | 有完整测试套件覆盖（repository/gateway/controller） |
