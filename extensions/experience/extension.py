@@ -29,6 +29,7 @@ from .context import select_context
 from .models import AssetKind, Proposal, Scope, asset_key
 from .projection import checkout, projection_path, read_working_copy, verify_identity
 from .repository import ExperienceRepository
+from .review import ReviewCoordinator
 
 USAGE = (
     "/experience list|search <project|user> [query]; "
@@ -62,6 +63,8 @@ def setup(api: ExtensionAPI) -> None:
 
     async def start(event: object, context: ExtensionContext) -> None:
         await repository().initialize()
+
+    coordinator = ReviewCoordinator(api)
 
     async def command(args: str, context: ExtensionCommandContext) -> str:
         words = shlex.split(args)
@@ -231,6 +234,7 @@ def setup(api: ExtensionAPI) -> None:
 
     api.register_resource_provider("experience", select_context, version="1")
     api.on("session_start", cast(ExtensionHandler, start))
+    api.on("agent_event", cast(ExtensionHandler, coordinator.settled))
     api.register_command("experience", command, description="Review and publish experience assets.")
     api.register_tool(
         AgentTool(

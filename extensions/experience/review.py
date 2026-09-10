@@ -12,7 +12,12 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from run_agent_coding.events import AgentSettledEvent
+from run_agent_coding.extensions import ExtensionAPI, ExtensionContext
+from run_agent_coding.host.contracts import StateChange
+
 AUXILIARY_ORIGINS = frozenset({"review", "evaluation", "naming"})
+REVIEW_REQUEST_PREFIX = "review-request:"
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,3 +98,52 @@ class ReviewTrigger:
         if self._last_admitted_at is None:
             return False
         return self._clock() - self._last_admitted_at < self._policy.cooldown_seconds
+
+
+class ReviewCoordinator:
+    """Turn an admitted durable completion into one durable review request.
+
+    The review request is the hand-off to the isolated worker: it is written to
+    the extension's own namespace, so a later worker can pick it up without the
+    completion path waiting for a model call.
+    """
+
+    def __init__(self, api: ExtensionAPI, trigger: ReviewTrigger | None = None) -> None:
+        self._api = api
+        self._trigger = trigger or ReviewTrigger()
+
+    async def settled(self, event: object, context: ExtensionContext) -> None:
+        """Record at most one review request for an admitted completion."""
+        del context
+        if not isinstance(event, AgentSettledEvent):
+            return
+        decision = self._trigger.consider(self._request(event))
+        if not decision.admitted:
+            return
+        key = f"{REVIEW_REQUEST_PREFIX}{event.run_id}"
+        state = self._api.context.services.scope("session").state
+        if await state.get(key) is not None:
+            return
+        await state.compare_and_set(
+            StateChange(
+                key,
+                0,
+                {"run_id": event.run_id, "key": decision.key, "status": event.status},
+            )
+        )
+
+    def _request(self, event: AgentSettledEvent) -> ReviewRequest:
+        """Build the trigger input from the receipt alone.
+
+        Turn and correction counts need a richer event than the receipt carries,
+        so today only a failed run reaches the trigger. Wire those two signals in
+        before claiming the \"complex task\" branch works end to end.
+        """
+        return ReviewRequest(
+            source_run_id=event.run_id,
+            session_id=event.session_id,
+            status=event.status,
+            assistant_turns=1,
+            corrections=0,
+            failures=0 if event.status == "succeeded" else 1,
+        )
