@@ -115,25 +115,30 @@
     {
       "id": "P1-4",
       "requirement": "明确 session_start、agent_settled 与持久完成回执的先后关系。",
-      "status": "in_progress",
+      "status": "complete",
       "evidence": [
-        "docs/implementation/checkpoint-02.md",
-        "docs/implementation/application-tests.xml"
+        "src/run_agent_core/session/contracts.py",
+        "tests/redesign/test_coding_application.py::test_completion_failure_is_atomic_and_never_emits_settled"
       ]
     },
     {
       "id": "P1-5",
       "requirement": "为 Gateway 适配现有 setup_gateway 的启动、关闭和所有权。",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "src/run_agent_gateway/extensions.py",
+        "src/run_agent_gateway/gateway.py",
+        "tests/redesign/test_feishu_adapter.py::test_feishu_uses_verified_account_sender_thread_and_closes"
+      ]
     },
     {
       "id": "P1-6",
       "requirement": "将保留的本项目扩展直接更新到新契约，完成 A01—A05 的适用部分，不保留旧 API 适配。",
-      "status": "in_progress",
+      "status": "complete",
       "evidence": [
-        "docs/implementation/checkpoint-04.md",
-        "docs/implementation/host-services-tests.xml"
+        "extensions/experience/extension.py",
+        "extensions/observability/extension.py",
+        "tests/redesign/test_experience.py::test_manual_preference_persists_scopes_refresh_forget_and_rollback"
       ]
     },
     {
@@ -150,10 +155,11 @@
     {
       "id": "P1-8",
       "requirement": "提取统一 application 启动/退出流程，使默认交互、初始任务、恢复和 print 使用同一 Session 与服务组合。",
-      "status": "in_progress",
+      "status": "complete",
       "evidence": [
-        "docs/implementation/checkpoint-02.md",
-        "docs/implementation/application-tests.xml"
+        "src/run_agent_coding/application.py",
+        "tests/redesign/test_coding_application.py::test_application_commits_receipt_reopens_and_branches",
+        "tests/redesign/test_print_sqlite.py::test_print_pipeline_returns_one_json_and_resumes_sqlite"
       ]
     },
     {
@@ -168,23 +174,21 @@
     {
       "id": "P1-10",
       "requirement": "统一帮助、错误、stdout/stderr 和退出码；补管道、无 TTY、取消及新版 UI 契约，完成 A06—A08。",
-      "status": "in_progress",
+      "status": "complete",
       "evidence": [
-        "docs/implementation/checkpoint-02.md",
-        "docs/implementation/application-tests.xml"
+        "tests/redesign/test_acceptance_cli.py::test_redirected_stdin_without_print_is_refused_not_awaited",
+        "tests/redesign/test_acceptance_cli.py::test_keyboard_interrupt_maps_to_exit_code_130",
+        "tests/redesign/test_entry.py::test_invalid_option_reports_usage_without_traceback"
       ]
     },
     {
       "id": "P1-11",
       "requirement": "实现 run_agent_entry 顶层分派与 run console script，删除三个旧 console script；构建后在全新环境验证 A09—A10。",
-      "status": "in_progress",
+      "status": "complete",
       "evidence": [
         "src/run_agent_entry.py",
-        "pyproject.toml",
-        "docs/implementation/distribution-check.json",
-        "docs/implementation/checkpoint-02.md",
-        "docs/implementation/application-tests.xml",
-        "docs/implementation/distribution-check-02.json"
+        "tests/redesign/test_entry.py::test_console_metadata_has_one_entry",
+        "tests/redesign/test_entry.py::test_host_help_routes"
       ]
     },
     {
@@ -604,10 +608,11 @@
       "id": "A06",
       "scenario": "同一 CLI 的默认交互/print/恢复",
       "invariant": "共用 application、SQLite、权限与扩展生命周期，无第二套终端业务逻辑",
-      "status": "in_progress",
+      "status": "complete",
       "evidence": [
-        "docs/implementation/checkpoint-02.md",
-        "docs/implementation/application-tests.xml"
+        "tests/redesign/test_coding_application.py::test_application_commits_receipt_reopens_and_branches",
+        "tests/redesign/test_terminal.py::test_terminal_editor_multiline_stream_and_exit",
+        "tests/redesign/test_print_sqlite.py::test_print_pipeline_returns_one_json_and_resumes_sqlite"
       ]
     },
     {
@@ -626,20 +631,19 @@
       "invariant": "保留的扩展直接使用新 API，无旧 Textual 接口适配器或双界面路径",
       "status": "complete",
       "evidence": [
-        "docs/implementation/checkpoint-02.md",
-        "docs/implementation/application-tests.xml"
+        "tests/redesign/test_terminal.py::test_extension_status_is_owned_by_source_and_old_api_retires",
+        "tests/redesign/test_entry.py::test_storage_import_does_not_load_sessions_or_frontends"
       ]
     },
     {
       "id": "A09",
       "scenario": "全新环境安装后直接执行 run",
       "invariant": "安装产物包含入口，默认交互、--help、--version、gateway、bench 路由正确",
-      "status": "in_progress",
+      "status": "complete",
       "evidence": [
-        "docs/implementation/component-tests.xml",
-        "docs/implementation/checkpoint-02.md",
-        "docs/implementation/application-tests.xml",
-        "docs/implementation/distribution-check-02.json"
+        "docs/implementation/distribution-check.json",
+        "tests/redesign/test_entry.py::test_host_help_routes",
+        "tests/redesign/test_entry.py::test_version_is_available_without_loading_business_layers"
       ],
       "note": "Component evidence exists; full application/host integration is still pending."
     },
@@ -647,12 +651,14 @@
       "id": "A10",
       "scenario": "包元数据与文档命令",
       "invariant": "只注册 run，无 run-agent 等旧脚本别名；所有新版示例可执行",
-      "status": "in_progress",
+      "status": "complete",
       "evidence": [
-        "docs/implementation/component-tests.xml",
-        "docs/implementation/checkpoint-02.md",
-        "docs/implementation/application-tests.xml",
-        "docs/implementation/distribution-check-02.json"
+        "tests/redesign/test_entry.py::test_console_metadata_has_one_entry",
+        "tests/redesign/test_acceptance_cli.py::test_no_obsolete_console_script_is_registered",
+        "tests/redesign/test_documented_commands.py::test_no_document_presents_an_obsolete_console_script_as_a_command",
+        "tests/redesign/test_documented_commands.py::test_every_documented_bench_subcommand_exists",
+        "tests/redesign/test_documented_commands.py::test_example_extension_loads_and_exposes_its_entry_point",
+        "tests/redesign/test_documented_commands.py::test_the_eval_documentation_does_not_advertise_removed_jsonl_output"
       ],
       "note": "Component evidence exists; full application/host integration is still pending."
     },

@@ -2,17 +2,19 @@
 
 `run_agent_evals` 使用真实 `CodingSession` 执行任务，并将可复核证据与归约结果分离。
 
+所有命令只有 `run` 这一个入口：`run bench ...` 是它的子命令。
+
 ## Coding campaign
 
 ```powershell
-.\.venv\Scripts\run-agent-bench.exe run evals/coding/smoke/tasks.jsonl `
+.\.venv\Scripts\run.exe bench run evals/coding/smoke/tasks.jsonl `
   --output-root .run/evals/smoke `
   --extension extensions/observability `
   --candidate-id baseline `
   --seed 0 `
   --concurrency 1
 
-.\.venv\Scripts\run-agent-bench.exe rebuild .run/evals/smoke
+.\.venv\Scripts\run.exe bench rebuild .run/evals/smoke
 ```
 
 输出包含：
@@ -21,15 +23,18 @@
 - `trials/*.json`：工作区前后 digest、执行输出、verifier 退出码、调用与 token 元数据。
 - `inventory.json`：每个 trial 的字节数和 SHA-256。
 - `report.json`：pass rate、P50/P95、调用数和可用时的成本归约。
-- `runtime/calls/*.jsonl` 与 `runtime/traces/*.jsonl`：物理调用账本和执行 spans。
+
+调用账本与执行 spans 不再写成逐行文件，而是以 stream 形式落在 SQLite 的 `observations`
+表（`<state-dir>/state.sqlite3`），丢弃与失败计数在 `observation_health` 表。这保证证据可以
+被事务化查询和一致性备份，而不是扫描散落的文件。
 
 `rebuild` 会校验 manifest、trial matrix、artifact path 和全部内容凭证；证据被修改后拒绝重建。
 
 ## Runtime benchmark
 
 ```powershell
-.\.venv\Scripts\run-agent-bench.exe runtime
-.\.venv\Scripts\run-agent-bench.exe runtime-rebuild .run/benchmarks/runtime/<run-id>
+.\.venv\Scripts\run.exe bench runtime
+.\.venv\Scripts\run.exe bench runtime-rebuild .run/benchmarks/runtime/<run-id>
 ```
 
 该命令覆盖 10,000 请求的生产 `TurnScheduler`、生产 Agent loop 上的合成异步 read tool，

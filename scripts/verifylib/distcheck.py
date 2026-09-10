@@ -19,9 +19,15 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def work_paths(root: Path = ROOT) -> tuple[Path, Path, Path]:
-    """Return the (dist, env, report) locations used by the distribution steps."""
+    """Return the (dist, env, report) locations used by the distribution steps.
+
+    The report is written into the tracked evidence directory, matching the
+    existing docs/implementation/*.xml convention, so the clean-installation
+    result is durable evidence rather than throwaway build output.
+    """
     work = root / ".run" / "verify"
-    return work / "dist", work / "env", work / "distribution-check.json"
+    report = root / "docs" / "implementation" / "distribution-check.json"
+    return work / "dist", work / "env", report
 
 
 def bin_dir(env: Path) -> Path:
