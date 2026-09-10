@@ -160,14 +160,11 @@ async def test_cancel_during_spawn_waits_for_ownership_and_cleanup(tmp_path, com
     task = asyncio.create_task(supervisor.run(command(), cwd=tmp_path))
     try:
         assert await asyncio.to_thread(started.wait, 5)
-        pid = await child_started(marker) if os.name != "nt" else None
         task.cancel()
         proceed.set()
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(task, 8)
-        assert (pid is None or not alive(pid)) and supervisor.active_count == 0
-        if os.name == "nt":
-            assert not marker.exists()
+        assert supervisor.active_count == 0 and not marker.exists()
     finally:
         proceed.set()
         await supervisor.aclose()

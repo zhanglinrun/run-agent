@@ -50,6 +50,29 @@ class _Accounting(ctypes.Structure):
     ]
 
 
+class _StartupInfo(ctypes.Structure):
+    _fields_ = [
+        ("cb", wintypes.DWORD), ("lpReserved", wintypes.LPWSTR),
+        ("lpDesktop", wintypes.LPWSTR), ("lpTitle", wintypes.LPWSTR),
+        *[(name, wintypes.DWORD) for name in (
+            "dwX", "dwY", "dwXSize", "dwYSize", "dwXCountChars", "dwYCountChars",
+            "dwFillAttribute", "dwFlags",
+        )],
+        ("wShowWindow", wintypes.WORD), ("cbReserved2", wintypes.WORD),
+        ("lpReserved2", ctypes.c_void_p), ("hStdInput", wintypes.HANDLE),
+        ("hStdOutput", wintypes.HANDLE), ("hStdError", wintypes.HANDLE),
+    ]
+
+
+class _StartupInfoEx(ctypes.Structure):
+    _fields_ = [("StartupInfo", _StartupInfo), ("lpAttributeList", ctypes.c_void_p)]
+
+
+class _ProcessInfo(ctypes.Structure):
+    _fields_ = [("hProcess", wintypes.HANDLE), ("hThread", wintypes.HANDLE),
+                ("dwProcessId", wintypes.DWORD), ("dwThreadId", wintypes.DWORD)]
+
+
 class WindowsJobProcess:
     kind = "windows_job"
 
@@ -62,7 +85,16 @@ class WindowsJobProcess:
             ("CreateJobObjectW", wintypes.HANDLE, [ctypes.c_void_p, wintypes.LPCWSTR]),
             ("SetInformationJobObject", wintypes.BOOL,
              [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]),
-            ("AssignProcessToJobObject", wintypes.BOOL, [wintypes.HANDLE, wintypes.HANDLE]),
+            ("InitializeProcThreadAttributeList", wintypes.BOOL,
+             [ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p]),
+            ("UpdateProcThreadAttribute", wintypes.BOOL,
+             [ctypes.c_void_p, wintypes.DWORD, ctypes.c_size_t, ctypes.c_void_p,
+              ctypes.c_size_t, ctypes.c_void_p, ctypes.c_void_p]),
+            ("DeleteProcThreadAttributeList", None, [ctypes.c_void_p]),
+            ("CreateProcessW", wintypes.BOOL,
+             [wintypes.LPCWSTR, wintypes.LPWSTR, ctypes.c_void_p, ctypes.c_void_p,
+              wintypes.BOOL, wintypes.DWORD, ctypes.c_void_p, wintypes.LPCWSTR,
+              ctypes.c_void_p, ctypes.c_void_p]),
             ("QueryInformationJobObject", wintypes.BOOL,
              [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p]),
             ("TerminateJobObject", wintypes.BOOL, [wintypes.HANDLE, wintypes.UINT]),
@@ -84,9 +116,6 @@ class WindowsJobProcess:
                 self._job, 9, ctypes.byref(limits), ctypes.sizeof(limits)
             ))
             msvcrt = importlib.import_module("msvcrt")
-            startup = subprocess.STARTUPINFO()
-            startup.dwFlags = subprocess.STARTF_USESTDHANDLES | subprocess.STARTF_USESHOWWINDOW
-            startup.wShowWindow = subprocess.SW_HIDE
             with open(os.devnull, "rb") as input_file:
                 handles = []
                 try:
@@ -96,27 +125,57 @@ class WindowsJobProcess:
                             current, msvcrt.get_osfhandle(file.fileno()), current,
                             0, True, self._winapi.DUPLICATE_SAME_ACCESS,
                         ))
-                    startup.hStdInput = handles[0]
-                    startup.hStdOutput = startup.hStdError = handles[1]
-                    startup.lpAttributeList = {"handle_list": handles}
                     shell = os.environ.get("COMSPEC") or str(
                         Path(os.environ["SYSTEMROOT"]) / "System32" / "cmd.exe"
                     )
-                    self._process, self._thread, self.pid, _ = self._winapi.CreateProcess(
-                        shell, f'{subprocess.list2cmdline([shell])} /d /s /c "{command}"',
-                        None, None, True, 0x4 | subprocess.CREATE_NO_WINDOW,
-                        None, str(cwd), startup,
-                    )
+                    self._create(shell, command, cwd, handles)
                 finally:
                     for handle in handles:
                         self._winapi.CloseHandle(handle)
-            self._check(self._api.AssignProcessToJobObject(self._job, self._process))
         except BaseException:
             if self._process is not None:
                 self._winapi.TerminateProcess(self._process, 1)
                 self._winapi.WaitForSingleObject(self._process, 5000)
             self.close()
             raise
+
+    def _create(self, shell: str, command: str, cwd: Path, handles: list[int]) -> None:
+        size = ctypes.c_size_t()
+        self._api.InitializeProcThreadAttributeList(None, 2, 0, ctypes.byref(size))
+        attributes = ctypes.create_string_buffer(size.value)
+        self._check(self._api.InitializeProcThreadAttributeList(
+            attributes, 2, 0, ctypes.byref(size)
+        ))
+        try:
+            inherited = (wintypes.HANDLE * len(handles))(*handles)
+            jobs = (wintypes.HANDLE * 1)(self._job)
+            # JOB_LIST makes membership atomic with creation. There is no unowned
+            # suspended process interval if the parent dies inside CreateProcessW.
+            for key, values in ((0x20002, inherited), (0x2000D, jobs)):
+                self._check(self._api.UpdateProcThreadAttribute(
+                    attributes, 0, key, values, ctypes.sizeof(values), None, None,
+                ))
+            startup = _StartupInfoEx()
+            startup.StartupInfo.cb = ctypes.sizeof(startup)
+            startup.StartupInfo.dwFlags = (
+                subprocess.STARTF_USESTDHANDLES | subprocess.STARTF_USESHOWWINDOW
+            )
+            startup.StartupInfo.wShowWindow = subprocess.SW_HIDE
+            startup.StartupInfo.hStdInput = handles[0]
+            startup.StartupInfo.hStdOutput = startup.StartupInfo.hStdError = handles[1]
+            startup.lpAttributeList = ctypes.cast(attributes, ctypes.c_void_p)
+            info = _ProcessInfo()
+            line = ctypes.create_unicode_buffer(
+                f'{subprocess.list2cmdline([shell])} /d /s /c "{command}"'
+            )
+            self._check(self._api.CreateProcessW(
+                shell, line, None, None, True,
+                0x4 | 0x80000 | subprocess.CREATE_NO_WINDOW,
+                None, str(cwd), ctypes.byref(startup), ctypes.byref(info),
+            ))
+            self._process, self._thread, self.pid = info.hProcess, info.hThread, info.dwProcessId
+        finally:
+            self._api.DeleteProcThreadAttributeList(attributes)
 
     def resume(self) -> None:
         if self._thread is None:

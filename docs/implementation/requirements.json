@@ -299,7 +299,7 @@
       "id": "P3-7",
       "requirement": "实现启动恢复、owner 资格、未知副作用状态和优雅退出。",
       "status": "in_progress",
-      "evidence": ["docs/implementation/checkpoint-07.md", "docs/implementation/gateway-repository-tests.xml"]
+      "evidence": ["docs/implementation/checkpoint-07.md", "docs/implementation/gateway-repository-tests.xml", "docs/implementation/checkpoint-12.md", "docs/implementation/recovery-tests.xml", "docs/implementation/recovery-linux-tests.xml", "docs/implementation/distribution-check-12.json"]
     },
     {
       "id": "P3-8",

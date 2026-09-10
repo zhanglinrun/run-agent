@@ -448,6 +448,13 @@ class SqliteSessionRepository:
             ).fetchone()
             if row is None:
                 raise KeyError(f"Unknown session: {session_id}")
+            if row["recovery_required"] or connection.execute(
+                "SELECT 1 FROM managed_processes WHERE session_id=? "
+                "AND status IN ('launching','running') LIMIT 1", (session_id,),
+            ).fetchone():
+                raise SessionConflict(
+                    "Session requires process/workspace recovery before reopening"
+                )
             now = self.clock()
             if row["owner_active"] and row["owner_expires_at"] > now and not takeover:
                 raise SessionConflict(f"Session already has an active owner: {session_id}")

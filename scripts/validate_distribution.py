@@ -346,7 +346,8 @@ def main() -> None:
         assert Path(report["entry_module"]).is_relative_to(python.parent.parent)
         report["launcher"] = str(launcher)
         report["commands"] = []
-        for argv in [["--version"], ["--help"], ["gateway", "--help"], ["bench", "--help"]]:
+        for argv in [["--version"], ["--help"], ["gateway", "--help"],
+                     ["gateway", "recover", "--help"], ["bench", "--help"]]:
             result = subprocess.run(
                 [str(launcher), *argv],
                 cwd=directory,
@@ -367,6 +368,12 @@ def main() -> None:
         for obsolete in ["run-agent", "run-agent-gateway", "run-agent-bench"]:
             assert not launcher.with_name(obsolete + launcher.suffix).exists()
         report["gateway_cli"] = check_gateway_cli(launcher, Path(directory))
+        inspection = subprocess.run(
+            [str(launcher), "gateway", "recover", "--state-dir", str(Path(directory) / "gateway")],
+            cwd=directory, capture_output=True, text=True, encoding="utf-8", timeout=30, check=True,
+        )
+        assert json.loads(inspection.stdout) == []
+        report["gateway_recovery_inspection"] = True
     report["scope"] = (
         "Wheel import, schema, persistence, command routing, application completion and resume; "
         "terminal interactions and real model execution are separate gates."

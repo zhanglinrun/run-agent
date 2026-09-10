@@ -39,3 +39,7 @@ class GatewayProcessLock:
         if self._handle is not None:
             self._handle.close()
             self._handle = None
+
+    @property
+    def held(self) -> bool:
+        return self._handle is not None

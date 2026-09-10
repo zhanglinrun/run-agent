@@ -20,6 +20,22 @@ CREATE TABLE gateway_routes (
     preparing INTEGER NOT NULL DEFAULT 0 CHECK(preparing>=0)
 );
 
+CREATE TABLE gateway_hosts (
+    owner_id TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    process_json TEXT NOT NULL CHECK(json_valid(process_json)),
+    PRIMARY KEY(owner_id,generation)
+);
+
+CREATE TABLE gateway_recovery (
+    run_id TEXT PRIMARY KEY REFERENCES gateway_attempts(run_id),
+    report_json TEXT NOT NULL CHECK(json_valid(report_json)),
+    checked_at REAL NOT NULL,
+    reviewed_at REAL,
+    review_note TEXT,
+    resolved INTEGER NOT NULL DEFAULT 0 CHECK(resolved IN (0,1))
+);
+
 CREATE TABLE gateway_workspaces (
     workspace_id TEXT PRIMARY KEY,
     path TEXT NOT NULL UNIQUE,

@@ -22,6 +22,7 @@ CREATE TABLE sessions (
     active_run_id TEXT,
     owner_expires_at REAL,
     owner_active INTEGER NOT NULL DEFAULT 0 CHECK(owner_active IN (0, 1)),
+    recovery_required INTEGER NOT NULL DEFAULT 0 CHECK(recovery_required IN (0, 1)),
     active_branch_id TEXT NOT NULL DEFAULT 'main'
 );
 CREATE INDEX sessions_project_updated ON sessions(project_id, updated_at DESC);

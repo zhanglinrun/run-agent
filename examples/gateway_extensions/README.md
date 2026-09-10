@@ -100,9 +100,22 @@ Preparation is bounded to two requests and control commands continue while it ru
 Stop/new invalidate unfinished preparation; shutdown drains preparation reservations.
 Completed message deduplication does not consume preparation capacity.
 
-Crash recovery currently retains unknown
-executions and quarantines their workspaces; automatic process reconciliation and
-the operator recovery command are still under implementation.
+On restart, committed outcomes are retained and their Outbox deliveries resume. The
+host verifies native process identity before releasing orphaned resources. Interrupted
+executions remain `outcome_unknown` and quarantined until local review:
+
+```powershell
+run gateway recover --state-dir C:\run-state
+run gateway recover --state-dir C:\run-state --terminate <run_id>
+run gateway recover --state-dir C:\run-state --release <run_id> --note "Reviewed command outputs"
+```
+
+Inspection can run while the Gateway is live. Termination/release require its exclusive
+process lock and reject a still-live previous host. Windows uses named Job Objects;
+Linux verifies group members and uses pidfds to avoid signalling a reused PID. A review
+releases resources but does not turn an unknown external effect into success or rerun
+the task. Restore packages remain guarded until backup relocation/reconciliation is
+implemented; they cannot silently restart old deliveries.
 
 ## Adapter contract
 
@@ -112,5 +125,6 @@ identity and passes account, sender, chat, thread and source-message IDs. The ho
 maps these to an internal principal and route. `BoundedIngress` and
 `QueueGatewayAdapter` provide the same contract for local integration tests.
 
-The Gateway uses schema version 4 initialization only. Old development schemas and
+The Gateway uses namespace schema version 5 and the shared SQLite schema version 8.
+Only fresh initialization and exact-version reopen are supported. Old development schemas and
 API version 1 are not migrated or adapted.

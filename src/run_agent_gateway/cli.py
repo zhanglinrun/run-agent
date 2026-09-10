@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
+import sys
 from pathlib import Path
 from uuid import uuid4
 
@@ -21,6 +23,7 @@ from run_agent_gateway.extensions import GatewayExtensionHost
 from run_agent_gateway.gateway import AgentGateway
 from run_agent_gateway.identity import IdentityPolicy
 from run_agent_gateway.ownership import GatewayProcessLock
+from run_agent_gateway.recovery import GatewayRecovery
 from run_agent_gateway.repository import GatewayRepository
 from run_agent_gateway.runtime import GatewayCodingRuntime
 from run_agent_gateway.scheduler import GatewayScheduler
@@ -57,7 +60,8 @@ async def run_gateway(args: argparse.Namespace) -> None:
                 ),
             )
             await repository.initialize()
-            owner = await repository.acquire_owner(uuid4().hex)
+            owner = await repository.acquire_owner(uuid4().hex, process_lock=lock)
+            await GatewayRecovery(repository, owner).reconcile()
             host = GatewayExtensionHost()
             adapters = host.load(args.extension)
             if not adapters:
@@ -105,6 +109,9 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "recover":
+        return recovery_main(argv[1:])
     args = _parser().parse_args(argv)
     try:
         asyncio.run(run_gateway(args))
@@ -112,6 +119,51 @@ def main(argv: list[str] | None = None) -> int:
         return 130
     except (OSError, RuntimeError, ValueError) as exc:
         raise SystemExit(f"Gateway failed: {exc}") from exc
+    return 0
+
+
+async def _recover(args: argparse.Namespace) -> list[dict[str, object]]:
+    paths = RunAgentPaths(home=args.state_dir.resolve()) if args.state_dir else RunAgentPaths()
+    if not paths.database_path.is_file():
+        raise ValueError("Recovery requires an existing state database")
+    lock = GatewayProcessLock(paths.home / "gateway.lock")
+    mutate = args.release is not None or args.terminate is not None
+    if mutate:
+        lock.acquire()
+    try:
+        async with await SqliteDatabase.open(paths.database_path) as database:
+            repository = GatewayRepository(database)
+            await repository.initialize()
+            if not mutate:
+                return await GatewayRecovery(repository).inspect_all()
+            owner = await repository.acquire_owner(uuid4().hex, process_lock=lock)
+            try:
+                recovery = GatewayRecovery(repository, owner)
+                if args.terminate is not None:
+                    return [await recovery.terminate(args.terminate)]
+                return [await recovery.release(args.release, note=args.note)]
+            finally:
+                await repository.release_owner(owner)
+    finally:
+        lock.close()
+
+
+def recovery_main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="run gateway recover")
+    parser.add_argument("--state-dir", type=Path)
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument("--release", metavar="RUN_ID")
+    action.add_argument("--terminate", metavar="RUN_ID")
+    parser.add_argument("--note", default="")
+    args = parser.parse_args(argv)
+    if args.release is not None and not args.note.strip():
+        parser.error("--release requires --note describing the external-effect review")
+    try:
+        print(json.dumps(asyncio.run(_recover(args)), ensure_ascii=False, indent=2))
+    except KeyboardInterrupt:
+        return 130
+    except (OSError, RuntimeError, ValueError, KeyError) as exc:
+        raise SystemExit(f"Recovery failed: {exc}") from exc
     return 0
 
 

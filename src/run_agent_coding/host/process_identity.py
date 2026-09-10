@@ -50,3 +50,13 @@ def current_process_identity() -> str:
     if identity is None:
         raise RuntimeError("Cannot establish host process identity")
     return identity
+
+
+def machine_identity() -> str:
+    if os.name == "nt":
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography") as key:
+            value, _ = winreg.QueryValueEx(key, "MachineGuid")
+            return f"windows:{value}"
+    return "linux:" + Path("/etc/machine-id").read_text().strip()

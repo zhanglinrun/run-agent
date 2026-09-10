@@ -7,6 +7,7 @@ import hashlib
 import os
 import signal
 import subprocess
+import sys
 import tempfile
 from collections.abc import Callable, Coroutine
 from contextlib import suppress
@@ -16,7 +17,11 @@ from time import monotonic
 from typing import Any, BinaryIO, Protocol, cast
 from uuid import uuid4
 
-from run_agent_coding.host.process_identity import current_process_identity, process_identity
+from run_agent_coding.host.process_identity import (
+    current_process_identity,
+    machine_identity,
+    process_identity,
+)
 from run_agent_coding.storage.settle import settle
 from run_agent_core.tools import ToolCancellationToken
 from run_agent_core.types import JSONValue
@@ -42,10 +47,14 @@ class OwnedProcess(Protocol):
 class PosixProcess:
     kind = "posix_group"
 
-    def __init__(self, command: str, cwd: Path, output: BinaryIO, *, bash: bool) -> None:
+    def __init__(
+        self, command: str, cwd: Path, output: BinaryIO, *, bash: bool, identity: str,
+    ) -> None:
         self._process = subprocess.Popen(
-            command, shell=True, cwd=cwd, stdin=subprocess.DEVNULL, stdout=output,
-            stderr=subprocess.STDOUT, start_new_session=True, executable="bash" if bash else None,
+            [sys.executable, str(Path(__file__).with_name("process_gate.py")),
+             identity, "bash" if bash else "/bin/sh", command],
+            cwd=cwd, stdin=subprocess.PIPE, stdout=output,
+            stderr=subprocess.STDOUT, start_new_session=True,
         )
         self.pid = self._process.pid
         self.identity = str(self.pid)
@@ -54,7 +63,9 @@ class PosixProcess:
         return self._process.poll()
 
     def resume(self) -> None:
-        pass
+        assert self._process.stdin is not None
+        self._process.stdin.write(b"G")
+        self._process.stdin.close()
 
     def active_count(self) -> int:
         self.poll()
@@ -71,6 +82,8 @@ class PosixProcess:
             )
 
     def close(self) -> None:
+        if self._process.stdin is not None:
+            self._process.stdin.close()
         self._process.wait(timeout=0)
 
 
@@ -142,6 +155,9 @@ class ProcessSupervisor:
             _, interrupted = await settle(recorder({
                 "process_id": identity, "phase": "launching", "host_pid": os.getpid(),
                 "host_identity": current_process_identity(), "cwd": str(cwd.resolve()),
+                "launch_protocol": "journal-gate-v1",
+                "machine_identity": machine_identity(),
+                "kind": "windows_job" if os.name == "nt" else "posix_group",
                 "command_sha256": hashlib.sha256(command.encode()).hexdigest(),
             }))
             if interrupted:
@@ -160,7 +176,7 @@ class ProcessSupervisor:
 
                     process = WindowsJobProcess(command, cwd, output, identity=identity)
                 else:
-                    process = PosixProcess(command, cwd, output, bash=bash)
+                    process = PosixProcess(command, cwd, output, bash=bash, identity=identity)
                 return ProcessExecution(process, output)
             except BaseException:
                 output.close()

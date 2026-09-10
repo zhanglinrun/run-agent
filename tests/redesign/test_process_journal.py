@@ -55,8 +55,7 @@ def test_host_identity_is_stable_and_dead_pid_is_not_current():
     assert process_identity(child.pid) is None
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows can record before resuming the command")
-async def test_windows_failed_start_record_never_executes_user_command(tmp_path, commands):
+async def test_failed_start_record_never_executes_user_command(tmp_path, commands):
     command, marker = commands
     supervisor = ProcessSupervisor()
     phases = []

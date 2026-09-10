@@ -15,6 +15,11 @@ from uuid import uuid4
 
 from run_agent_coding.host.contracts import ArtifactRef
 from run_agent_coding.host.inputs import CommittedInput, InputBoundary, InputSource
+from run_agent_coding.host.process_identity import (
+    current_process_identity,
+    machine_identity,
+    process_identity,
+)
 from run_agent_coding.storage.artifacts import ArtifactStore
 from run_agent_coding.storage.handle import OutcomeCommitter
 from run_agent_coding.storage.sessions import SqliteSessionRepository, canonical_json
@@ -34,6 +39,7 @@ from run_agent_gateway.contracts import (
     RouteIdentity,
     Submission,
 )
+from run_agent_gateway.ownership import GatewayProcessLock
 from run_agent_gateway.routing import route_key
 from run_agent_gateway.workspaces import BackgroundWorkspaces
 
@@ -70,7 +76,7 @@ class GatewayRepository:
                 "SELECT value_json FROM host_metadata WHERE key='gateway.schema'"
             ).fetchone()
             if row is not None:
-                if json.loads(row[0]) != {"version": 4}:
+                if json.loads(row[0]) != {"version": 5}:
                     raise ValueError("Unsupported Gateway schema")
                 return
             for statement in schema.split(";"):
@@ -78,19 +84,50 @@ class GatewayRepository:
                     connection.execute(statement)
             connection.execute(
                 "INSERT INTO host_metadata VALUES ('gateway.schema',?)",
-                (canonical_json({"version": 4}),),
+                (canonical_json({"version": 5}),),
             )
 
         await self.database.run(initialize, write=True)
 
-    async def acquire_owner(self, owner_id: str, *, lease_seconds: float = 30) -> GatewayOwner:
+    async def acquire_owner(
+        self, owner_id: str, *, lease_seconds: float = 30,
+        process_lock: GatewayProcessLock | None = None,
+    ) -> GatewayOwner:
         if not owner_id or lease_seconds <= 0:
             raise ValueError("Owner identity and positive lease are required")
+        previous_exited: tuple[str, int] | None = None
+        if process_lock is not None:
+            if not process_lock.held or process_lock.path.resolve() != (
+                self.database.path.parent / "gateway.lock"
+            ).resolve():
+                raise GatewayOwnershipLost("Gateway process lock is not held for this state")
+            prior = await self.database.run(lambda c: c.execute(
+                "SELECT o.owner_id,o.generation,h.process_json FROM gateway_owner o "
+                "JOIN gateway_hosts h ON h.owner_id=o.owner_id AND h.generation=o.generation "
+                "WHERE o.active=1"
+            ).fetchone())
+            if prior is not None:
+                native = json.loads(prior["process_json"])
+                if native["machine_identity"] != machine_identity():
+                    raise GatewayOwnershipLost("Previous Gateway host belongs to another machine")
+                if process_identity(native["pid"]) == native["identity"]:
+                    raise GatewayOwnershipLost("Previous Gateway host process is still alive")
+                previous_exited = prior["owner_id"], prior["generation"]
+        host_json = canonical_json({"pid": os.getpid(), "identity": current_process_identity(),
+                                    "machine_identity": machine_identity()})
 
         def acquire(connection: sqlite3.Connection) -> GatewayOwner:
+            restored = connection.execute(
+                "SELECT value_json FROM host_metadata WHERE key='restore_guard'"
+            ).fetchone()
+            if restored and json.loads(restored[0])["requires_reconciliation"]:
+                raise GatewayOwnershipLost(
+                    "Restored state requires reconciliation before Gateway use"
+                )
             now = self.clock()
             previous = connection.execute("SELECT * FROM gateway_owner").fetchone()
-            if previous and previous["active"] and previous["expires_at"] > now:
+            if (previous and previous["active"] and previous["expires_at"] > now
+                    and previous_exited != (previous["owner_id"], previous["generation"])):
                 raise GatewayOwnershipLost("Gateway already has a live owner")
             generation = previous["generation"] + 1 if previous else 1
             connection.execute("UPDATE gateway_routes SET preparing=0")
@@ -126,7 +163,8 @@ class GatewayRepository:
                     (now, run["run_id"]),
                 )
                 connection.execute(
-                    "UPDATE sessions SET owner_active=0,generation=generation+1 WHERE session_id=?",
+                    "UPDATE sessions SET owner_active=0,generation=generation+1,"
+                    "recovery_required=1 WHERE session_id=?",
                     (run["session_id"],),
                 )
                 connection.execute(
@@ -142,6 +180,8 @@ class GatewayRepository:
                 "expires_at=excluded.expires_at,active=1,accepting=1",
                 (owner_id, generation, now + lease_seconds),
             )
+            connection.execute("INSERT INTO gateway_hosts VALUES (?,?,?)",
+                               (owner_id, generation, host_json))
             connection.execute(
                 "UPDATE gateway_outbox SET status='pending',claimed_by=NULL,claim_generation=NULL "
                 "WHERE status='sending'"
@@ -957,6 +997,8 @@ class GatewayRepository:
                 "INSERT OR IGNORE INTO execution_revocations VALUES (?,?,?)",
                 (assignment.run_id, "Runner cleanup or completion unconfirmed", self.clock()),
             )
+            connection.execute("UPDATE sessions SET recovery_required=1 WHERE session_id=?",
+                               (assignment.session_id,))
             self._queue_unconsumed_input(connection, assignment.run_id)
 
         await self.database.run(contain, write=True)
@@ -1057,7 +1099,8 @@ class GatewayRepository:
         def release(connection: sqlite3.Connection) -> None:
             self.assert_owner(connection, owner)
             if connection.execute(
-                "SELECT 1 FROM gateway_attempts WHERE released=0 LIMIT 1"
+                "SELECT 1 FROM gateway_attempts WHERE released=0 AND owner_id=? "
+                "AND owner_generation=? LIMIT 1", (owner.owner_id, owner.generation),
             ).fetchone():
                 raise SessionConflict("Gateway still owns unreleased runners")
             connection.execute("UPDATE gateway_owner SET active=0,accepting=0")
