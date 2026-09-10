@@ -816,9 +816,11 @@
       "id": "S06",
       "scenario": "Skill 包写完但版本提交失败",
       "invariant": "生效指针不变，无悬空引用",
-      "status": "in_progress",
+      "status": "complete",
       "evidence": [
-        "docs/implementation/component-tests.xml"
+        "src/run_agent_coding/storage/host.py",
+        "tests/redesign/test_snapshot_and_skill_commit.py::test_version_commit_failure_keeps_the_effective_pointer",
+        "tests/redesign/test_snapshot_and_skill_commit.py::test_host_services_exposes_a_default_off_fault_hook"
       ],
       "note": "Component evidence exists; full application/host integration is still pending."
     },

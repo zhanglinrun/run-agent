@@ -39,9 +39,21 @@ from run_agent_core.session.entries import CustomEntry
 
 
 class SqliteHostServices:
-    def __init__(self, database: SqliteDatabase, artifacts: ArtifactStore, owner_id: str) -> None:
+    def __init__(
+        self,
+        database: SqliteDatabase,
+        artifacts: ArtifactStore,
+        owner_id: str,
+        fault: Callable[[str], None] | None = None,
+    ) -> None:
         self.database, self.artifacts, self.owner_id = database, artifacts, owner_id
+        self.fault = fault
         self.tasks = LocalTaskManager(database)
+
+    def _hit_fault(self, point: str) -> None:
+        """Fire a named fault point; raising here aborts the enclosing transaction."""
+        if self.fault is not None:
+            self.fault(point)
 
     async def capture_resources(
         self, session_id: str, sources: Sequence[str], assert_active: Callable[[], None]
@@ -159,6 +171,10 @@ class SqliteHostServices:
             if activation is not None:
                 if activation.token.session_id != session_id:
                     raise ExtensionRetired("Resource activation belongs to another session")
+                # The activation pointer is committed by the append below; a fault
+                # here must prevent that commit rather than leave a half-published
+                # version visible to the next session.
+                self._hit_fault("activation_commit")
                 receipt = SqliteSessionRepository(self.database).append_in_transaction(
                     connection,
                     (activation.entry,),

@@ -1,10 +1,14 @@
-"""S03: rebuilding from full history must agree with a recorded snapshot.
+"""S03 snapshot/full-history equivalence and S06 skill commit failure.
 
-The plan's 7.6 boundary is that a snapshot is derived acceleration, not a second
-source of truth. Rebuilding the logical messages and the resource reference from
-the raw event history at a snapshot's leaf must therefore match what the
-snapshot recorded, without re-running a model to regenerate a summary.
+S03 - the plan's 7.6 boundary: a snapshot is derived acceleration, not a second
+      source of truth, so rebuilding the logical messages and the resource
+      reference from raw history at a snapshot's leaf must match the snapshot.
+S06 - a skill package may be written but its version commit can still fail. When
+      it does, the effective pointer must not move and no half-published state
+      may survive a reopen.
 """
+
+from dataclasses import replace
 
 import pytest
 from tests.redesign.test_coding_application import options
@@ -51,3 +55,46 @@ async def test_full_history_rebuild_matches_the_recorded_snapshot(tmp_path, skil
 
         assert [message.text for message in rebuilt.messages] == messages_at_snapshot
         assert resource_events(rebuilt)[-1].id == resource_at_snapshot
+
+
+async def test_host_services_exposes_a_default_off_fault_hook(tmp_path, skill_root):
+    async with await CodingApplication.open(options(tmp_path), provider=RecordingProvider()) as app:
+        await app.start()
+        assert app.session.host_services.fault is None
+
+
+async def test_version_commit_failure_keeps_the_effective_pointer(tmp_path, skill_root):
+    opts = options(tmp_path)
+    app = await CodingApplication.open(opts, provider=RecordingProvider())
+    await app.start()
+    _ = [event async for event in app.prompt("first task")]
+    head_before = (await app.session.storage.get_head()).entry_id
+    session_id = app.session.session_id
+    original = app.session.skills[0].package_digest
+    assert [entry.data["reason"] for entry in resource_events(app.session._state)] == ["startup"]
+
+    # /reload freezes a new package and commits it as the effective version.
+    (skill_root / "SKILL.md").write_text("next version", encoding="utf-8")
+
+    def fail(point: str) -> None:
+        if point == "activation_commit":
+            raise OSError("version commit failure")
+
+    app.session.host_services.fault = fail
+    try:
+        with pytest.raises(OSError, match="version commit failure"):
+            await app.command("/reload")
+    finally:
+        app.session.host_services.fault = None
+
+    # The persisted effective version must not move on a failed commit.
+    assert (await app.session.storage.get_head()).entry_id == head_before
+    assert [entry.data["reason"] for entry in resource_events(app.session._state)] == ["startup"]
+    await app.aclose()
+
+    # Nothing half-published survives: a reopen restores the old version only.
+    async with await CodingApplication.open(
+        replace(opts, resume=session_id), provider=RecordingProvider()
+    ) as reopened:
+        await reopened.start()
+        assert reopened.session.skills[0].package_digest == original
