@@ -76,6 +76,16 @@
         "python",
         "memory"
       ]
+    },
+    {
+      "id": "python-config-migration",
+      "family": "migration",
+      "status": "ready",
+      "tags": [
+        "python",
+        "rename",
+        "cross-file"
+      ]
     }
   ]
 }

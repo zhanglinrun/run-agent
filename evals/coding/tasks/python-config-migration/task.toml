@@ -1,0 +1,9 @@
+[task]
+id = "python-config-migration"
+version = "1"
+kind = "migration"
+budget_seconds = 180
+artifacts = ["settings.py", "client.py", "defaults.py"]
+
+[grader]
+command = ["{python}", "-m", "pytest", "-q", "grader"]
