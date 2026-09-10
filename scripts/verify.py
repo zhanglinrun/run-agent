@@ -33,13 +33,23 @@ def static_steps(python: str, targets: tuple[str, ...]) -> list[runner.Step]:
 
 
 def dist_steps() -> list[runner.Step]:
-    """Build, clean-install and validate the distribution."""
+    """Build, audit, clean-install, dependency-check and validate the distribution."""
     return [
         runner.Step("build", distcheck.build_argv(), note="wheel + sdist into .run/verify/dist"),
+        runner.Step(
+            "wheel-audit",
+            wheelaudit_argv(),
+            note="mirrors the CI wheel layout guard, plus run_agent_entry.py",
+        ),
         runner.Step(
             "install",
             distcheck.install_argv(),
             note="clean venv; cached by wheel sha256, printed as cache hit/miss",
+        ),
+        runner.Step(
+            "pip-check",
+            distcheck.pip_check_argv(),
+            note="dependency check inside the clean environment",
         ),
         runner.Step(
             "dist-check",
@@ -49,15 +59,27 @@ def dist_steps() -> list[runner.Step]:
     ]
 
 
+def wheelaudit_argv() -> tuple[str, ...]:
+    """Command that audits the built wheel layout."""
+    dist = distcheck.work_paths()[0]
+    module = SCRIPTS / "verifylib" / "wheelaudit.py"
+    return (sys.executable, str(module), "--dist", str(dist))
+
+
 def full_plan(python: str, skip_dist: bool) -> runner.Plan:
     """The release-readiness plan; identical to CI plus the local build path."""
     steps = [
+        runner.Step(
+            "compile",
+            (python, "-m", "compileall", "-q", "src", "extensions", "tests"),
+            note="mirrors the CI compile step",
+        ),
         *static_steps(python, (".",)),
-        runner.Step("tests", (python, "-m", "pytest", "tests/redesign", "-q")),
+        runner.Step("tests", (python, "-m", "pytest", "-q")),
     ]
     notes = ["full gate: mirrors .github/workflows/ci.yml step for step"]
     if skip_dist:
-        notes.append("--skip-dist: build, install and dist-check were skipped")
+        notes.append("--skip-dist: build, wheel-audit, install, pip-check, dist-check skipped")
     else:
         steps.extend(dist_steps())
     return runner.Plan(tuple(steps), tuple(notes))
@@ -70,10 +92,12 @@ def fast_plan(python: str) -> runner.Plan:
         *static_steps(python, affected.lint_targets(selection.changed)),
         runner.Step("tests", selection.pytest_argv(python)),
     ]
+    skipped = (
+        "no tests (the full suite ran)" if selection.escalated else "tests outside the selection"
+    )
     notes = [
         *selection.notes,
-        f"skipped by --fast: build, install, dist-check, and "
-        f"{'nothing' if selection.escalated else 'tests outside the selection'}",
+        f"skipped by --fast: build, install, dist-check, and {skipped}",
         "run without --fast before trusting a change; --fast is not the gate",
     ]
     return runner.Plan(tuple(steps), tuple(notes))

@@ -130,6 +130,12 @@ def validate_argv(root: Path = ROOT) -> tuple[str, ...]:
     return (sys.executable, module_path(), "validate", "--env", str(env), "--output", str(report))
 
 
+def pip_check_argv(root: Path = ROOT) -> tuple[str, ...]:
+    """Command that runs the dependency check inside the clean environment."""
+    _, env, _ = work_paths(root)
+    return (str(executable(env, "python")), "-m", "pip", "check")
+
+
 def main() -> int:
     """Dispatch the build / install / validate actions."""
     parser = argparse.ArgumentParser(description=__doc__)

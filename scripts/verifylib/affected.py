@@ -42,7 +42,7 @@ class Selection:
 
     def pytest_argv(self, python: str) -> tuple[str, ...]:
         if self.tests is None:
-            return (python, "-m", "pytest", "tests/redesign", "-q")
+            return (python, "-m", "pytest", "-q")
         return (python, "-m", "pytest", "-q", *self.tests)
 
 
