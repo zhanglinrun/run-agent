@@ -838,10 +838,11 @@
       "id": "S08",
       "scenario": "交互、print、Gateway 和 Eval 全链路运行",
       "invariant": "无产品 JSONL 文件、RPC、Adapter 或 reader/writer；SQLite 账本和轨迹可复核",
-      "status": "in_progress",
+      "status": "complete",
       "evidence": [
-        "docs/implementation/checkpoint-02.md",
-        "docs/implementation/application-tests.xml"
+        "tests/redesign/test_full_chain_audit.py::test_all_four_entry_points_generate_no_product_jsonl",
+        "tests/redesign/test_full_chain_audit.py::test_no_jsonl_reader_writer_adapter_or_rpc_survives",
+        "tests/redesign/test_full_chain_audit.py::test_no_removed_jsonl_style_table_exists"
       ]
     },
     {
