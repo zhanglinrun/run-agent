@@ -18,48 +18,14 @@ jobs:
           cache: pip
       - name: Install
         run: python -m pip install -e ".[dev,feishu]"
-      - name: Compile
-        run: python -m compileall -q src extensions tests
-      - name: Lint and types
-        run: |
-          python -m ruff format --check .
-          python -m ruff check .
-          python -m mypy
-      - name: Unit tests
-        run: python -m pytest -q
-      - name: Build wheel
-        run: python -m pip wheel . --no-deps --wheel-dir .run/wheels
-      - name: Audit wheel layout
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          import zipfile
-
-          wheel = next(Path(".run/wheels").glob("*.whl"))
-          names = set(zipfile.ZipFile(wheel).namelist())
-          expected = {
-              "run_agent_ai/__init__.py",
-              "run_agent_core/__init__.py",
-              "run_agent_coding/__init__.py",
-              "run_agent_gateway/__init__.py",
-              "run_agent_observability/__init__.py",
-              "run_agent_evals/__init__.py",
-          }
-          missing = sorted(expected - names)
-          stale = sorted(name for name in names if name.startswith("agents/"))
-          misplaced = sorted(
-              name
-              for name in names
-              if name.startswith("extensions/")
-              or name.endswith("/builtins/mem0_memory.py")
-              or name.endswith("/builtins/harness_features.py")
-          )
-          if missing:
-              raise SystemExit(f"required packages missing from wheel: {missing}")
-          if stale:
-              raise SystemExit(f"stale agents package in wheel: {stale}")
-          if misplaced:
-              raise SystemExit(f"optional extensions leaked into the core wheel: {misplaced}")
-          PY
-      - name: Dependency check
-        run: python -m pip check
+      # The gate is scripts/verify.py, not a second copy of its steps. Running the
+      # same file the developer runs is what makes local and CI parity verifiable:
+      # previously this workflow rebuilt a subset inline, so it could not catch the
+      # clean-installation and distribution-validation steps at all, and its wheel
+      # audit was a hand-copied duplicate of scripts/verifylib/wheelaudit.py that was
+      # free to drift from the one the developer runs.
+      #
+      # verify.py prints one line per step (name, exit code, duration), so the step
+      # breakdown is still visible in the job log.
+      - name: Gate
+        run: python scripts/verify.py
