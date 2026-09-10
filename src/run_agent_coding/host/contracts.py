@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Protocol
 
+from run_agent_coding.host.evaluation import EvaluationService
 from run_agent_core.session.contracts import AppendReceipt, RunToken
 from run_agent_core.session.entries import CustomEntry
 from run_agent_core.types import JSONValue
@@ -117,6 +118,9 @@ class HostServices(Protocol):
 
     @property
     def history(self) -> HistoryService: ...
+
+    @property
+    def evaluation(self) -> EvaluationService: ...
 
     def scope(self, scope: ServiceScope = "session") -> ScopedServices:
         """Choose one host-bound scope; identities cannot be supplied by tools."""

@@ -23,6 +23,10 @@ from run_agent_coding.host.contracts import (
     TaskHandler,
     TaskService,
 )
+from run_agent_coding.host.evaluation import (
+    EvaluationService,
+    UnavailableEvaluation,
+)
 from run_agent_coding.storage.artifacts import ArtifactStore
 from run_agent_coding.storage.resources import NamespaceResources
 from run_agent_coding.storage.sessions import SqliteSessionRepository, canonical_json, decode_entry
@@ -217,11 +221,15 @@ class BoundHostServices:
         assert_active: Callable[[], None],
         tasks: LocalTaskManager,
         handlers: dict[str, TaskHandler],
+        evaluation: EvaluationService | None = None,
     ) -> None:
         self._assert_active = assert_active
         self._tasks = BoundTaskService(tasks, token, handlers, self, assert_active)
         self._snapshots = BoundSnapshots(database, token, assert_active)
         self._history = BoundHistory(database, token, assert_active)
+        self._evaluation: EvaluationService = (
+            evaluation if evaluation is not None else UnavailableEvaluation()
+        )
         self._scopes: dict[ServiceScope, ScopedServices] = {}
         for name, scope in scopes.items():
             scoped_artifacts = ScopedArtifacts(database, artifacts, token, scope, assert_active)
@@ -259,6 +267,12 @@ class BoundHostServices:
     def history(self) -> HistoryService:
         self._assert_active()
         return self._history
+
+    @property
+    def evaluation(self) -> EvaluationService:
+        """Report the composed evaluation capability, or its explicit absence."""
+        self._assert_active()
+        return self._evaluation
 
 
 class BoundHistory:

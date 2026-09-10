@@ -79,12 +79,13 @@
     {
       "id": "P1-1",
       "requirement": "在 Coding/host 增加轻量 HostServices 协议，提供本地默认组合；不新增 Runtime 层，不强制启动 Gateway。",
-      "status": "in_progress",
+      "status": "complete",
       "evidence": [
+        "src/run_agent_coding/host/evaluation.py",
         "src/run_agent_coding/host/contracts.py",
-        "docs/implementation/checkpoint-04.md",
-        "docs/implementation/checkpoint-06.md",
-        "docs/implementation/host-services-tests.xml"
+        "tests/redesign/test_evaluation_service_contract.py::test_local_host_reports_evaluation_unavailable_not_success",
+        "tests/redesign/test_evaluation_service_contract.py::test_evaluation_request_carries_no_caller_controlled_threshold_or_grader",
+        "tests/redesign/test_evaluation_service_contract.py::test_unavailable_evaluation_refuses_to_produce_a_report"
       ]
     },
     {
