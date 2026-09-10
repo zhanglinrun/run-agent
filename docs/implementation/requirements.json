@@ -786,8 +786,12 @@
       "id": "S03",
       "scenario": "快照恢复与全历史构建",
       "invariant": "逻辑消息、分支与资源一致",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "tests/redesign/test_snapshot_and_skill_commit.py::test_full_history_rebuild_matches_the_recorded_snapshot",
+        "src/run_agent_coding/storage/snapshots.py",
+        "src/run_agent_core/session/memory.py"
+      ]
     },
     {
       "id": "S04",
