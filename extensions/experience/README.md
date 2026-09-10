@@ -64,5 +64,13 @@ for the life of the session.
 - No Mem0 integration, no legacy memory export/import and no migration path exists; state lives in
   the SQLite host services.
 - Experience context is data, not permission: it cannot grant tool approvals.
-- Automatic review, evaluation-gated promotion and stale marking for automated candidates are the
-  next stage; today every publication is an explicit user action with a command receipt.
+- A durable completion can queue a review request. The trigger decides what is worth reviewing,
+  keeps one review per run and policy version, honours a cooldown, and refuses auxiliary origins so
+  a review cannot trigger another review. The registered `experience-review` task consumes one
+  request under a claim, within a declared request and token budget, and may only read evidence,
+  propose a candidate or inspect - it cannot publish or edit permissions.
+- Promotion is bound to evidence: a candidate advances only on a report that measured that
+  candidate's content hash. With no evaluation service available the candidate stays a candidate.
+- Learning writeback is disabled for the duration of an evaluation run, so a measured trial cannot
+  change the assets it is measuring.
+- Stale marking and automatic archiving of low-use assets are not implemented yet.
