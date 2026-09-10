@@ -1,0 +1,26 @@
+{
+  "efficiency": {
+    "calls_per_passed_trial": 10.0,
+    "cost_per_passed_trial": 0.0030184
+  },
+  "inventory_digest": "95518718fbf162dcdcadc0031c31359663a0c1a25fa6203b0db73a4abb35e8ed",
+  "manifest_digest": "c63afd16e223ae92e68fe09fb690d88a5ab45e9ebc537e3762bcf4c7aaa0788d",
+  "report_digest": "9fbb4638d8db37507c461f322b672a9db6cf945310ba386f9d10668ac42ce996",
+  "schema": "run-agent.evaluation.report.v1",
+  "summary": {
+    "candidate_id": "baseline",
+    "errored": 0,
+    "failed": 0,
+    "p50_duration_ms": 38234.0,
+    "p95_duration_ms": 38234.0,
+    "pass_rate": 1.0,
+    "passed": 1,
+    "priced_trials": 1,
+    "task_ids": [
+      "real-range-total"
+    ],
+    "total_calls": 10,
+    "total_cost": 0.0030184,
+    "trials": 1
+  }
+}

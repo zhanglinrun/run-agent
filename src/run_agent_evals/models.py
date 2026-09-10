@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
 
 from run_agent_core.types import JSONValue
+
+PYTHON_PLACEHOLDER = "{python}"
 
 TrialStatus = Literal["passed", "failed", "error", "cancelled"]
 
@@ -160,7 +163,12 @@ def load_tasks(path: str | Path) -> tuple[FrozenTask, ...]:
             task_id = str(payload["id"])
             fixture = (task_path.parent / str(payload["fixture"])).resolve()
             prompt = str(payload["prompt"])
-            verify = tuple(tuple(str(part) for part in command) for command in payload["verify"])
+            verify = tuple(
+                tuple(
+                    sys.executable if part == PYTHON_PLACEHOLDER else str(part) for part in command
+                )
+                for command in payload["verify"]
+            )
             tags = tuple(str(tag) for tag in payload.get("tags", []))
             timeout_seconds = float(payload.get("timeout_seconds", 120))
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
