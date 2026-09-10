@@ -58,7 +58,7 @@
         "--help"
       ],
       "exit_code": 0,
-      "stdout_sha256": "c9f2b619ab2b984fc149ac574012440298bceb18e08aeff3f1b6c6bfd43e6194",
+      "stdout_sha256": "22a6dc42639625ec1e96a49b3e5439c7896abb33a576f91c0395814fc59f0975",
       "stderr": ""
     }
   ],

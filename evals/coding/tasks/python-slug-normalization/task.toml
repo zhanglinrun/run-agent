@@ -4,6 +4,11 @@ version = "1"
 kind = "bug-fix"
 budget_seconds = 120
 artifacts = ["slug.py"]
+fail_to_pass = [
+    "test_collapses_separators",
+    "test_mixed_separator_runs",
+    "test_removes_edge_separators",
+]
 
 [grader]
 command = ["{python}", "-m", "pytest", "-q", "grader"]

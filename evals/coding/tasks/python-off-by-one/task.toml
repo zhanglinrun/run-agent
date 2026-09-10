@@ -4,6 +4,12 @@ version = "1"
 kind = "bug-fix"
 budget_seconds = 120
 artifacts = ["range_sum.py"]
+fail_to_pass = [
+    "test_inclusive_range",
+    "test_larger_range",
+    "test_negative_bounds",
+    "test_single_value",
+]
 
 [grader]
 command = ["{python}", "-m", "pytest", "-q", "grader"]

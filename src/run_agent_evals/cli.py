@@ -21,6 +21,7 @@ from run_agent_evals.runtime_bench import (
     rebuild_runtime_benchmark,
     run_runtime_benchmarks,
 )
+from run_agent_evals.suite import report_for_directory
 
 
 async def _run(args: argparse.Namespace) -> int:
@@ -91,6 +92,13 @@ def _runtime_rebuild(args: argparse.Namespace) -> int:
     return 0
 
 
+def _suite(args: argparse.Namespace) -> int:
+    """Grade every ready task in a directory through the dual propositions."""
+    report = report_for_directory(args.tasks, use_reference=not args.candidate_root)
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0 if report["rate"]["successes"] == report["rate"]["trials"] else 2
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="run bench",
@@ -112,6 +120,16 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--trust-project", action="store_true")
     rebuild = commands.add_parser("rebuild", help="Verify and reduce existing artifacts.")
     rebuild.add_argument("output_root", type=Path)
+    suite = commands.add_parser(
+        "suite",
+        help="Grade every ready task in a task directory through the dual propositions.",
+    )
+    suite.add_argument("tasks", type=Path, help="directory holding tasks.json and task folders")
+    suite.add_argument(
+        "--candidate-root",
+        type=Path,
+        help="reserved for agent-produced workspaces; absent means the reference solution",
+    )
     runtime = commands.add_parser(
         "runtime",
         help="Microbenchmark parallel tools and tracing with frozen evidence.",
@@ -136,6 +154,8 @@ def main(argv: list[str] | None = None) -> int:
             return asyncio.run(_run(args))
         if args.command == "rebuild":
             return _rebuild(args)
+        if args.command == "suite":
+            return _suite(args)
         if args.command == "runtime":
             return asyncio.run(_runtime(args))
         return _runtime_rebuild(args)

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 
@@ -146,7 +147,7 @@ class SuiteRunner(Protocol):
     interchangeable, and so classification never needs a subprocess.
     """
 
-    async def run(self, workspace: object) -> Mapping[str, bool]: ...
+    async def run(self, workspace: Path) -> Mapping[str, bool]: ...
 
 
 @dataclass(frozen=True)
@@ -156,14 +157,14 @@ class DualPropositionVerifier:
     runner: SuiteRunner
     repeats: int = 3
 
-    async def _observe(self, workspace: object) -> SuiteResult:
+    async def _observe(self, workspace: Path) -> SuiteResult:
         runs: list[Mapping[str, bool]] = []
         for _ in range(self.repeats):
             runs.append(await self.runner.run(workspace))
         return SuiteResult.of(runs=tuple(runs))
 
     async def verify(
-        self, pristine: object, candidate: object, targets: Iterable[str] = ()
+        self, pristine: Path, candidate: Path, targets: Iterable[str] = ()
     ) -> DualProposition:
         return classify(
             await self._observe(pristine), await self._observe(candidate), targets=targets

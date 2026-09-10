@@ -9,10 +9,10 @@ artifacts = ["settings.py", "client.py", "defaults.py"]
 # that flips one incidental test from being accepted.
 fail_to_pass = [
     "test_override_is_honoured_in_milliseconds",
-    "test_the_default_is_thirty_thousand_milliseconds",
-    "test_the_old_key_is_gone",
     "test_the_client_migrated_with_the_settings",
+    "test_the_default_is_thirty_thousand_milliseconds",
     "test_the_defaults_module_still_exports_the_value",
+    "test_the_old_key_is_gone",
 ]
 
 [grader]
