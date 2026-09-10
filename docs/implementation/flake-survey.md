@@ -19,23 +19,42 @@
 ## 二、调查结果（当前）
 
 ```
-$ python scripts/flake_survey.py 8          # 直跑 pytest
+$ python scripts/flake_survey.py 8              # 空载直跑
   pass 1..8: 76.0–79.2s  417 passed each
-  === result ===  passes: 8   no failures observed in any pass
+  === result ===  no failures observed in any pass
 
-$ # 6 轮真正的 verify.py
-pass 1 exit=0 :: All 10 steps passed.
-...
-pass 6 exit=0 :: All 10 steps passed.
+$ python scripts/flake_survey.py 8 --load 4    # 4 个满载 CPU 线程并存
+  pass 1: 75.0s 417 passed  ...  pass 8: 79.7s 417 passed
+  === result ===  no failures observed in any pass
+
+$ # 8 轮真正的 verify.py（含中途与收尾各一次）
+  pass 1..6 exit=0 :: All 10 steps passed.   +  2 more exits of 0
 ```
 
-**14 次连续全绿**（8 次直跑 + 6 次闸门）。所以当前无法复现失败。
+**共 24 次连续全绿**，其中 8 次在刻意饱和的 CPU 负载下。
 
-诚实结论：
-- 那 3 次失败**成簇出现**，不是稳定速率；今日早先"1/3"的印象来自一个小样本
-- 不能因此宣称"已修复"——未定性的 3 个用例（#2/#3/#4）**仍然未定性**
-- 但 criterion 1 的前提现在有 14 次连续见证，且失败时 `eventually()` 会自报耗时、
-  预算与被等待的检查名，下一次复现将给出可行动证据
+### 尝试过的复现手段与结果
+
+| 手段 | 结果 |
+|---|---|
+| 空载直跑 8 轮 | 0 失败 |
+| **刻意加载 4 个饱和线程** 8 轮 | **0 失败** |
+| 完整闸门 8 轮 | 0 失败 |
+| 隔离反复跑每一个已知用例 | 全绿 |
+
+### 诚实结论：**未能复现，因此未能定性**
+
+那 3 个用例（#2 `test_process_supervisor::test_coroutine_cancellation_waits_for_real_descendants`、
+#3 `test_mixed_load::test_one_session_replays...`、#4 `test_process_supervisor::test_successful_root_cannot_leave_detached_child`）
+**至今无法复现**。
+
+- **不能**声称已修：没有复现就没有根因，也没有修后的对比数据
+- 可以确定的是：#3 **不是超时**（12 轮实测 0.92–1.08s vs 预算 5s，且负载下不变）
+- 因此真正的缺口是**复现手段**，而不是修复：需要能重现当日那些条件的途径
+  （已知当日背景：我同时跑着 `Start-Job` 负载实验与其他工具调用）
+
+`eventually()` 已改为自报耗时、预算与被等待的检查名 —— 下一次复现将直接给出可行动证据，
+而不必再猜。
 
 ## 三、抑制存量：已清零
 

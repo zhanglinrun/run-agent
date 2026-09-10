@@ -17,6 +17,7 @@ import argparse
 import re
 import subprocess
 import sys
+import threading
 import time
 from collections import Counter
 from pathlib import Path
@@ -47,17 +48,45 @@ def run_pass(index: int, timeout: float) -> tuple[float, tuple[str, ...], str]:
     return elapsed, tuple(FAILED.findall(output)), tail
 
 
+def cpu_load(stop: threading.Event, workers: int) -> list[threading.Thread]:
+    """Saturate the CPU while the suite runs, to raise the reproduction rate.
+
+    The three uncharacterised failures all pass in isolation and cluster under the gate,
+    which points at the machine rather than the code. Making the machine busy on purpose
+    is how a rare load-sensitive failure is turned into a reproducible one.
+    """
+
+    def spin() -> None:
+        while not stop.is_set():
+            sum(index * index for index in range(10_000))
+
+    threads = [threading.Thread(target=spin, daemon=True) for _ in range(workers)]
+    for thread in threads:
+        thread.start()
+    return threads
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("passes", type=int, nargs="?", default=6)
     parser.add_argument("--timeout-seconds", type=float, default=300.0)
+    parser.add_argument(
+        "--load", type=int, default=0, help="CPU-saturating threads to run during each pass"
+    )
     args = parser.parse_args()
 
     failures: Counter[str] = Counter()
     durations: list[float] = []
-    print(f"surveying {args.passes} full passes", flush=True)
+    print(f"surveying {args.passes} full passes (load={args.load})", flush=True)
     for index in range(1, args.passes + 1):
-        elapsed, failed, _ = run_pass(index, args.timeout_seconds)
+        stop = threading.Event()
+        threads = cpu_load(stop, args.load) if args.load else []
+        try:
+            elapsed, failed, _ = run_pass(index, args.timeout_seconds)
+        finally:
+            stop.set()
+            for thread in threads:
+                thread.join(timeout=1.0)
         durations.append(elapsed)
         failures.update(failed)
 
