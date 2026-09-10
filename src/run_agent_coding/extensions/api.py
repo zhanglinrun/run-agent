@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol
 from uuid import uuid4
 
+from run_agent_coding.extensions.disposers import Disposer
 from run_agent_coding.host.contracts import HostServices, TaskHandler
 from run_agent_core.messages import AgentMessage, CustomMessage, ToolResultMessage
 from run_agent_core.tools import AgentTool, AgentToolResult
@@ -710,6 +711,11 @@ class ExtensionAPI:
     def register_task_handler(self, name: str, handler: TaskHandler) -> None:
         self._generation.assert_active()
         self._runtime.register_task_handler(self._source_id, name, handler)
+
+    def register_disposer(self, disposer: Disposer) -> None:
+        """Own an async cleanup callback until setup rollback, reload or close."""
+        self._generation.assert_active()
+        self._runtime.register_disposer(self._source_id, disposer)
 
     def set_inference_provider(self, route: str | None) -> str:
         """Select or reset the active Hugging Face session route."""

@@ -217,7 +217,8 @@ async def _finish_adopted_runtime_close(runtime: ExtensionRuntime) -> str | None
     if not result.drained:
         return (
             f"Previous extension cleanup is still pending: {result.contained_managed_tasks} "
-            f"managed tasks, {result.contained_discovery_tasks} provider callbacks."
+            f"managed tasks, {result.contained_discovery_tasks} provider callbacks, "
+            f"{result.contained_disposers} disposers; {'; '.join(result.cleanup_errors)}"
         )
     return None
 
@@ -2941,7 +2942,8 @@ class CodingSession:
             if not result.drained:
                 raise RuntimeError(
                     f"Extension cleanup is incomplete: {result.contained_managed_tasks} tasks, "
-                    f"{result.contained_discovery_tasks} provider callbacks"
+                    f"{result.contained_discovery_tasks} provider callbacks, "
+                    f"{result.contained_disposers} disposers; {'; '.join(result.cleanup_errors)}"
                 )
         except BaseException as exc:
             if error is None:

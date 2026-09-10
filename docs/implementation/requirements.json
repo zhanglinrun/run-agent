@@ -65,6 +65,7 @@
       "evidence": [
         "src/run_agent_coding/host/contracts.py",
         "docs/implementation/checkpoint-04.md",
+        "docs/implementation/checkpoint-06.md",
         "docs/implementation/host-services-tests.xml"
       ]
     },

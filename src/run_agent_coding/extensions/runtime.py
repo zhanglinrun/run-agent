@@ -51,6 +51,7 @@ from run_agent_coding.extensions.api import (
     TurnStartEvent,
     UiBridge,
 )
+from run_agent_coding.extensions.disposers import Disposer, DisposerOwner
 from run_agent_coding.extensions.loader import (
     ExtensionSourceMetadata,
     LoadedExtension,
@@ -189,6 +190,8 @@ class RuntimeCloseResult:
     drained: bool
     contained_discovery_tasks: int = 0
     contained_managed_tasks: int = 0
+    contained_disposers: int = 0
+    cleanup_errors: tuple[str, ...] = ()
 
 
 class ExtensionRuntime:
@@ -240,6 +243,7 @@ class ExtensionRuntime:
         self._host_services: Mapping[str, HostServices] = {}
         self._host_binding: tuple[HostServicesRegistry, str, str] | None = None
         self._task_handlers: dict[str, dict[str, TaskHandler]] = {}
+        self._disposers = DisposerOwner()
 
     # -- loading -----------------------------------------------------------
 
@@ -279,6 +283,7 @@ class ExtensionRuntime:
         # cancellation of generation-owned provider work.
         self._provider_registry.retire()
         self._generation.invalidate()
+        self._disposers.retire()
         self._host_services = {}
         self._task_handlers.clear()
         if self._harness_unsubscribe is not None:
@@ -309,14 +314,24 @@ class ExtensionRuntime:
                 if not managed_pending:
                     self._host_binding = None
         try:
-            provider_result = await self._provider_registry.aclose()
+            try:
+                provider_result = await self._provider_registry.aclose()
+            finally:
+                disposer_pending, _ = await settle(self._disposers.drain())
             contained = provider_result.contained_discovery_tasks
             if binding_error is not None:
                 raise binding_error
             return RuntimeCloseResult(
-                drained=contained == 0 and managed_pending == 0,
+                drained=(
+                    contained == 0
+                    and managed_pending == 0
+                    and disposer_pending == 0
+                    and not self._disposers.errors
+                ),
                 contained_discovery_tasks=contained,
                 contained_managed_tasks=managed_pending,
+                contained_disposers=disposer_pending,
+                cleanup_errors=tuple(self._disposers.errors),
             )
         finally:
             self._generation.invalidate()
@@ -367,6 +382,7 @@ class ExtensionRuntime:
             )
 
     def _remove_registrations(self, source_id: str) -> None:
+        self._disposers.retire_source(source_id)
         self._task_handlers.pop(source_id, None)
         self._ui.clear_status(source_id)
         self._tools = {
@@ -397,6 +413,10 @@ class ExtensionRuntime:
         self._provider_registry.unregister_source(source_id)
 
     # -- registration (called through ExtensionAPI) -------------------------
+
+    def register_disposer(self, source_id: str, disposer: Disposer) -> None:
+        self._generation.assert_active()
+        self._disposers.register(source_id, disposer)
 
     def register_task_handler(self, source_id: str, name: str, handler: TaskHandler) -> None:
         if self._host_binding is not None:
@@ -750,6 +770,17 @@ class ExtensionRuntime:
         self._generation.assert_active()
         if self._host_binding is not None:
             return False, None
+        pending = await self._disposers.drain()
+        if pending or self._disposers.errors:
+            self._runtime_diagnostics.append(
+                ResourceDiagnostic(
+                    kind="extension",
+                    severity="error",
+                    message=(
+                        f"Setup cleanup: {pending} pending; {'; '.join(self._disposers.errors)}"
+                    ),
+                )
+            )
         session = self.session_view
         registry = session.host_services
         session_id = session.session_id

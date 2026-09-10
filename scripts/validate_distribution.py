@@ -47,7 +47,13 @@ async def check():
     (skill_root / 'SKILL.md').write_text('Installed skill v1', encoding='utf-8')
     (skill_root / 'helper.py').write_text("print('fixed helper')", encoding='utf-8')
     extension = pathlib.Path('installed_extension.py').resolve()
-    extension.write_text('def setup(api): pass', encoding='utf-8')
+    extension.write_text(chr(10).join([
+        'from pathlib import Path',
+        'def setup(api):',
+        '    async def cleanup():',
+        '        Path(__file__).with_suffix(".closed").touch()',
+        '    api.register_disposer(cleanup)',
+    ]), encoding='utf-8')
     options = ApplicationOptions(cwd=pathlib.Path.cwd(), paths=paths, model='test',
                                  extensions_enabled=False, extension_paths=(extension,))
     async with await CodingApplication.open(options, provider=Provider()) as app:
@@ -67,6 +73,7 @@ async def check():
         state = runtime._extensions[0].api.context.services.scope().state
         await state.compare_and_set(StateChange('installed', 0, True))
         await app.command('/reload')
+        assert extension.with_suffix('.closed').exists()
         runtime = app.session.extension_runtime
         current_state = runtime._extensions[0].api.context.services.scope().state
         assert (await current_state.get('installed')).value
@@ -88,7 +95,7 @@ print(json.dumps({'entry_module':run_agent_entry.__file__, 'scripts':scripts,
                   'application_completion_and_resume':True,
                   'sqlite_telemetry':True, 'no_jsonl_output':True,
                   'host_services_and_reload':True, 'context_snapshot':True,
-                  'skill_package_and_resume':True}))
+                  'skill_package_and_resume':True, 'extension_disposer':True}))
 """
 
 
