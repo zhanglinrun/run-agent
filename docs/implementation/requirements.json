@@ -13,8 +13,10 @@
     {
       "id": "P0-2",
       "requirement": "固定本文的产品语义、ID、状态和事务边界，形成可评审接口草案。",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "docs/implementation/contracts.md"
+      ]
     },
     {
       "id": "P0-3",
@@ -112,7 +114,10 @@
       "id": "P1-6",
       "requirement": "将保留的本项目扩展直接更新到新契约，完成 A01—A05 的适用部分，不保留旧 API 适配。",
       "status": "in_progress",
-      "evidence": ["docs/implementation/checkpoint-04.md", "docs/implementation/host-services-tests.xml"]
+      "evidence": [
+        "docs/implementation/checkpoint-04.md",
+        "docs/implementation/host-services-tests.xml"
+      ]
     },
     {
       "id": "P1-7",
@@ -267,43 +272,77 @@
       "id": "P3-1",
       "requirement": "实现结构化路由、Inbox 去重、持久准入与回执。",
       "status": "in_progress",
-      "evidence": ["docs/implementation/checkpoint-07.md", "docs/implementation/gateway-repository-tests.xml"]
+      "evidence": [
+        "docs/implementation/checkpoint-07.md",
+        "docs/implementation/gateway-repository-tests.xml"
+      ]
     },
     {
       "id": "P3-2",
       "requirement": "实现 SessionController，接通 status/steer/stop/cancel/new。",
       "status": "complete",
-      "evidence": ["docs/implementation/checkpoint-08.md", "docs/implementation/gateway-runtime-tests.xml", "tests/redesign/test_gateway_steering.py", "tests/redesign/test_gateway_runtime.py"]
+      "evidence": [
+        "docs/implementation/checkpoint-08.md",
+        "docs/implementation/gateway-runtime-tests.xml",
+        "tests/redesign/test_gateway_steering.py",
+        "tests/redesign/test_gateway_runtime.py"
+      ]
     },
     {
       "id": "P3-3",
       "requirement": "替换前驱 Task 链为就绪 Session 调度，实施准入和运行双层容量。",
       "status": "in_progress",
-      "evidence": ["docs/implementation/checkpoint-07.md", "docs/implementation/gateway-repository-tests.xml"]
+      "evidence": [
+        "docs/implementation/checkpoint-07.md",
+        "docs/implementation/gateway-repository-tests.xml"
+      ]
     },
     {
       "id": "P3-4",
       "requirement": "实现工作区租约、独立后台 Session/worktree 与结果产物。",
       "status": "in_progress",
-      "evidence": ["docs/implementation/checkpoint-09.md", "docs/implementation/background-tests.xml", "tests/redesign/test_background_workspaces.py", "docs/implementation/distribution-check-09.json"]
+      "evidence": [
+        "docs/implementation/checkpoint-09.md",
+        "docs/implementation/background-tests.xml",
+        "tests/redesign/test_background_workspaces.py",
+        "docs/implementation/distribution-check-09.json"
+      ]
     },
     {
       "id": "P3-5",
       "requirement": "通过持久状态控制取消，完成子进程收敛和迟到提交隔离。",
       "status": "in_progress",
-      "evidence": ["docs/implementation/checkpoint-07.md", "docs/implementation/gateway-repository-tests.xml", "docs/implementation/checkpoint-10.md", "docs/implementation/process-tests.xml", "docs/implementation/process-linux-tests.xml", "docs/implementation/checkpoint-11.md", "docs/implementation/process-journal-tests.xml"]
+      "evidence": [
+        "docs/implementation/checkpoint-07.md",
+        "docs/implementation/gateway-repository-tests.xml",
+        "docs/implementation/checkpoint-10.md",
+        "docs/implementation/process-tests.xml",
+        "docs/implementation/process-linux-tests.xml",
+        "docs/implementation/checkpoint-11.md",
+        "docs/implementation/process-journal-tests.xml"
+      ]
     },
     {
       "id": "P3-6",
       "requirement": "实现最终事务与 Outbox、投递回执、重试及失败查询。",
       "status": "in_progress",
-      "evidence": ["docs/implementation/checkpoint-07.md", "docs/implementation/gateway-repository-tests.xml"]
+      "evidence": [
+        "docs/implementation/checkpoint-07.md",
+        "docs/implementation/gateway-repository-tests.xml"
+      ]
     },
     {
       "id": "P3-7",
       "requirement": "实现启动恢复、owner 资格、未知副作用状态和优雅退出。",
       "status": "in_progress",
-      "evidence": ["docs/implementation/checkpoint-07.md", "docs/implementation/gateway-repository-tests.xml", "docs/implementation/checkpoint-12.md", "docs/implementation/recovery-tests.xml", "docs/implementation/recovery-linux-tests.xml", "docs/implementation/distribution-check-12.json"]
+      "evidence": [
+        "docs/implementation/checkpoint-07.md",
+        "docs/implementation/gateway-repository-tests.xml",
+        "docs/implementation/checkpoint-12.md",
+        "docs/implementation/recovery-tests.xml",
+        "docs/implementation/recovery-linux-tests.xml",
+        "docs/implementation/distribution-check-12.json"
+      ]
     },
     {
       "id": "P3-8",
@@ -315,43 +354,69 @@
       "id": "P3-9",
       "requirement": "删除 stdin_jsonl 渠道示例和配置，测试改用进程内消息 Adapter；从 run gateway 启动新版网关。",
       "status": "complete",
-      "evidence": ["docs/implementation/checkpoint-08.md", "docs/implementation/distribution-check-08.json", "scripts/validate_distribution.py"]
+      "evidence": [
+        "docs/implementation/checkpoint-08.md",
+        "docs/implementation/distribution-check-08.json",
+        "scripts/validate_distribution.py"
+      ]
     },
     {
       "id": "P4-1",
       "requirement": "建立 extensions/experience，注册资源、工具和命令。",
       "status": "complete",
-      "evidence": ["extensions/experience/extension.py", "extensions/experience/repository.py", "tests/redesign/test_experience.py", "docs/implementation/checkpoint-14.md"]
+      "evidence": [
+        "extensions/experience/extension.py",
+        "extensions/experience/repository.py",
+        "tests/redesign/test_experience.py",
+        "docs/implementation/checkpoint-14.md"
+      ]
     },
     {
       "id": "P4-2",
       "requirement": "实现 USER/MEMORY/Skill 模型、作用域、显式写入和删除。",
       "status": "complete",
-      "evidence": ["extensions/experience/models.py", "extensions/experience/repository.py", "tests/redesign/test_experience.py"]
+      "evidence": [
+        "extensions/experience/models.py",
+        "extensions/experience/repository.py",
+        "tests/redesign/test_experience.py"
+      ]
     },
     {
       "id": "P4-3",
       "requirement": "实现版本快照、Markdown 投影、手改导入与冲突提示。",
       "status": "complete",
-      "evidence": ["extensions/experience/projection.py", "tests/redesign/test_experience.py"]
+      "evidence": [
+        "extensions/experience/projection.py",
+        "tests/redesign/test_experience.py"
+      ]
     },
     {
       "id": "P4-4",
       "requirement": "接通固定版本 Skill 加载、事实失效和本地检索。",
       "status": "complete",
-      "evidence": ["extensions/experience/context.py", "extensions/experience/extension.py", "tests/redesign/test_experience.py"]
+      "evidence": [
+        "extensions/experience/context.py",
+        "extensions/experience/extension.py",
+        "tests/redesign/test_experience.py"
+      ]
     },
     {
       "id": "P4-5",
       "requirement": "完成 E01—E03、关闭扩展及 CLI 独立使用验收。",
       "status": "complete",
-      "evidence": ["tests/redesign/test_experience.py", "docs/implementation/experience-tests.xml"]
+      "evidence": [
+        "tests/redesign/test_experience.py",
+        "docs/implementation/experience-tests.xml"
+      ]
     },
     {
       "id": "P4-6",
       "requirement": "完成新配置下的 experience 使用说明与示例；确认没有 Mem0 残留入口或旧记忆迁移代码。",
       "status": "complete",
-      "evidence": ["extensions/experience/README.md", "extensions/README.md"]
+      "evidence": [
+        "extensions/experience/README.md",
+        "extensions/README.md"
+      ]
     },
     {
       "id": "P5-1",
@@ -578,14 +643,23 @@
       "scenario": "运行中 status/steer/stop",
       "invariant": "Controller 不被长 prompt 阻塞，回执真实",
       "status": "complete",
-      "evidence": ["docs/implementation/checkpoint-08.md", "docs/implementation/gateway-runtime-tests.xml", "tests/redesign/test_gateway_runtime.py", "tests/redesign/test_gateway_steering.py"]
+      "evidence": [
+        "docs/implementation/checkpoint-08.md",
+        "docs/implementation/gateway-runtime-tests.xml",
+        "tests/redesign/test_gateway_runtime.py",
+        "tests/redesign/test_gateway_steering.py"
+      ]
     },
     {
       "id": "G03",
       "scenario": "steer 与运行结束竞争",
       "invariant": "消费或转队列恰有一个确定结果",
       "status": "complete",
-      "evidence": ["docs/implementation/checkpoint-08.md", "docs/implementation/gateway-runtime-tests.xml", "tests/redesign/test_gateway_steering.py"]
+      "evidence": [
+        "docs/implementation/checkpoint-08.md",
+        "docs/implementation/gateway-runtime-tests.xml",
+        "tests/redesign/test_gateway_steering.py"
+      ]
     },
     {
       "id": "G04",
@@ -627,14 +701,24 @@
       "scenario": "工具取消慢或失效",
       "invariant": "未退出不释放额度；残留可见",
       "status": "complete",
-      "evidence": ["docs/implementation/checkpoint-10.md", "tests/redesign/test_process_supervisor.py", "tests/redesign/test_gateway_runtime.py", "docs/implementation/process-tests.xml", "docs/implementation/process-linux-tests.xml"]
+      "evidence": [
+        "docs/implementation/checkpoint-10.md",
+        "tests/redesign/test_process_supervisor.py",
+        "tests/redesign/test_gateway_runtime.py",
+        "docs/implementation/process-tests.xml",
+        "docs/implementation/process-linux-tests.xml"
+      ]
     },
     {
       "id": "G10",
       "scenario": "`/new` 后旧后台完成",
       "invariant": "通知保留原归属，不写新历史",
       "status": "complete",
-      "evidence": ["docs/implementation/checkpoint-09.md", "tests/redesign/test_background_workspaces.py", "docs/implementation/background-tests.xml"]
+      "evidence": [
+        "docs/implementation/checkpoint-09.md",
+        "tests/redesign/test_background_workspaces.py",
+        "docs/implementation/background-tests.xml"
+      ]
     },
     {
       "id": "G11",
@@ -777,7 +861,10 @@
       "scenario": "执行超时、模型错误、取消",
       "invariant": "分母、失败证据和全部可得成本不遗漏",
       "status": "in_progress",
-      "evidence": ["docs/implementation/checkpoint-03.md", "docs/implementation/telemetry-tests.xml"]
+      "evidence": [
+        "docs/implementation/checkpoint-03.md",
+        "docs/implementation/telemetry-tests.xml"
+      ]
     },
     {
       "id": "V03",
