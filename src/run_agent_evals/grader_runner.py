@@ -63,7 +63,7 @@ def parse_junit(report: Path) -> Mapping[str, bool]:
     if not report.exists():
         return {}
     outcomes: dict[str, bool] = {}
-    for case in ET.parse(report).iter("testcase"):  # noqa: S314 - a file we just wrote
+    for case in ET.parse(report).iter("testcase"):
         if case.find("skipped") is not None:
             continue
         name = f"{case.get('classname', '')}::{case.get('name', '')}"

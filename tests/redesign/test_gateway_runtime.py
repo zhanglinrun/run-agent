@@ -1,4 +1,5 @@
 import asyncio
+import time
 from dataclasses import replace
 
 import pytest
@@ -45,12 +46,25 @@ def submit(tmp_path, message="first", text="hello", chat="chat"):
 
 
 async def eventually(check, *, timeout=5):
-    async with asyncio.timeout(timeout):
-        while True:
-            result = await check()
-            if result:
-                return result
-            await asyncio.sleep(0.005)
+    """Poll until the condition holds, and say so usefully when it never does.
+
+    A bare TimeoutError is what made the mixed-load failure uncharacterisable: twelve
+    measured rounds drain in 0.92-1.08s against this budget, under load as well as
+    idle, so "too slow" is unsupported and the next occurrence needs to report itself.
+    """
+    started = time.monotonic()
+    try:
+        async with asyncio.timeout(timeout):
+            while True:
+                result = await check()
+                if result:
+                    return result
+                await asyncio.sleep(0.005)
+    except TimeoutError:
+        raise AssertionError(
+            f"condition stayed false for {time.monotonic() - started:.2f}s "
+            f"(budget {timeout}s), still waiting on {getattr(check, '__name__', check)!r}"
+        ) from None
 
 
 async def released(repo, task_id):
