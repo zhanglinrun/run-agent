@@ -444,35 +444,38 @@
     {
       "id": "P5-1",
       "requirement": "接收持久完成回执，实施触发筛选、幂等、冷却和辅助任务排除。",
-      "status": "in_progress",
+      "status": "complete",
       "evidence": [
         "extensions/experience/review.py",
-        "tests/redesign/test_review_trigger.py::test_a_substantial_successful_run_is_reviewed_with_a_stable_key",
         "tests/redesign/test_review_trigger.py::test_the_same_run_is_never_reviewed_twice",
         "tests/redesign/test_review_trigger.py::test_an_auxiliary_task_never_triggers_a_review",
         "tests/redesign/test_review_trigger.py::test_a_second_review_waits_for_the_cooldown",
-        "tests/redesign/test_experience_review_wiring.py::test_a_failed_completion_leaves_one_durable_review_request",
-        "tests/redesign/test_experience_review_wiring.py::test_a_trivial_successful_completion_leaves_no_review_request"
+        "tests/redesign/test_experience_review_wiring.py::test_a_failed_completion_leaves_one_durable_review_request"
       ]
     },
     {
       "id": "P5-2",
       "requirement": "注册隔离复盘 worker，限定预算、证据和候选写入能力。",
-      "status": "in_progress",
+      "status": "complete",
       "evidence": [
         "extensions/experience/worker.py",
         "extensions/experience/review.py",
-        "tests/redesign/test_review_worker.py::test_the_budget_defaults_to_four_requests_and_counts_retries",
+        "tests/redesign/test_review_worker.py::test_the_review_may_read_evidence_and_propose_but_not_publish",
         "tests/redesign/test_review_worker.py::test_only_one_review_runs_per_principal",
         "tests/redesign/test_review_pipeline.py::test_the_review_worker_consumes_a_queued_request_exactly_once",
-        "tests/redesign/test_task_origin_kind.py::test_the_origin_kind_survives_storage_and_is_queryable"
+        "tests/redesign/test_task_budget.py::test_a_closed_extension_still_reports_status_budget_and_convergence"
       ]
     },
     {
       "id": "P5-3",
       "requirement": "复用 CandidateStore/PromotionGate，打通不可变候选与评测请求。",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "extensions/experience/promotion.py",
+        "tests/redesign/test_candidate_promotion.py::test_a_report_that_measured_other_content_is_refused",
+        "tests/redesign/test_candidate_promotion.py::test_a_matching_passing_report_binds_its_id",
+        "tests/redesign/test_candidate_lifecycle.py::test_e04_a_skill_is_not_published_without_a_passing_report"
+      ]
     },
     {
       "id": "P5-4",
@@ -483,14 +486,22 @@
     {
       "id": "P5-5",
       "requirement": "实现报告绑定、事务发布、并发冲突、回滚和候选查询。",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "extensions/experience/repository.py",
+        "tests/redesign/test_candidate_lifecycle.py::test_e05_rollback_restores_the_previous_version_and_keeps_history",
+        "tests/redesign/test_candidate_promotion.py::test_a_matching_failing_report_does_not_promote"
+      ]
     },
     {
       "id": "P5-6",
       "requirement": "完成 E04—E06、卸载/重启/旧实例回写测试。",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "tests/redesign/test_candidate_lifecycle.py::test_e04_a_skill_is_not_published_without_a_passing_report",
+        "tests/redesign/test_candidate_lifecycle.py::test_e05_rollback_restores_the_previous_version_and_keeps_history",
+        "tests/redesign/test_candidate_lifecycle.py::test_e06_a_repeated_end_event_does_not_queue_a_second_review"
+      ]
     },
     {
       "id": "P6-1",
