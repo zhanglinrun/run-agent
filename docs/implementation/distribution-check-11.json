@@ -1,0 +1,65 @@
+{
+  "entry_module": "E:\\pythonProject\\run-agent\\.run\\redesign\\install-env-11-final\\Lib\\site-packages\\run_agent_entry.py",
+  "scripts": {
+    "run": "run_agent_entry:main"
+  },
+  "schema_initialization_and_reopen": true,
+  "application_completion_and_resume": true,
+  "sqlite_telemetry": true,
+  "no_jsonl_output": true,
+  "host_services_and_reload": true,
+  "context_snapshot": true,
+  "skill_package_and_resume": true,
+  "extension_disposer": true,
+  "gateway_transactions": true,
+  "gateway_live_coding_and_outbox": true,
+  "gateway_steering_consumed": true,
+  "launcher": "E:\\pythonProject\\run-agent\\.run\\redesign\\install-env-11-final\\Scripts\\run.exe",
+  "commands": [
+    {
+      "args": [
+        "--version"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "740af65a6467785feb1d0e75a9c60e8a57a43ceabca093f7543d0a2d167d1346",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "--help"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "fb9783051ec99b488b5d3a4fba4d76b3ba9657009182fd37fe5adf73f87b40b4",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "gateway",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "6ab5f524da68caccb34b5e23d90d959cf211190db62f8a6ac1d30d498277d023",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "bench",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "c9f2b619ab2b984fc149ac574012440298bceb18e08aeff3f1b6c6bfd43e6194",
+      "stderr": ""
+    }
+  ],
+  "gateway_cli": {
+    "launches": 3,
+    "tasks": 3,
+    "sessions": 3,
+    "all_deliveries_sent": true,
+    "duplicate_on_restart": true,
+    "resumed_context": true,
+    "background_first_input_worktree_and_artifacts": true,
+    "provider": "local HTTP fixture; no real model"
+  },
+  "scope": "Wheel import, schema, persistence, command routing, application completion and resume; terminal interactions and real model execution are separate gates."
+}

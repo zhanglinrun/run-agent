@@ -287,7 +287,7 @@
       "id": "P3-5",
       "requirement": "通过持久状态控制取消，完成子进程收敛和迟到提交隔离。",
       "status": "in_progress",
-      "evidence": ["docs/implementation/checkpoint-07.md", "docs/implementation/gateway-repository-tests.xml", "docs/implementation/checkpoint-10.md", "docs/implementation/process-tests.xml", "docs/implementation/process-linux-tests.xml"]
+      "evidence": ["docs/implementation/checkpoint-07.md", "docs/implementation/gateway-repository-tests.xml", "docs/implementation/checkpoint-10.md", "docs/implementation/process-tests.xml", "docs/implementation/process-linux-tests.xml", "docs/implementation/checkpoint-11.md", "docs/implementation/process-journal-tests.xml"]
     },
     {
       "id": "P3-6",

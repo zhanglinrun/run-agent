@@ -76,7 +76,7 @@ class WindowsJobProcess:
         if not self._job:
             raise ctypes.WinError(ctypes.get_last_error())
         self._process: int | None = None
-        thread: int | None = None
+        self._thread: int | None = None
         try:
             limits = _ExtendedLimits()
             limits.BasicLimitInformation.LimitFlags = 0x2000  # KILL_ON_JOB_CLOSE
@@ -102,7 +102,7 @@ class WindowsJobProcess:
                     shell = os.environ.get("COMSPEC") or str(
                         Path(os.environ["SYSTEMROOT"]) / "System32" / "cmd.exe"
                     )
-                    self._process, thread, self.pid, _ = self._winapi.CreateProcess(
+                    self._process, self._thread, self.pid, _ = self._winapi.CreateProcess(
                         shell, f'{subprocess.list2cmdline([shell])} /d /s /c "{command}"',
                         None, None, True, 0x4 | subprocess.CREATE_NO_WINDOW,
                         None, str(cwd), startup,
@@ -111,17 +111,20 @@ class WindowsJobProcess:
                     for handle in handles:
                         self._winapi.CloseHandle(handle)
             self._check(self._api.AssignProcessToJobObject(self._job, self._process))
-            if self._api.ResumeThread(thread) == 0xFFFFFFFF:
-                raise ctypes.WinError(ctypes.get_last_error())
         except BaseException:
             if self._process is not None:
                 self._winapi.TerminateProcess(self._process, 1)
                 self._winapi.WaitForSingleObject(self._process, 5000)
             self.close()
             raise
-        finally:
-            if thread is not None:
-                self._winapi.CloseHandle(thread)
+
+    def resume(self) -> None:
+        if self._thread is None:
+            raise RuntimeError("Process thread is not suspended")
+        if self._api.ResumeThread(self._thread) == 0xFFFFFFFF:
+            raise ctypes.WinError(ctypes.get_last_error())
+        self._winapi.CloseHandle(self._thread)
+        self._thread = None
 
     @staticmethod
     def _check(result: Any) -> None:
@@ -146,6 +149,9 @@ class WindowsJobProcess:
         self._check(self._api.TerminateJobObject(self._job, 1))
 
     def close(self) -> None:
+        if self._thread is not None:
+            self._winapi.CloseHandle(self._thread)
+            self._thread = None
         if self._process is not None:
             self._winapi.CloseHandle(self._process)
             self._process = None

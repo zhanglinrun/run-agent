@@ -1,5 +1,3 @@
-PRAGMA application_id = 1381322305;
-PRAGMA user_version = 6;
 
 CREATE TABLE projects (
     project_id TEXT PRIMARY KEY,
@@ -212,3 +210,17 @@ CREATE TABLE extension_tasks (
     finished_at REAL
 );
 CREATE INDEX extension_tasks_owner ON extension_tasks(session_id,source_id,owner_id,generation,status);
+
+CREATE TABLE managed_processes (
+    process_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    run_id TEXT NOT NULL,
+    owner_id TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('launching','running','exited','launch_failed')),
+    intent_json TEXT NOT NULL CHECK(json_valid(intent_json)),
+    native_json TEXT CHECK(native_json IS NULL OR json_valid(native_json)),
+    outcome_json TEXT CHECK(outcome_json IS NULL OR json_valid(outcome_json)),
+    updated_at REAL NOT NULL
+);
+CREATE INDEX managed_processes_run ON managed_processes(run_id,status);

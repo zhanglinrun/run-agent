@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import signal
 import subprocess
@@ -15,6 +16,7 @@ from time import monotonic
 from typing import Any, BinaryIO, Protocol, cast
 from uuid import uuid4
 
+from run_agent_coding.host.process_identity import current_process_identity, process_identity
 from run_agent_coding.storage.settle import settle
 from run_agent_core.tools import ToolCancellationToken
 from run_agent_core.types import JSONValue
@@ -30,6 +32,7 @@ class OwnedProcess(Protocol):
     pid: int
     identity: str
     kind: str
+    def resume(self) -> None: ...
     def poll(self) -> int | None: ...
     def active_count(self) -> int: ...
     def terminate(self, *, force: bool) -> None: ...
@@ -49,6 +52,9 @@ class PosixProcess:
 
     def poll(self) -> int | None:
         return self._process.poll()
+
+    def resume(self) -> None:
+        pass
 
     def active_count(self) -> int:
         self.poll()
@@ -132,6 +138,17 @@ class ProcessSupervisor:
             raise asyncio.CancelledError
         identity = uuid4().hex
         recorder = self.recorder_factory() if self.recorder_factory else None
+        if recorder is not None:
+            _, interrupted = await settle(recorder({
+                "process_id": identity, "phase": "launching", "host_pid": os.getpid(),
+                "host_identity": current_process_identity(), "cwd": str(cwd.resolve()),
+                "command_sha256": hashlib.sha256(command.encode()).hexdigest(),
+            }))
+            if interrupted:
+                await settle(recorder({
+                    "process_id": identity, "phase": "launch_failed", "error": "cancelled",
+                }))
+                raise asyncio.CancelledError
 
         def spawn() -> ProcessExecution:
             # Ownership transfers to ProcessExecution until its process group is empty.
@@ -149,6 +166,8 @@ class ProcessSupervisor:
                 output.close()
                 raise
 
+        # A failed native creation retains its durable intent. Recovery must resolve
+        # partial creation before considering the associated workspace reusable.
         execution, interrupted = await settle(asyncio.to_thread(spawn))
         self._active[identity] = execution
         try:
@@ -171,11 +190,15 @@ class ProcessSupervisor:
         try:
             if recorder is not None:
                 await recorder({
+                    "process_id": identity,
                     "pid": process.pid, "identity": process.identity, "kind": process.kind,
-                    "phase": "started",
+                    "phase": "started", "native_identity": process_identity(process.pid),
                 })
-            if interrupted:
+            if interrupted or self._closed or (
+                cancellation is not None and cancellation.is_cancelled()
+            ):
                 raise asyncio.CancelledError
+            process.resume()
             while process.poll() is None:
                 timed_out = timeout is not None and monotonic() - start >= timeout
                 cancelled = self._closed or (
@@ -197,6 +220,7 @@ class ProcessSupervisor:
             _, cleanup_cancelled = await settle(self._drain(identity))
             if recorder is not None:
                 _, record_cancelled = await settle(recorder({
+                    "process_id": identity,
                     "pid": process.pid, "identity": process.identity, "kind": process.kind,
                     "phase": "exited", "exit_code": execution.exit_code,
                     "events": list(execution.events),

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeVar
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 APPLICATION_ID = 1381322305
 T = TypeVar("T")
 
@@ -121,6 +121,8 @@ class SqliteDatabase:
                 for statement in schema.split(";"):
                     if statement.strip():
                         connection.execute(statement)
+                connection.execute(f"PRAGMA application_id={APPLICATION_ID}")
+                connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             elif version != SCHEMA_VERSION or app_id != APPLICATION_ID:
                 raise SchemaMismatch(
                     f"Unsupported database schema: app={app_id}, version={version}"

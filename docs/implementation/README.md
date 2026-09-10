@@ -9,7 +9,7 @@
 - 原始调度与存储性能：`baseline-runtime.json`、`baseline-storage.json`。这些是模拟负载，用于同条件比较，不代表模型能力。
 - 新版目标：Provider / Core / Coding / Gateway；唯一产品命令 `run`；SQLite 权威状态；独立 Gateway；Session 扩展装配经验学习；独立环境验收和证据闭环。
 
-当前检查点：[checkpoint-10.md](checkpoint-10.md)。内置命令已使用 Windows Job Object / POSIX 进程组管理，无法确认退出时保留工作区隔离与运行名额。Windows 全套 165 项通过、2 项跳过；Linux 进程专项 12 项通过、1 项跳过。全量 mypy 检查 159 个源文件及 Ruff 通过；全新安装包的实际终端命令、网关启动、重启、去重和首次后台任务验收通过。完整目标继续开放，任务状态以 `requirements.json` 为准；早期检查点保留为历史记录。
+当前检查点：[checkpoint-11.md](checkpoint-11.md)。进程启动意图、系统身份和退出结果已接入 SQLite 权威账本，未收敛的进程阻止会话完成事务。Windows 全套 169 项通过、2 项跳过；Linux 进程专项 14 项通过、3 项跳过。全量 mypy 检查 161 个源文件及 Ruff 通过；全新安装包的实际终端命令、网关启动、重启、去重和首次后台任务验收通过。完整目标继续开放，任务状态以 `requirements.json` 为准；早期检查点保留为历史记录。
 
 已落地并验证：
 

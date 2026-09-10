@@ -160,12 +160,14 @@ async def test_cancel_during_spawn_waits_for_ownership_and_cleanup(tmp_path, com
     task = asyncio.create_task(supervisor.run(command(), cwd=tmp_path))
     try:
         assert await asyncio.to_thread(started.wait, 5)
-        pid = await child_started(marker)
+        pid = await child_started(marker) if os.name != "nt" else None
         task.cancel()
         proceed.set()
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(task, 8)
-        assert not alive(pid) and supervisor.active_count == 0
+        assert (pid is None or not alive(pid)) and supervisor.active_count == 0
+        if os.name == "nt":
+            assert not marker.exists()
     finally:
         proceed.set()
         await supervisor.aclose()
@@ -266,9 +268,15 @@ async def test_gateway_stop_exits_real_process_before_releasing_assignment(runti
             "SELECT body_json FROM observations WHERE stream='process.lifecycle' ORDER BY seq"
         ).fetchall())
         records = [json.loads(row[0]) for row in lifecycle]
-        assert [r["phase"] for r in records] == ["started", "exited"]
+        assert [r["phase"] for r in records] == ["launching", "started", "exited"]
         assert all(r["run_id"] == state["run_id"] for r in records)
         assert "empty" in records[-1]["events"]
+        journal = await repo.database.run(lambda c: c.execute(
+            "SELECT status,native_json,outcome_json FROM managed_processes WHERE run_id=?",
+            (state["run_id"],),
+        ).fetchone())
+        assert journal[0] == "exited" and "native_identity" in json.loads(journal[1])
+        assert "empty" in json.loads(journal[2])["events"]
     finally:
         await scheduler.shutdown()
         await repo.release_owner(owner)

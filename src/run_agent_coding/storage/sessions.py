@@ -338,6 +338,11 @@ class SqliteSessionRepository:
                 row["snapshot_id"],
             )
         self.assert_token(connection, outcome.token, allow_revoked=outcome.status == "cancelled")
+        if connection.execute(
+            "SELECT 1 FROM managed_processes WHERE session_id=? "
+            "AND status IN ('launching','running') LIMIT 1", (outcome.token.session_id,),
+        ).fetchone():
+            raise SessionConflict("Session has unresolved process ownership")
         revoked = connection.execute(
             "SELECT 1 FROM execution_revocations WHERE run_id=?", (outcome.token.run_id,)
         ).fetchone()

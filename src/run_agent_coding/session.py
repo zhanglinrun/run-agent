@@ -116,6 +116,7 @@ from run_agent_coding.session_manager import (
 )
 from run_agent_coding.session_stats import SessionStats, calculate_session_stats
 from run_agent_coding.skills import Skill, expand_skill_command, load_skills_with_diagnostics
+from run_agent_coding.storage.processes import SqliteProcessJournal
 from run_agent_coding.storage.sessions import canonical_json
 from run_agent_coding.storage.settle import settle
 from run_agent_coding.storage.skill_packages import SkillPackageStore
@@ -3519,6 +3520,9 @@ class CodingSession:
         token = self.storage.token
 
         async def record(payload: dict[str, JSONValue]) -> None:
+            if self._config.session_manager is not None:
+                repository = await self._config.session_manager.repository()
+                await SqliteProcessJournal(repository.database).record(token, payload)
             await self._config.telemetry.append("process.lifecycle", {
                 **payload, "session_id": token.session_id, "run_id": token.run_id,
                 "owner_id": token.owner_id, "generation": token.generation,
