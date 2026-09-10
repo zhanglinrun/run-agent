@@ -1,5 +1,5 @@
 PRAGMA application_id = 1381322305;
-PRAGMA user_version = 4;
+PRAGMA user_version = 5;
 
 CREATE TABLE projects (
     project_id TEXT PRIMARY KEY,
@@ -72,11 +72,13 @@ CREATE TABLE executions (
     watermark INTEGER,
     outcome_json TEXT CHECK(outcome_json IS NULL OR json_valid(outcome_json)),
     error TEXT,
+    snapshot_id TEXT REFERENCES context_snapshots(snapshot_id),
     FOREIGN KEY(session_id, branch_id) REFERENCES branches(session_id, branch_id)
 );
 
 CREATE TABLE context_snapshots (
     snapshot_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
     session_id TEXT NOT NULL,
     branch_id TEXT NOT NULL,
     head_id TEXT,
@@ -89,6 +91,12 @@ CREATE TABLE context_snapshots (
     FOREIGN KEY(session_id, head_id) REFERENCES entries(session_id, entry_id)
 );
 CREATE INDEX snapshots_branch ON context_snapshots(session_id, branch_id, watermark DESC);
+CREATE INDEX snapshots_run ON context_snapshots(run_id, created_at);
+
+CREATE TABLE snapshot_blocks (
+    digest TEXT PRIMARY KEY,
+    body_json TEXT NOT NULL CHECK(json_valid(body_json))
+);
 
 CREATE TABLE extension_owners (
     session_id TEXT NOT NULL REFERENCES sessions(session_id),

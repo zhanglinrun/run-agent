@@ -325,15 +325,24 @@ class Terminal:
             create_app_session(input=self.editor.input, output=self.editor.output),
             patch_stdout(raw=True),
         ):
+            initializing = True
+            startup_inputs: list[str] = []
 
             async def initial() -> None:
+                nonlocal initializing
                 try:
                     await self.application.start(self.ui)
+                    initializing = False
                     if initial_prompt:
                         await self._consume(initial_prompt)
+                    for queued in startup_inputs:
+                        if not self._exit:
+                            await self._consume(queued)
                 except Exception as exc:
                     self.ui.notify(str(exc), level="error")
                     self._shutdown.set()
+                finally:
+                    initializing = False
 
             self._work = asyncio.create_task(initial())
             try:
@@ -346,6 +355,9 @@ class Terminal:
                     except EOFError:
                         break
                     if not text:
+                        continue
+                    if initializing and text != "/stop":
+                        startup_inputs.append(text)
                         continue
                     if text == "/stop":
                         await self._stop()

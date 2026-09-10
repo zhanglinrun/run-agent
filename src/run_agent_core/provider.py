@@ -2,12 +2,27 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from typing import Protocol
 
 from run_agent_core.messages import AgentMessage
 from run_agent_core.provider_events import AssistantMessageEvent
 from run_agent_core.tools import AgentTool
+
+
+@dataclass(frozen=True, slots=True)
+class ModelRequest:
+    """The actual input after context transformation and history repair."""
+
+    model: str
+    system: str
+    messages: Sequence[AgentMessage]
+    tools: Sequence[AgentTool]
+    session_id: str | None = None
+
+
+BeforeModelRequest = Callable[[ModelRequest], Awaitable[None]]
 
 
 class CancellationToken(Protocol):

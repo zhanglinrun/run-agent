@@ -6,6 +6,8 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
+from run_agent_core.session.contracts import AppendReceipt, RunToken
+from run_agent_core.session.entries import CustomEntry
 from run_agent_core.types import JSONValue
 
 
@@ -106,6 +108,9 @@ class HostServices(Protocol):
     @property
     def tasks(self) -> TaskService: ...
 
+    @property
+    def snapshots(self) -> SnapshotService: ...
+
     def scope(self, scope: ServiceScope = "session") -> ScopedServices:
         """Choose one host-bound scope; identities cannot be supplied by tools."""
         ...
@@ -121,7 +126,8 @@ class HostServicesRegistry(Protocol):
         *,
         expected_generation: str | None = None,
         handlers: Mapping[str, Mapping[str, TaskHandler]] | None = None,
-    ) -> Mapping[str, HostServices]: ...
+        activation: SessionActivation | None = None,
+    ) -> HostPublication: ...
 
     async def retire(self, session_id: str, generation: str) -> int:
         """Revoke writes and drain tasks; return the number still cancelling."""
@@ -160,3 +166,36 @@ class TaskService(Protocol):
     async def status(self, task_id: str) -> TaskInfo: ...
 
     async def cancel(self, task_id: str) -> TaskInfo: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ContextSnapshot:
+    snapshot_id: str
+    session_id: str
+    run_id: str
+    branch_id: str
+    head_id: str | None
+    watermark: int
+    builder_version: str
+    content_hash: str
+    payload: dict[str, JSONValue]
+
+
+class SnapshotService(Protocol):
+    async def read(self, snapshot_id: str) -> ContextSnapshot:
+        """Read a verified, fixed input belonging to this service's session."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class SessionActivation:
+    token: RunToken
+    branch_id: str
+    expected_head: str | None
+    entry: CustomEntry
+
+
+@dataclass(frozen=True, slots=True)
+class HostPublication:
+    services: Mapping[str, HostServices]
+    activation_receipt: AppendReceipt | None

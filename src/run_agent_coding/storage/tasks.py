@@ -83,6 +83,15 @@ class LocalTaskManager:
                 def persist(connection: sqlite3.Connection) -> None:
                     assert_active()
                     assert_extension(connection, token)
+                    if frozen.snapshot_id is not None:
+                        snapshot = connection.execute(
+                            "SELECT 1 FROM context_snapshots WHERE snapshot_id=? AND session_id=?",
+                            (frozen.snapshot_id, token.session_id),
+                        ).fetchone()
+                        if snapshot is None:
+                            raise TaskRejected(
+                                "Task snapshot is missing or belongs to another session"
+                            )
                     connection.execute(
                         "INSERT INTO extension_tasks "
                         "VALUES (?,?,?,?,?,?,?,?,'queued',NULL,NULL,?,NULL)",

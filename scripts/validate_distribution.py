@@ -42,6 +42,10 @@ async def check():
             yield AssistantDoneEvent(reason='stop', message=AssistantMessage(
                 content=[TextContent(text='installed-wheel')], model='test', stop_reason='stop'))
     paths = RunAgentPaths(home=pathlib.Path('application'), agents_home=pathlib.Path('agents'))
+    skill_root = paths.home / 'skills' / 'installed'
+    skill_root.mkdir(parents=True)
+    (skill_root / 'SKILL.md').write_text('Installed skill v1', encoding='utf-8')
+    (skill_root / 'helper.py').write_text("print('fixed helper')", encoding='utf-8')
     extension = pathlib.Path('installed_extension.py').resolve()
     extension.write_text('def setup(api): pass', encoding='utf-8')
     options = ApplicationOptions(cwd=pathlib.Path.cwd(), paths=paths, model='test',
@@ -52,16 +56,30 @@ async def check():
         identity = app.session.session_id
         head = events[-1].head_id
         runtime = app.session.extension_runtime
+        snapshot = await runtime._extensions[0].api.context.services.snapshots.read(
+            events[-1].snapshot_id)
+        assert snapshot.payload['purpose'] == 'agent'
+        assert snapshot.payload['resource_snapshot_id'] == app.session._resource_snapshot_id
+        original_skill = app.session.skills[0]
+        assert original_skill.package_digest in str(original_skill.path)
+        (skill_root / 'SKILL.md').write_text('Installed skill v2', encoding='utf-8')
+        assert original_skill.path.read_text(encoding='utf-8') == 'Installed skill v1'
         state = runtime._extensions[0].api.context.services.scope().state
         await state.compare_and_set(StateChange('installed', 0, True))
         await app.command('/reload')
         runtime = app.session.extension_runtime
         current_state = runtime._extensions[0].api.context.services.scope().state
         assert (await current_state.get('installed')).value
+        assert app.session.skills[0].content == 'Installed skill v2'
+        head = (await app.session.storage.get_head()).entry_id
+        skill_version = app.session.skills[0].package_digest
+    (skill_root / 'SKILL.md').write_text('Unloaded skill v3', encoding='utf-8')
     from dataclasses import replace
     reopened = await CodingApplication.open(replace(options, resume=identity), provider=Provider())
     async with reopened as app:
         assert (await app.session.storage.get_head()).entry_id == head
+        assert app.session.skills[0].package_digest == skill_version
+        assert app.session.skills[0].content == 'Installed skill v2'
     assert not any(name.startswith(('textual', 'run_agent_coding.tui')) for name in sys.modules)
     assert not list(pathlib.Path.cwd().rglob('*.jsonl'))
 asyncio.run(check())
@@ -69,7 +87,8 @@ print(json.dumps({'entry_module':run_agent_entry.__file__, 'scripts':scripts,
                   'schema_initialization_and_reopen':True,
                   'application_completion_and_resume':True,
                   'sqlite_telemetry':True, 'no_jsonl_output':True,
-                  'host_services_and_reload':True}))
+                  'host_services_and_reload':True, 'context_snapshot':True,
+                  'skill_package_and_resume':True}))
 """
 
 

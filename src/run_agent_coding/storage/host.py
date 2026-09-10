@@ -8,19 +8,25 @@ from time import time
 
 from run_agent_coding.host.contracts import (
     ArtifactRef,
+    ContextSnapshot,
     ExtensionToken,
+    HostPublication,
     HostServices,
     ScopedServices,
     ServiceScope,
+    SessionActivation,
+    SnapshotService,
     TaskHandler,
     TaskService,
 )
 from run_agent_coding.storage.artifacts import ArtifactStore
 from run_agent_coding.storage.resources import NamespaceResources
-from run_agent_coding.storage.sessions import canonical_json
+from run_agent_coding.storage.sessions import SqliteSessionRepository, canonical_json
+from run_agent_coding.storage.snapshots import read_snapshot
 from run_agent_coding.storage.sqlite import SqliteDatabase
 from run_agent_coding.storage.state import ExtensionRetired, NamespaceState, assert_extension
 from run_agent_coding.storage.tasks import BoundTaskService, LocalTaskManager
+from run_agent_core.session.contracts import AppendReceipt
 
 
 class SqliteHostServices:
@@ -37,7 +43,8 @@ class SqliteHostServices:
         *,
         expected_generation: str | None = None,
         handlers: Mapping[str, Mapping[str, TaskHandler]] | None = None,
-    ) -> Mapping[str, HostServices]:
+        activation: SessionActivation | None = None,
+    ) -> HostPublication:
         if (
             not generation
             or any(not source for source in sources)
@@ -46,7 +53,7 @@ class SqliteHostServices:
             raise ValueError("Invalid extension bindings")
         frozen_sources = tuple(sources)
 
-        def publish(connection: sqlite3.Connection) -> tuple[str, str]:
+        def publish(connection: sqlite3.Connection) -> tuple[str, str, AppendReceipt | None]:
             assert_active()
             session = connection.execute(
                 "SELECT * FROM sessions WHERE session_id=?",
@@ -83,15 +90,26 @@ class SqliteHostServices:
                 "AND status IN ('queued','running','cancelling')",
                 (time(), session_id, self.owner_id),
             )
-            return session["principal_id"], session["project_id"]
+            receipt = None
+            if activation is not None:
+                if activation.token.session_id != session_id:
+                    raise ExtensionRetired("Resource activation belongs to another session")
+                receipt = SqliteSessionRepository(self.database).append_in_transaction(
+                    connection,
+                    (activation.entry,),
+                    token=activation.token,
+                    branch_id=activation.branch_id,
+                    expected_head=activation.expected_head,
+                )
+            return session["principal_id"], session["project_id"], receipt
 
-        principal_id, project_id = await self.database.run(publish, write=True)
+        principal_id, project_id, receipt = await self.database.run(publish, write=True)
         scopes: dict[ServiceScope, str] = {
             "session": canonical_json(["session", principal_id, session_id]),
             "project": canonical_json(["project", principal_id, project_id]),
             "user": canonical_json(["user", principal_id]),
         }
-        return {
+        services: dict[str, HostServices] = {
             source: BoundHostServices(
                 self.database,
                 self.artifacts,
@@ -103,6 +121,7 @@ class SqliteHostServices:
             )
             for source in frozen_sources
         }
+        return HostPublication(services, receipt)
 
     async def retire(self, session_id: str, generation: str) -> int:
         def retire(connection: sqlite3.Connection) -> None:
@@ -136,6 +155,7 @@ class BoundHostServices:
     ) -> None:
         self._assert_active = assert_active
         self._tasks = BoundTaskService(tasks, token, handlers, self, assert_active)
+        self._snapshots = BoundSnapshots(database, token, assert_active)
         self._scopes: dict[ServiceScope, ScopedServices] = {}
         for name, scope in scopes.items():
             scoped_artifacts = ScopedArtifacts(database, artifacts, token, scope, assert_active)
@@ -162,6 +182,30 @@ class BoundHostServices:
     def tasks(self) -> TaskService:
         self._assert_active()
         return self._tasks
+
+    @property
+    def snapshots(self) -> SnapshotService:
+        self._assert_active()
+        return self._snapshots
+
+
+class BoundSnapshots:
+    def __init__(
+        self, database: SqliteDatabase, token: ExtensionToken, assert_active: Callable[[], None]
+    ) -> None:
+        self._database, self._token, self._assert_active = database, token, assert_active
+
+    async def read(self, snapshot_id: str) -> ContextSnapshot:
+        def read(connection: sqlite3.Connection) -> ContextSnapshot:
+            self._assert_active()
+            assert_extension(connection, self._token)
+            value = read_snapshot(connection, snapshot_id, session_id=self._token.session_id)
+            value.pop("created_at")
+            return ContextSnapshot(**value)
+
+        snapshot = await self._database.run(read)
+        self._assert_active()
+        return snapshot
 
 
 class ScopedArtifacts:

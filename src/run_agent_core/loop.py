@@ -30,7 +30,12 @@ from run_agent_core.messages import (
     ToolCall,
     ToolResultMessage,
 )
-from run_agent_core.provider import CancellationToken, ModelProvider
+from run_agent_core.provider import (
+    BeforeModelRequest,
+    CancellationToken,
+    ModelProvider,
+    ModelRequest,
+)
 from run_agent_core.provider_events import (
     AssistantDoneEvent,
     AssistantErrorEvent,
@@ -140,6 +145,7 @@ async def run_agent_loop(
     prepare_next_turn: PrepareNextTurn | None = None,
     should_stop_after_turn: ShouldStopAfterTurn | None = None,
     transform_context: TransformContext | None = None,
+    before_model_request: BeforeModelRequest | None = None,
 ) -> AsyncIterator[AgentEvent]:
     """Run the provider/tool loop and emit Pi-compatible agent events."""
     new_messages = list(prompts)
@@ -215,11 +221,17 @@ async def run_agent_loop(
                     )
                 )
             assistant = None
+            request_messages = _provider_context(request_messages)
+            if before_model_request is not None:
+                await before_model_request(ModelRequest(
+                    current_model, current_system, tuple(request_messages), tuple(current_tools),
+                    session_id,
+                ))
             async for event in _assistant_events(
                 provider=provider,
                 model=current_model,
                 system=current_system,
-                messages=_provider_context(request_messages),
+                messages=request_messages,
                 tools=current_tools,
                 signal=signal,
                 session_id=session_id,

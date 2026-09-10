@@ -60,7 +60,12 @@ from run_agent_coding.extensions.provider_registry import (
     DynamicProviderRegistry,
 )
 from run_agent_coding.extensions.providers import CredentialReader, DynamicProvider
-from run_agent_coding.host.contracts import HostServices, HostServicesRegistry, TaskHandler
+from run_agent_coding.host.contracts import (
+    HostServices,
+    HostServicesRegistry,
+    SessionActivation,
+    TaskHandler,
+)
 from run_agent_coding.paths import RunAgentPaths
 from run_agent_coding.project_trust import ExtensionTrustResult, ProjectTrustEvent
 from run_agent_coding.provider_config import ProviderConfig
@@ -73,6 +78,7 @@ from run_agent_core.events import TurnStartEvent as AgentTurnStartEvent
 from run_agent_core.loop import BeforeToolCallResult
 from run_agent_core.messages import AgentMessage, CustomMessage, TextContent, ToolCall
 from run_agent_core.provider import CancellationToken
+from run_agent_core.session.contracts import AppendReceipt
 from run_agent_core.tools import AgentTool, AgentToolResult
 from run_agent_core.types import JSONValue
 from run_agent_observability.sink import TelemetrySink
@@ -730,7 +736,12 @@ class ExtensionRuntime:
         """
         self._turn_requested = callback
 
-    async def publish_host_services(self, *, expected_generation: str | None = None) -> bool:
+    async def publish_host_services(
+        self,
+        *,
+        expected_generation: str | None = None,
+        activation: SessionActivation | None = None,
+    ) -> tuple[bool, AppendReceipt | None]:
         """Commit all source bindings, then publish the corresponding typed facades.
 
         Return cancellation at the commit boundary for the host to settle. No
@@ -738,13 +749,13 @@ class ExtensionRuntime:
         """
         self._generation.assert_active()
         if self._host_binding is not None:
-            return False
+            return False, None
         session = self.session_view
         registry = session.host_services
         session_id = session.session_id
         if session_id is None:
             raise ExtensionError("Host services require a persistent session identity")
-        services, cancelled = await settle(
+        publication, cancelled = await settle(
             registry.publish(
                 session_id,
                 self._generation.id,
@@ -752,11 +763,12 @@ class ExtensionRuntime:
                 self._generation.assert_active,
                 expected_generation=expected_generation,
                 handlers=self._task_handlers,
+                activation=activation,
             )
         )
         self._host_binding = registry, session_id, self._generation.id
-        self._host_services = services
-        return cancelled
+        self._host_services = publication.services
+        return cancelled, publication.activation_receipt
 
     def host_services_for_source(self, source_id: str) -> HostServices:
         self._generation.assert_active()

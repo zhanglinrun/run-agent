@@ -28,7 +28,7 @@ from run_agent_core.messages import (
     ToolResultMessage,
     UserMessage,
 )
-from run_agent_core.provider import ModelProvider
+from run_agent_core.provider import BeforeModelRequest, ModelProvider
 from run_agent_core.tools import AgentTool
 
 EventListener = Callable[[AgentEvent], Awaitable[None] | None]
@@ -61,6 +61,7 @@ class AgentHarnessConfig:
     prepare_next_turn: PrepareNextTurn | None = None
     should_stop_after_turn: ShouldStopAfterTurn | None = None
     transform_context: TransformContext | None = None
+    before_model_request: BeforeModelRequest | None = None
 
 
 class SimpleCancellationToken:
@@ -212,6 +213,7 @@ class AgentHarness:
                 ),
                 should_stop_after_turn=self._config.should_stop_after_turn,
                 transform_context=self._config.transform_context,
+                before_model_request=self._config.before_model_request,
             ):
                 await self._notify(event)
                 yield event

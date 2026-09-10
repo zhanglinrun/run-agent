@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import string
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack, suppress
 from contextvars import ContextVar, Token
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
+from functools import partial
 from pathlib import Path
 from typing import Literal, cast
+
+from pydantic import TypeAdapter
 
 from run_agent_ai.model_limits import ModelLimitsProvider, RuntimeModelLimits
 from run_agent_coding.branch_summary import summarize_branch_messages_with_model
@@ -51,7 +55,7 @@ from run_agent_coding.events import (
 from run_agent_coding.extensions.provider_registry import DynamicProviderRegistry
 from run_agent_coding.extensions.providers import DynamicProvider, ProviderModel
 from run_agent_coding.extensions.runtime import ExtensionRuntime
-from run_agent_coding.host.contracts import HostServicesRegistry
+from run_agent_coding.host.contracts import HostServicesRegistry, SessionActivation
 from run_agent_coding.models_dev_store import ModelsDevRefreshResult, refresh_models_dev_catalog
 from run_agent_coding.paths import RunAgentPaths
 from run_agent_coding.project_trust import (
@@ -110,7 +114,9 @@ from run_agent_coding.session_manager import (
 )
 from run_agent_coding.session_stats import SessionStats, calculate_session_stats
 from run_agent_coding.skills import Skill, expand_skill_command, load_skills_with_diagnostics
+from run_agent_coding.storage.sessions import canonical_json
 from run_agent_coding.storage.settle import settle
+from run_agent_coding.storage.skill_packages import SkillPackageStore
 from run_agent_coding.system_prompt import (
     BuildSystemPromptOptions,
     ProjectContextFile,
@@ -135,7 +141,7 @@ from run_agent_core.messages import (
     UserMessage,
     message_text,
 )
-from run_agent_core.provider import CancellationToken, ModelProvider
+from run_agent_core.provider import CancellationToken, ModelProvider, ModelRequest
 from run_agent_core.provider_events import AssistantDoneEvent, AssistantErrorEvent, TextDeltaEvent
 from run_agent_core.session import (
     BranchSummaryEntry,
@@ -151,6 +157,7 @@ from run_agent_core.session import (
     load_session_entries,
 )
 from run_agent_core.session.contracts import (
+    AppendReceipt,
     CompletionReceipt,
     RunOutcome,
     RunStatus,
@@ -332,6 +339,7 @@ class CodingSessionConfig:
     cwd: Path
     telemetry: TelemetrySink
     host_services: HostServicesRegistry
+    skill_packages: SkillPackageStore
     system: str | None = None
     custom_system_prompt: str | None = None
     append_system_prompt: str | None = None
@@ -431,6 +439,9 @@ class CodingSession:
         self._completion_entries: list[SessionEntry] = []
         self._completion_expected_head: str | None = None
         self._last_completion: CompletionReceipt | None = None
+        self._last_snapshot_id: str | None = None
+        self._resource_snapshot_id: str | None = None
+        self._resource_start_reason = "startup"
         self._run_status: RunStatus = "succeeded"
         self._run_error: str | None = None
         self._harness = harness
@@ -510,6 +521,111 @@ class CodingSession:
         self._harness.config.after_tool_call = self._after_tool_call
         self._harness.config.transform_context = self._transform_context
         self._harness.config.prepare_next_turn = self._prepare_next_turn
+        self._harness.config.before_model_request = self._record_model_context
+
+    async def _record_model_context(self, request: ModelRequest, *, purpose: str = "agent") -> None:
+        """Commit the exact model input before handing it to a physical Provider."""
+        await self._config.skill_packages.verify(self._skills)
+        head = await self.storage.get_head()
+        payload: dict[str, JSONValue] = {
+            "purpose": purpose,
+            "provider": self.provider_name,
+            "model": request.model,
+            "system": request.system,
+            "messages": [message.model_dump(mode="json") for message in request.messages],
+            "tools": [
+                {"name": tool.name, "description": tool.description,
+                 "parameters": dict(tool.parameters), "execution_mode": tool.execution_mode}
+                for tool in request.tools
+            ],
+            "context_entry_ids": list(self._state.context_entry_ids),
+            "resource_snapshot_id": self._resource_snapshot_id,
+            "resource_inputs": {
+                "skills": [
+                    {"name": skill.name, "path": str(skill.path), "content": skill.content,
+                     "description": skill.description,
+                     "disable_model_invocation": skill.disable_model_invocation,
+                     "package_digest": skill.package_digest,
+                     "source_path": str(skill.source_path) if skill.source_path else None}
+                    for skill in self._skills
+                ],
+                "context_files": [asdict(context) for context in self._context_files],
+                "custom_system_prompt": self._custom_system_prompt,
+                "append_system_prompt": self._append_system_prompt,
+                "generation": self._extension_runtime._generation.id,
+            },
+        }
+        snapshot_id, cancelled = await settle(self.storage.record_context(
+            payload, token=self._writer_token(), expected_head=head.entry_id,
+            builder_version="coding-input-v1",
+        ))
+        if purpose == "agent":
+            self._last_snapshot_id = snapshot_id
+        if cancelled:
+            raise asyncio.CancelledError
+
+    def _current_resources(self) -> SessionResources:
+        return SessionResources(
+            self._skills, self._prompt_templates, self._context_files,
+            self._custom_system_prompt, self._custom_system_prompt_path,
+            self._append_system_prompt, self._append_system_prompt_paths,
+            self._resource_diagnostics,
+        )
+
+    async def _prepare_resource_activation(
+        self, reason: str, *, resources: SessionResources | None = None,
+        runtime: ExtensionRuntime | None = None,
+        project_resources_enabled: bool | None = None,
+    ) -> SessionActivation:
+        await self._ensure_session_initialized()
+        head = await self.storage.get_head()
+        runtime = runtime or self._extension_runtime
+        payload = {
+            "resources": TypeAdapter(SessionResources).dump_python(
+                resources or self._current_resources(), mode="json"
+            ),
+            "generation": runtime._generation.id,
+            "guidelines": list(runtime.prompt_guidelines),
+            "sections": [asdict(section) for section in runtime.prompt_sections],
+            "explicit_system": self._config.system,
+            "custom_override": self._config.custom_system_prompt,
+            "append_override": self._config.append_system_prompt,
+            "project_resources_enabled": (
+                self._resource_paths.project_resources_enabled
+                if project_resources_enabled is None else project_resources_enabled
+            ),
+        }
+        entry = CustomEntry(
+            parent_id=head.entry_id, namespace="run.resources",
+            data={"builder": "coding-resources-v1", "reason": reason, "payload": payload,
+                  "content_hash": hashlib.sha256(canonical_json(payload).encode()).hexdigest()},
+        )
+        return SessionActivation(self._writer_token(), self.storage.branch_id, head.entry_id, entry)
+
+    def _apply_resource_activation(
+        self, activation: SessionActivation, receipt: AppendReceipt | None
+    ) -> None:
+        if receipt is None:
+            return
+        entry = activation.entry.model_copy(update={"seq": receipt.sequences[0]})
+        self._entries[entry.id] = entry
+        self._resource_snapshot_id = entry.id
+        self._last_parent_id = receipt.head_id
+        self._state = SessionState.from_entries(
+            list(self._entries.values()), leaf_id=receipt.head_id
+        )
+
+    def _use_resources(self, resources: SessionResources) -> None:
+        self._skills = resources.skills
+        self._prompt_templates = resources.prompt_templates
+        self._context_files = resources.context_files
+        self._custom_system_prompt = resources.custom_system_prompt
+        self._custom_system_prompt_path = resources.custom_system_prompt_path
+        self._append_system_prompt = resources.append_system_prompt
+        self._append_system_prompt_paths = resources.append_system_prompt_paths
+        self._resource_diagnostics = resources.diagnostics
+        self._runtime_input_signature = ()
+        self._refresh_runtime_inputs()
 
     async def _before_tool_call(self, call: ToolCall) -> BeforeToolCallResult:
         return await self._extension_runtime.before_tool_call(call)
@@ -675,13 +791,22 @@ class CodingSession:
             project_trust_coordinator=coordinator,
             extension_runtime=extension_runtime,
         )
-        resources = _load_session_resources(
-            resource_paths,
-            config.context_files,
-            skills_enabled=config.skills_enabled,
-            system_prompt_enabled=config.system is None,
-            custom_system_prompt_explicit=config.custom_system_prompt is not None,
-        )
+        previous_resources = _resource_entry(state.custom_entries)
+        restored = (await _restore_session_resources(config, previous_resources)
+                    if previous_resources is not None else None)
+        if restored is not None:
+            resources = restored
+        else:
+            resources = _load_session_resources(
+                resource_paths,
+                config.context_files,
+                skills_enabled=config.skills_enabled,
+                system_prompt_enabled=config.system is None,
+                custom_system_prompt_explicit=config.custom_system_prompt is not None,
+            )
+            resources = replace(resources, skills=tuple([
+                await config.skill_packages.freeze(skill) for skill in resources.skills
+            ]))
         if summary.categories:
             resources = replace(
                 resources,
@@ -808,6 +933,9 @@ class CodingSession:
             base_tools=base_tools,
         )
         session._entries = {entry.id: entry for entry in entries}
+        if previous_resources is not None:
+            session._resource_snapshot_id = previous_resources.id
+            session._resource_start_reason = "resume"
         if config.owns_initial_provider:
             session._owned_providers.append(cast(ClosableModelProvider, config.provider))
         ownership.pop_all()
@@ -1037,18 +1165,30 @@ class CodingSession:
                     branch_root_id=entry_id,
                     summary=summary,
                 )
-                await self.storage.fork(
-                    entry_id, token=self.storage.token, entries=(summary_entry,)
-                )
-                await self._reload_entry_cache()
                 target_id = summary_entry.id
         elif selected_entry.type == "message" and isinstance(selected_entry.message, UserMessage):
             target_id = selected_entry.parent_id
             input_prefill = selected_entry.message.text
 
-        if summary_entry is None:
-            await self.storage.fork(target_id, token=self.storage.token)
-        self._last_parent_id = target_id
+        branch_point = entry_id if summary_entry is not None else target_id
+        path = path_to_entry(entries, branch_point) if branch_point is not None else []
+        previous_resources = _resource_entry([
+            entry for entry in path if isinstance(entry, CustomEntry)
+        ])
+        restored = (await _restore_session_resources(self._config, previous_resources)
+                    if previous_resources is not None else None)
+        resources = restored or self._current_resources()
+        activation = await self._prepare_resource_activation("branch", resources=resources)
+        marker = activation.entry.model_copy(update={"parent_id": target_id})
+        branch_entries: tuple[SessionEntry, ...] = (
+            (summary_entry, marker) if summary_entry is not None else (marker,)
+        )
+        await self.storage.fork(branch_point, token=self.storage.token, entries=branch_entries)
+        await settle(self._reload_entry_cache())
+        target_id = marker.id
+        self._last_parent_id = marker.id
+        self._resource_snapshot_id = marker.id
+        self._use_resources(resources)
 
         await self._refresh_persisted_state(leaf_id=target_id)
         history_repair = await self._persist_active_tool_history_repairs()
@@ -1308,7 +1448,11 @@ class CodingSession:
         """
         if not self._session_start_pending:
             return
-        cancelled = await self._extension_runtime.publish_host_services()
+        activation = await self._prepare_resource_activation(self._resource_start_reason)
+        cancelled, receipt = await self._extension_runtime.publish_host_services(
+            activation=activation
+        )
+        self._apply_resource_activation(activation, receipt)
         if cancelled:
             raise asyncio.CancelledError
         await self._extension_runtime.emit_session_start("startup")
@@ -2172,6 +2316,9 @@ class CodingSession:
             system_prompt_enabled=self._config.system is None,
             custom_system_prompt_explicit=self._config.custom_system_prompt is not None,
         )
+        resources = replace(resources, skills=tuple([
+            await self._config.skill_packages.freeze(skill) for skill in resources.skills
+        ]))
         if trust_summary is not None and trust_summary.categories:
             assert staged_resolution is not None
             resources = replace(
@@ -2253,11 +2400,15 @@ class CodingSession:
         old_runtime.clear_ui_status()
         staged_runtime.set_ui_bridge(previous_ui)
         staged_runtime.bind(self)
+        activation = await self._prepare_resource_activation(
+            "reload", resources=resources, runtime=staged_runtime,
+            project_resources_enabled=staged_paths.project_resources_enabled,
+        )
         # Staging does not run user callbacks with writable host capabilities.
         # The database first replaces all source bindings in one short transaction.
         try:
-            await staged_runtime.publish_host_services(
-                expected_generation=old_runtime._generation.id
+            _, receipt = await staged_runtime.publish_host_services(
+                expected_generation=old_runtime._generation.id, activation=activation,
             )
         except BaseException:
             await settle(staged_runtime.aclose())
@@ -2265,6 +2416,7 @@ class CodingSession:
 
         # Publication is synchronous: cancellation can no longer report failure
         # after only part of the live snapshot or trust cache was adopted.
+        self._apply_resource_activation(activation, receipt)
         if coordinator is not None and trust_summary is not None:
             assert staged_resolution is not None
             coordinator.commit(trust_summary.cwd, staged_resolution)
@@ -2410,6 +2562,7 @@ class CodingSession:
                 storage=await manager.open_storage(record.id),
                 telemetry=await manager.telemetry(),
                 host_services=await manager.host_services(),
+                skill_packages=await manager.skill_packages(),
                 system=self._config.system,
                 custom_system_prompt=self._config.custom_system_prompt,
                 append_system_prompt=self._config.append_system_prompt,
@@ -2442,6 +2595,7 @@ class CodingSession:
                 trust_prompt=self._config.trust_prompt,
                 defer_authoritative_writes=dynamic_resume,
                 owns_initial_provider=dynamic_resume,
+                provider_transform=self._config.provider_transform,
             )
         )
         try:
@@ -2607,12 +2761,15 @@ class CodingSession:
             # through every cancellable/erroring pre-publication seam.
             await old_runtime.emit_session_shutdown(reason)
             old_runtime.clear_ui_status()
-            await replacement._extension_runtime.publish_host_services(
+            activation = await replacement._prepare_resource_activation(reason)
+            _, receipt = await replacement._extension_runtime.publish_host_services(
                 expected_generation=(
                     old_runtime._generation.id
                     if replacement.session_id == self.session_id else None
-                )
+                ),
+                activation=activation,
             )
+            replacement._apply_resource_activation(activation, receipt)
             replacement._commit_project_trust_resolution()
             replacement._session_start_pending = False
         except BaseException:
@@ -2627,6 +2784,9 @@ class CodingSession:
         self._entries = replacement._entries
         self._session_title = replacement._session_title
         self._completion_entries = replacement._completion_entries
+        self._last_snapshot_id = replacement._last_snapshot_id
+        self._resource_snapshot_id = replacement._resource_snapshot_id
+        self._last_completion = replacement._last_completion
         self._harness = replacement._harness
         # Detach the replacement's persistence listener so writes advance
         # this session's parent pointers, not the discarded replacement's.
@@ -2925,6 +3085,7 @@ class CodingSession:
         self._run_active = True
         self._run_status = "succeeded"
         self._run_error = None
+        self._last_snapshot_id = None
         write_context_token: Token[RunToken | None] | None = None
         run_id = new_agent_call_run_id()
         # id() values can be reused once earlier message objects are freed.
@@ -3102,6 +3263,7 @@ class CodingSession:
         self._run_active = True
         self._run_status = "succeeded"
         self._run_error = None
+        self._last_snapshot_id = None
         write_context_token: Token[RunToken | None] | None = None
         run_id = new_agent_call_run_id()
         # id() values can be reused once earlier message objects are freed.
@@ -3206,6 +3368,7 @@ class CodingSession:
             self._completion_expected_head if self._completion_entries else head.entry_id,
             tuple(self._completion_entries),
             self._run_error or (final.error_message if final is not None else None),
+            self._last_snapshot_id,
         )
         if self._config.session_manager is not None and self.session_id is not None:
             await self._config.session_manager.touch_session(
@@ -3237,6 +3400,7 @@ class CodingSession:
             status=receipt.status,
             head_id=receipt.head_id,
             watermark=receipt.watermark,
+            snapshot_id=receipt.snapshot_id,
         )
         await self._extension_runtime.emit_event(event)
         return event
@@ -3607,10 +3771,17 @@ class CodingSession:
         )
         text_parts: list[str] = []
         final_text: str | None = None
+        request_messages: list[AgentMessage] = [UserMessage(content=prompt)]
+        await self._record_model_context(
+            ModelRequest(
+                self.model, SESSION_NAME_SYSTEM_PROMPT, request_messages, (), self.session_id
+            ),
+            purpose="session_name",
+        )
         async for event in self._harness.config.provider.stream_response(
             model=self.model,
             system=SESSION_NAME_SYSTEM_PROMPT,
-            messages=[UserMessage(content=prompt)],
+            messages=request_messages,
             tools=[],
         ):
             if isinstance(event, TextDeltaEvent):
@@ -3666,6 +3837,12 @@ class CodingSession:
         text_parts: list[str] = []
         final_text: str | None = None
         summary_messages: list[AgentMessage] = [UserMessage(content=prompt)]
+        await self._record_model_context(
+            ModelRequest(
+                self.model, SUMMARIZATION_SYSTEM_PROMPT, summary_messages, (), self.session_id
+            ),
+            purpose="compaction",
+        )
         async for event in self._harness.config.provider.stream_response(
             model=self.model,
             system=SUMMARIZATION_SYSTEM_PROMPT,
@@ -3700,6 +3877,8 @@ class CodingSession:
                 messages=messages,
                 custom_instructions=custom_instructions,
                 replace_instructions=replace_instructions,
+                before_model_request=partial(self._record_model_context, purpose="branch_summary"),
+                session_id=self.session_id,
             )
         except Exception:
             summary = None
@@ -4469,6 +4648,34 @@ def _system_prompt_resource_signatures(
         append_system_prompt,
         tuple(str(path) for path in append_system_prompt_paths),
     )
+
+
+def _resource_entry(entries: Sequence[CustomEntry]) -> CustomEntry | None:
+    return next((entry for entry in reversed(entries) if entry.namespace == "run.resources"), None)
+
+
+async def _restore_session_resources(
+    config: CodingSessionConfig, entry: CustomEntry
+) -> SessionResources | None:
+    payload = entry.data.get("payload")
+    if not isinstance(payload, dict) or entry.data.get("builder") != "coding-resources-v1":
+        raise ValueError("Unknown resource snapshot builder")
+    digest = hashlib.sha256(canonical_json(payload).encode()).hexdigest()
+    if digest != entry.data.get("content_hash"):
+        raise ValueError("Resource snapshot content hash mismatch")
+    paths = config.resource_paths
+    if (paths is not None
+            and payload["project_resources_enabled"] != paths.project_resources_enabled):
+        return None
+    resources = TypeAdapter(SessionResources).validate_python(payload["resources"])
+    skills = []
+    for skill in resources.skills if config.skills_enabled else ():
+        if skill.package_digest is None:
+            raise ValueError("Resource snapshot has an unfrozen Skill")
+        skills.append(await config.skill_packages.restore(
+            skill.name, skill.package_digest, source_path=skill.source_path
+        ))
+    return replace(resources, skills=tuple(skills))
 
 
 def _load_session_resources(

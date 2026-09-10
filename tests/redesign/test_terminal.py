@@ -15,7 +15,7 @@ from run_agent_coding.terminal import Terminal, TerminalUi
 from .test_coding_application import ReplyProvider, WaitingProvider, options
 
 
-async def test_terminal_editor_multiline_stream_and_exit(tmp_path):
+async def test_terminal_editor_multiline_stream_and_exit(tmp_path, monkeypatch):
     async with await CodingApplication.open(options(tmp_path), provider=ReplyProvider()) as app:
         with create_pipe_input() as pipe:
             output = StringIO()
@@ -34,8 +34,25 @@ async def test_terminal_editor_multiline_stream_and_exit(tmp_path):
                     finished.set()
 
             terminal.render = render
+            # Input submitted while durable startup is pending must be retained.
+            original_start, original_read = app.start, terminal._read
+            start_release, input_received = asyncio.Event(), asyncio.Event()
+
+            async def delayed_start(*args, **kwargs):
+                await start_release.wait()
+                await original_start(*args, **kwargs)
+
+            async def observed_read():
+                result = await original_read()
+                input_received.set()
+                return result
+
+            monkeypatch.setattr(app, "start", delayed_start)
+            monkeypatch.setattr(terminal, "_read", observed_read)
             task = asyncio.create_task(terminal.run())
             pipe.send_text("one\x1b\rtwo\r")
+            await asyncio.wait_for(input_received.wait(), 5)
+            start_release.set()
             await asyncio.wait_for(finished.wait(), 5)
             pipe.send_text("/quit\r")
             await asyncio.wait_for(task, 5)

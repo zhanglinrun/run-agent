@@ -59,6 +59,7 @@ class RunOutcome:
     expected_head: str | None
     entries: tuple[SessionEntry, ...] = ()
     error: str | None = None
+    snapshot_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +70,7 @@ class CompletionReceipt:
     status: RunStatus
     head_id: str | None
     watermark: int
+    snapshot_id: str | None = None
 
 
 class SessionRepository(Protocol):

@@ -12,7 +12,7 @@ from run_agent_core.messages import (
     UserMessage,
     message_text,
 )
-from run_agent_core.provider import ModelProvider
+from run_agent_core.provider import BeforeModelRequest, ModelProvider, ModelRequest
 from run_agent_core.provider_events import AssistantDoneEvent, AssistantErrorEvent
 
 BRANCH_SUMMARY_SYSTEM_PROMPT = (
@@ -70,25 +70,39 @@ async def summarize_branch_messages_with_model(
     messages: Sequence[AgentMessage],
     custom_instructions: str | None = None,
     replace_instructions: bool = False,
+    before_model_request: BeforeModelRequest | None = None,
+    session_id: str | None = None,
 ) -> str | None:
     """Return a model-generated branch summary, or None when generation fails."""
     if not messages:
         return None
 
     response: AssistantMessage | None = None
+    request_messages: list[AgentMessage] = [
+        UserMessage(
+            content=_branch_summary_prompt(
+                messages,
+                custom_instructions=custom_instructions,
+                replace_instructions=replace_instructions,
+            )
+        )
+    ]
+    if before_model_request is not None:
+        await before_model_request(
+            ModelRequest(
+                model,
+                BRANCH_SUMMARY_SYSTEM_PROMPT,
+                request_messages,
+                (),
+                session_id,
+            )
+        )
     async for event in provider.stream_response(
         model=model,
         system=BRANCH_SUMMARY_SYSTEM_PROMPT,
-        messages=[
-            UserMessage(
-                content=_branch_summary_prompt(
-                    messages,
-                    custom_instructions=custom_instructions,
-                    replace_instructions=replace_instructions,
-                )
-            )
-        ],
+        messages=request_messages,
         tools=[],
+        session_id=session_id,
     ):
         if isinstance(event, AssistantErrorEvent):
             return None

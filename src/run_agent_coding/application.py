@@ -84,6 +84,7 @@ class CodingApplication:
                     storage=storage,
                     telemetry=await manager.telemetry(),
                     host_services=await manager.host_services(),
+                    skill_packages=await manager.skill_packages(),
                     cwd=record.cwd,
                     session_id=record.id,
                     session_manager=manager,

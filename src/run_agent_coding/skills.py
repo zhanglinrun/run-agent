@@ -25,6 +25,8 @@ class Skill:
     content: str
     description: str | None = None
     disable_model_invocation: bool = False
+    package_digest: str | None = None
+    source_path: Path | None = None
 
 
 def is_skill_candidate(path: Path) -> bool:
@@ -241,6 +243,11 @@ def _load_skills_from_dir_with_diagnostics(
 
 def _load_skill(name: str, path: Path) -> Skill:
     raw = path.read_text(encoding="utf-8")
+    return parse_skill(name, path, raw)
+
+
+def parse_skill(name: str, path: Path, raw: str) -> Skill:
+    """Parse the same bytes that a loader or frozen package will expose."""
     metadata, content = parse_markdown_resource(raw)
     description = metadata.get("description") or derive_description(content)
     disable_model_invocation = (

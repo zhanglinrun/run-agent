@@ -14,6 +14,7 @@ from run_agent_coding.storage.handle import OutcomeCommitter, SqliteSessionHandl
 from run_agent_coding.storage.host import SqliteHostServices
 from run_agent_coding.storage.sessions import SessionRecord, SqliteSessionRepository
 from run_agent_coding.storage.settle import settle
+from run_agent_coding.storage.skill_packages import SkillPackageStore
 from run_agent_coding.storage.sqlite import SqliteDatabase
 from run_agent_coding.storage.telemetry import SqliteTelemetrySink
 from run_agent_core.session.contracts import SessionConflict
@@ -91,6 +92,7 @@ class SessionManager:
         self._closed = False
         self._telemetry: SqliteTelemetrySink | None = None
         self._services: SqliteHostServices | None = None
+        self._skill_packages: SkillPackageStore | None = None
         self._close_task: asyncio.Task[None] | None = None
 
     async def repository(self) -> SqliteSessionRepository:
@@ -110,6 +112,16 @@ class SessionManager:
                 self.owner_id,
             )
         return self._services
+
+    async def skill_packages(self) -> SkillPackageStore:
+        repository = await self.repository()
+        if self._skill_packages is None:
+            self._skill_packages = SkillPackageStore(
+                repository.database,
+                ArtifactStore(self.paths.home / "artifacts"),
+                self.paths.home / "cache" / "skills",
+            )
+        return self._skill_packages
 
     async def create_session(
         self,

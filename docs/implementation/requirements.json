@@ -81,8 +81,12 @@
     {
       "id": "P1-3",
       "requirement": "增加资源贡献与快照接口，固定延迟加载 Skill 的版本解析规则。",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "docs/implementation/checkpoint-05.md",
+        "docs/implementation/snapshot-tests.xml",
+        "docs/implementation/distribution-check-05.json"
+      ]
     },
     {
       "id": "P1-4",
@@ -221,7 +225,9 @@
       "requirement": "实现上下文快照、版本绑定和分支恢复。",
       "status": "in_progress",
       "evidence": [
-        "src/run_agent_coding/storage/sessions.py"
+        "src/run_agent_coding/storage/sessions.py",
+        "docs/implementation/checkpoint-05.md",
+        "docs/implementation/snapshot-tests.xml"
       ]
     },
     {

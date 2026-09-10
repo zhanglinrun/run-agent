@@ -26,6 +26,7 @@ class AgentSettledEvent(WireModel):
     status: RunStatus
     head_id: str | None
     watermark: int
+    snapshot_id: str | None = None
 
 
 class QueueUpdateEvent(WireModel):

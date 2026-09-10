@@ -20,6 +20,7 @@ from run_agent_core.session.contracts import (
     StaleRunToken,
 )
 from run_agent_core.session.entries import SessionEntry
+from run_agent_core.types import JSONValue
 
 OutcomeCommitter = Callable[[RunOutcome], Awaitable[CompletionReceipt]]
 
@@ -152,6 +153,23 @@ class SqliteSessionHandle:
                     self.token.generation + 1,
                 )
             return receipt
+
+    async def record_context(
+        self,
+        payload: dict[str, JSONValue],
+        *,
+        token: RunToken,
+        expected_head: str | None,
+        builder_version: str,
+    ) -> str:
+        self._check()
+        return await self.repository.put_snapshot(
+            token=token,
+            branch_id=self.branch_id,
+            expected_head=expected_head,
+            builder_version=builder_version,
+            payload=payload,
+        )
 
     async def aclose(self) -> None:
         if self._close_task is None:

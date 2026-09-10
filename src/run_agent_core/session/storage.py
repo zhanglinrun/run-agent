@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Sequence
 from typing import Protocol
 from uuid import uuid4
@@ -19,6 +20,7 @@ from run_agent_core.session.contracts import (
 )
 from run_agent_core.session.entries import SessionEntry
 from run_agent_core.session.tree import path_to_entry
+from run_agent_core.types import JSONValue
 
 
 class SessionStorage(Protocol):
@@ -48,6 +50,15 @@ class SessionStorage(Protocol):
     async def begin_run(self, run_id: str) -> RunToken: ...
 
     async def complete_run(self, outcome: RunOutcome) -> CompletionReceipt: ...
+
+    async def record_context(
+        self,
+        payload: dict[str, JSONValue],
+        *,
+        token: RunToken,
+        expected_head: str | None,
+        builder_version: str,
+    ) -> str: ...
 
     async def aclose(self) -> None: ...
 
@@ -81,6 +92,7 @@ class InMemorySessionStorage:
         self._lock = asyncio.Lock()
         self.outcomes: dict[str, CompletionReceipt] = {}
         self._outcome_inputs: dict[str, RunOutcome] = {}
+        self.snapshots: dict[str, tuple[RunToken, str, dict[str, JSONValue]]] = {}
 
     def _check(self, token: RunToken) -> None:
         if self._closed or token != self.token:
@@ -185,6 +197,10 @@ class InMemorySessionStorage:
             self._check(outcome.token)
             if outcome.branch_id != self.branch_id:
                 raise SessionConflict("Run branch changed")
+            if outcome.snapshot_id is not None:
+                snapshot = self.snapshots.get(outcome.snapshot_id)
+                if snapshot is None or snapshot[:2] != (outcome.token, outcome.branch_id):
+                    raise SessionConflict("Completion snapshot does not belong to this run")
             self._append(outcome.entries, outcome.expected_head, outcome.token)
             receipt = CompletionReceipt(
                 outcome.token.run_id,
@@ -193,6 +209,7 @@ class InMemorySessionStorage:
                 outcome.status,
                 self._heads[self.branch_id],
                 len(self.entries),
+                outcome.snapshot_id,
             )
             self.outcomes[outcome.token.run_id] = receipt
             self._outcome_inputs[outcome.token.run_id] = outcome
@@ -203,6 +220,22 @@ class InMemorySessionStorage:
                 self.token.generation + 1,
             )
             return receipt
+
+    async def record_context(
+        self,
+        payload: dict[str, JSONValue],
+        *,
+        token: RunToken,
+        expected_head: str | None,
+        builder_version: str,
+    ) -> str:
+        async with self._lock:
+            self._check(token)
+            if self._heads[self.branch_id] != expected_head:
+                raise SessionConflict("Snapshot history changed before commit")
+            snapshot_id = uuid4().hex
+            self.snapshots[snapshot_id] = token, self.branch_id, json.loads(json.dumps(payload))
+            return snapshot_id
 
     async def aclose(self) -> None:
         self._closed = True

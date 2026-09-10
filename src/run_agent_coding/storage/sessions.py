@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from pydantic import TypeAdapter
 
+from run_agent_coding.storage.snapshots import encode_context, read_snapshot, store_blocks
 from run_agent_coding.storage.sqlite import SqliteDatabase
 from run_agent_core.session.contracts import (
     AppendReceipt,
@@ -228,6 +229,7 @@ class SqliteSessionRepository:
                     entry.model_dump(mode="json", exclude={"seq"}) for entry in outcome.entries
                 ],
                 "error": outcome.error,
+                "snapshot_id": outcome.snapshot_id,
             }
         )
         if row["status"] != "running":
@@ -240,8 +242,20 @@ class SqliteSessionRepository:
                 outcome.status,
                 row["head_id"],
                 row["watermark"],
+                row["snapshot_id"],
             )
         self.assert_token(connection, outcome.token)
+        if outcome.snapshot_id is not None:
+            snapshot = connection.execute(
+                "SELECT run_id,session_id,branch_id FROM context_snapshots WHERE snapshot_id=?",
+                (outcome.snapshot_id,),
+            ).fetchone()
+            if snapshot is None or tuple(snapshot) != (
+                outcome.token.run_id,
+                outcome.token.session_id,
+                outcome.branch_id,
+            ):
+                raise SessionConflict("Completion snapshot does not belong to this run")
         receipt = self.append_in_transaction(
             connection,
             outcome.entries,
@@ -254,7 +268,7 @@ class SqliteSessionRepository:
         ).fetchone()[0]
         connection.execute(
             """UPDATE executions SET status=?, finished_at=?, head_id=?, watermark=?,
-               outcome_json=?, error=? WHERE run_id=?""",
+               outcome_json=?, error=?, snapshot_id=? WHERE run_id=?""",
             (
                 outcome.status,
                 self.clock(),
@@ -262,6 +276,7 @@ class SqliteSessionRepository:
                 watermark,
                 encoded,
                 outcome.error,
+                outcome.snapshot_id,
                 outcome.token.run_id,
             ),
         )
@@ -278,6 +293,7 @@ class SqliteSessionRepository:
             outcome.status,
             receipt.head_id,
             watermark,
+            outcome.snapshot_id,
         )
 
     async def complete_run(self, outcome: RunOutcome) -> CompletionReceipt:
@@ -288,6 +304,7 @@ class SqliteSessionRepository:
             outcome.expected_head,
             tuple(e.model_copy(deep=True) for e in outcome.entries),
             outcome.error,
+            outcome.snapshot_id,
         )
         return await self.database.run(
             lambda connection: self.complete_in_transaction(connection, frozen), write=True
@@ -606,7 +623,7 @@ class SqliteSessionRepository:
         builder_version: str,
         payload: dict[str, Any],
     ) -> str:
-        frozen = canonical_json(payload)
+        frozen, blocks = encode_context(payload)
         digest = hashlib.sha256(frozen.encode()).hexdigest()
         snapshot_id = uuid4().hex
 
@@ -615,6 +632,7 @@ class SqliteSessionRepository:
             head = self.head_in_transaction(connection, token.session_id, branch_id)
             if head.entry_id != expected_head:
                 raise SessionConflict("Snapshot history changed before commit")
+            store_blocks(connection, blocks)
             watermark = (
                 0
                 if head.entry_id is None
@@ -624,9 +642,10 @@ class SqliteSessionRepository:
                 ).fetchone()[0]
             )
             connection.execute(
-                "INSERT INTO context_snapshots VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO context_snapshots VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     snapshot_id,
+                    token.run_id,
                     token.session_id,
                     branch_id,
                     expected_head,
@@ -642,16 +661,4 @@ class SqliteSessionRepository:
         return await self.database.run(put, write=True)
 
     async def get_snapshot(self, snapshot_id: str) -> dict[str, Any]:
-        def get(connection: sqlite3.Connection) -> dict[str, Any]:
-            row = connection.execute(
-                "SELECT * FROM context_snapshots WHERE snapshot_id=?", (snapshot_id,)
-            ).fetchone()
-            if row is None:
-                raise KeyError(f"Unknown snapshot: {snapshot_id}")
-            if hashlib.sha256(row["payload_json"].encode()).hexdigest() != row["content_hash"]:
-                raise SessionConflict("Snapshot content hash mismatch")
-            result = dict(row)
-            result["payload"] = json.loads(result.pop("payload_json"))
-            return result
-
-        return await self.database.run(get)
+        return await self.database.run(lambda connection: read_snapshot(connection, snapshot_id))
