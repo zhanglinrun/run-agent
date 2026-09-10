@@ -1,4 +1,4 @@
-"""Reproducible evaluation artifacts, reducers, and candidate promotion."""
+"""Reproducible evaluation artifacts and reducers."""
 
 from run_agent_evals.campaign import (
     CampaignConfig,
@@ -7,13 +7,6 @@ from run_agent_evals.campaign import (
     rebuild_campaign,
 )
 from run_agent_evals.coding import CodingTaskExecutor
-from run_agent_evals.evolver import (
-    Candidate,
-    CandidateStatus,
-    CandidateStore,
-    PromotionDecision,
-    PromotionGate,
-)
 from run_agent_evals.models import (
     ExecutionResult,
     FrozenTask,
@@ -38,9 +31,6 @@ from run_agent_evals.runtime_bench import (
 )
 
 __all__ = [
-    "Candidate",
-    "CandidateStatus",
-    "CandidateStore",
     "CampaignConfig",
     "CampaignReport",
     "CodingTaskExecutor",
@@ -49,8 +39,6 @@ __all__ = [
     "EvaluationCampaign",
     "EvaluationSummary",
     "FrozenTask",
-    "PromotionDecision",
-    "PromotionGate",
     "RuntimeBenchmarkConfig",
     "RuntimeBenchmarkReport",
     "TaskExecutor",
