@@ -6,12 +6,14 @@ import sqlite3
 from collections.abc import Callable, Mapping, Sequence
 from time import time
 
+from run_agent_coding.host.context_resources import ResourceView
 from run_agent_coding.host.contracts import (
     ArtifactRef,
     ContextSnapshot,
     ExtensionToken,
     HostPublication,
     HostServices,
+    ResourceVersion,
     ScopedServices,
     ServiceScope,
     SessionActivation,
@@ -33,6 +35,57 @@ class SqliteHostServices:
     def __init__(self, database: SqliteDatabase, artifacts: ArtifactStore, owner_id: str) -> None:
         self.database, self.artifacts, self.owner_id = database, artifacts, owner_id
         self.tasks = LocalTaskManager(database)
+
+    async def capture_resources(
+        self, session_id: str, sources: Sequence[str], assert_active: Callable[[], None]
+    ) -> Mapping[str, ResourceView]:
+        frozen_sources = tuple(sources)
+
+        def capture(connection: sqlite3.Connection) -> dict[str, ResourceView]:
+            assert_active()
+            session = connection.execute(
+                "SELECT * FROM sessions WHERE session_id=?", (session_id,)
+            ).fetchone()
+            if (session is None or session["owner_id"] != self.owner_id
+                    or not session["owner_active"] or session["owner_expires_at"] <= time()):
+                raise ExtensionRetired("Only the active host can capture extension resources")
+            scopes = _service_scopes(session["principal_id"], session["project_id"], session_id)
+            result: dict[str, ResourceView] = {}
+            total_bytes = 0
+            total_count = 0
+            for source in frozen_sources:
+                values: dict[ServiceScope, dict[str, ResourceVersion]] = {}
+                for name, scope in scopes.items():
+                    rows = connection.execute(
+                        "SELECT r.resource_key,r.head_version,length(CAST(v.payload_json AS BLOB)) "
+                        "FROM resources r LEFT JOIN resource_versions v ON "
+                        "v.source_id=r.source_id AND v.scope=r.scope AND "
+                        "v.resource_key=r.resource_key AND v.version=r.head_version "
+                        "WHERE r.source_id=? AND r.scope=? AND r.head_version IS NOT NULL "
+                        "ORDER BY r.resource_key LIMIT 1025", (source, scope),
+                    ).fetchall()
+                    total_count += len(rows)
+                    total_bytes += sum(row[2] or 0 for row in rows)
+                    if total_count > 1024 or total_bytes > 8 * 1024 * 1024:
+                        raise ValueError("Extension resource capture exceeds its size limit")
+                    scoped: dict[str, ResourceVersion] = {}
+                    for key, version, size in rows:
+                        if size is None:
+                            raise ValueError("Published extension resource version is missing")
+                        body = connection.execute(
+                            "SELECT payload_json FROM resource_versions WHERE source_id=? "
+                            "AND scope=? AND resource_key=? AND version=?",
+                            (source, scope, key, version),
+                        ).fetchone()[0]
+                        value = NamespaceResources._decode(version, body)
+                        if value.key != key:
+                            raise ValueError("Published extension resource key mismatch")
+                        scoped[key] = value
+                    values[name] = scoped
+                result[source] = ResourceView(values)
+            return result
+
+        return await self.database.run(capture)
 
     async def publish(
         self,
@@ -104,11 +157,7 @@ class SqliteHostServices:
             return session["principal_id"], session["project_id"], receipt
 
         principal_id, project_id, receipt = await self.database.run(publish, write=True)
-        scopes: dict[ServiceScope, str] = {
-            "session": canonical_json(["session", principal_id, session_id]),
-            "project": canonical_json(["project", principal_id, project_id]),
-            "user": canonical_json(["user", principal_id]),
-        }
+        scopes = _service_scopes(principal_id, project_id, session_id)
         services: dict[str, HostServices] = {
             source: BoundHostServices(
                 self.database,
@@ -140,6 +189,14 @@ class SqliteHostServices:
         if error is not None:
             raise error
         return remaining
+
+
+def _service_scopes(principal: str, project: str, session: str) -> dict[ServiceScope, str]:
+    return {
+        "session": canonical_json(["session", principal, session]),
+        "project": canonical_json(["project", principal, project]),
+        "user": canonical_json(["user", principal]),
+    }
 
 
 class BoundHostServices:

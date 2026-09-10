@@ -81,8 +81,11 @@ from run_agent_coding.extensions.runtime import (
     ExtensionRuntime,
     InputHookOutcome,
 )
+from run_agent_coding.host.context_resources import ResourceSelection, ResourceView
 
 __all__ = [
+    "ResourceSelection",
+    "ResourceView",
     "AGENT_EVENT_TYPES",
     "AGENT_EVENT_WILDCARD",
     "LIFECYCLE_EVENT_TYPES",

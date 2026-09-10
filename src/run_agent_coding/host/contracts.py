@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from run_agent_core.session.contracts import AppendReceipt, RunToken
 from run_agent_core.session.entries import CustomEntry
 from run_agent_core.types import JSONValue
+
+if TYPE_CHECKING:
+    from run_agent_coding.host.context_resources import ResourceView
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +120,12 @@ class HostServices(Protocol):
 
 
 class HostServicesRegistry(Protocol):
+    async def capture_resources(
+        self, session_id: str, sources: Sequence[str], assert_active: Callable[[], None]
+    ) -> Mapping[str, ResourceView]:
+        """Capture published resources without activating a staged extension."""
+        ...
+
     async def publish(
         self,
         session_id: str,

@@ -38,6 +38,7 @@ class ApplicationOptions:
     thinking: ThinkingLevel | None = None
     system: str | None = None
     pinned_resources: bool = False
+    refresh_resources: bool = False
 
 
 class CodingApplication:
@@ -65,6 +66,8 @@ class CodingApplication:
         owns_manager = manager is None
         manager = manager or SessionManager(paths)
         try:
+            if options.refresh_resources and options.pinned_resources:
+                raise ValueError("Pinned background resources cannot be refreshed")
             settings = settings or (load_provider_settings(paths) if provider is None else None)
             shell = load_shell_settings(paths)
             if options.resume is not None:
@@ -85,6 +88,7 @@ class CodingApplication:
                     provider_transform=provider_transform,
                     input_source=input_source,
                     pinned_resources=options.pinned_resources,
+                    refresh_resources=options.refresh_resources,
                     model=options.model or record.model,
                     storage=storage,
                     telemetry=await manager.telemetry(),

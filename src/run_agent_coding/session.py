@@ -55,9 +55,11 @@ from run_agent_coding.events import (
 from run_agent_coding.extensions.provider_registry import DynamicProviderRegistry
 from run_agent_coding.extensions.providers import DynamicProvider, ProviderModel
 from run_agent_coding.extensions.runtime import ExtensionRuntime
+from run_agent_coding.host.context_resources import ExtensionResourceSnapshot
 from run_agent_coding.host.contracts import HostServicesRegistry, SessionActivation
 from run_agent_coding.host.inputs import CommittedInput, InputBoundary, InputSource
 from run_agent_coding.host.processes import ProcessRecorder, ProcessSupervisor
+from run_agent_coding.host.tool_versions import tool_manifest
 from run_agent_coding.models_dev_store import ModelsDevRefreshResult, refresh_models_dev_catalog
 from run_agent_coding.paths import RunAgentPaths
 from run_agent_coding.project_trust import (
@@ -404,6 +406,7 @@ class CodingSessionConfig:
     defer_authoritative_writes: bool = False
     input_source: InputSource | None = None
     pinned_resources: bool = False
+    refresh_resources: bool = False
 
 
 class CodingSession:
@@ -573,6 +576,7 @@ class CodingSession:
     async def _record_model_context(self, request: ModelRequest, *, purpose: str = "agent") -> None:
         """Commit the exact model input before handing it to a physical Provider."""
         await self._config.skill_packages.verify(self._skills)
+        await asyncio.to_thread(self._extension_runtime.verify_sources)
         head = await self.storage.get_head()
         payload: dict[str, JSONValue] = {
             "purpose": purpose,
@@ -600,6 +604,9 @@ class CodingSession:
                 "custom_system_prompt": self._custom_system_prompt,
                 "append_system_prompt": self._append_system_prompt,
                 "generation": self._extension_runtime._generation.id,
+                "extension_resources": self._extension_runtime.context_resources.payload(),
+                "extensions": self._extension_runtime.source_manifest(),
+                "tool_manifest": tool_manifest(request.tools),
             },
         }
         snapshot_id, cancelled = await settle(self.storage.record_context(
@@ -623,17 +630,27 @@ class CodingSession:
         self, reason: str, *, resources: SessionResources | None = None,
         runtime: ExtensionRuntime | None = None,
         project_resources_enabled: bool | None = None,
+        extension_resources: ExtensionResourceSnapshot | None = None,
     ) -> SessionActivation:
         await self._ensure_session_initialized()
         head = await self.storage.get_head()
         runtime = runtime or self._extension_runtime
+        await asyncio.to_thread(runtime.verify_sources)
+        await runtime.prepare_context_resources()
+        resource_payload = (
+            TypeAdapter(ExtensionResourceSnapshot).dump_python(extension_resources, mode="json")
+            if extension_resources is not None else runtime.context_resources.payload()
+        )
         payload = {
             "resources": TypeAdapter(SessionResources).dump_python(
                 resources or self._current_resources(), mode="json"
             ),
             "generation": runtime._generation.id,
             "guidelines": list(runtime.prompt_guidelines),
-            "sections": [asdict(section) for section in runtime.prompt_sections],
+            "sections": [asdict(section) for section in runtime.static_prompt_sections],
+            "extension_resources": resource_payload,
+            "extensions": runtime.source_manifest(),
+            "tool_manifest": tool_manifest(runtime.compose_tools(self._base_tools)),
             "explicit_system": self._config.system,
             "custom_override": self._config.custom_system_prompt,
             "append_override": self._config.append_system_prompt,
@@ -644,7 +661,7 @@ class CodingSession:
         }
         entry = CustomEntry(
             parent_id=head.entry_id, namespace="run.resources",
-            data={"builder": "coding-resources-v1", "reason": reason, "payload": payload,
+            data={"builder": "coding-resources-v2", "reason": reason, "payload": payload,
                   "content_hash": hashlib.sha256(canonical_json(payload).encode()).hexdigest()},
         )
         return SessionActivation(self._writer_token(), self.storage.branch_id, head.entry_id, entry)
@@ -675,6 +692,7 @@ class CodingSession:
         self._refresh_runtime_inputs()
 
     async def _before_tool_call(self, call: ToolCall) -> BeforeToolCallResult:
+        await asyncio.to_thread(self._extension_runtime.verify_sources)
         return await self._extension_runtime.before_tool_call(call)
 
     async def _after_tool_call(
@@ -839,10 +857,14 @@ class CodingSession:
             extension_runtime=extension_runtime,
         )
         previous_resources = _resource_entry(state.custom_entries)
+        refreshing = config.refresh_resources
+        if config.pinned_resources and refreshing:
+            raise ValueError("Pinned background resources cannot be refreshed")
         if config.pinned_resources and previous_resources is None:
             raise ValueError("Pinned session is missing its source resource snapshot")
         restored = (await _restore_session_resources(config, previous_resources)
-                    if previous_resources is not None else None)
+                    if previous_resources is not None and not refreshing else None)
+        config = replace(config, refresh_resources=False)
         if restored is not None:
             resources = restored
         else:
@@ -877,14 +899,16 @@ class CodingSession:
                 include_user_dir=False,
             )
 
-        if config.pinned_resources:
+        if previous_resources is not None and restored is not None:
             assert previous_resources is not None
             pinned = previous_resources.data["payload"]
             assert isinstance(pinned, dict)
-            sections = [asdict(section) for section in extension_runtime.prompt_sections]
+            sections = [asdict(section) for section in extension_runtime.static_prompt_sections]
             if (pinned["guidelines"] != list(extension_runtime.prompt_guidelines)
                     or pinned["sections"] != sections):
                 raise ValueError("Extension prompt contributions differ from the pinned source")
+            context_resources = extension_runtime.context_resources
+            context_resources.snapshot = context_resources.decode(pinned["extension_resources"])
             config = replace(
                 config, system=cast(str | None, pinned["explicit_system"]),
                 custom_system_prompt=cast(str | None, pinned["custom_override"]),
@@ -943,6 +967,14 @@ class CodingSession:
             )
         )
         tools = extension_runtime.compose_tools(base_tools)
+        if previous_resources is not None and restored is not None:
+            pinned = previous_resources.data["payload"]
+            assert isinstance(pinned, dict)
+            if (pinned["extensions"] != extension_runtime.source_manifest()
+                    or pinned["tool_manifest"] != tool_manifest(tools)):
+                raise ValueError(
+                    "Extension or tool implementation differs from the pinned snapshot"
+                )
         system = (
             config.system
             if config.system is not None
@@ -1002,7 +1034,7 @@ class CodingSession:
         session._entries = {entry.id: entry for entry in entries}
         if previous_resources is not None:
             session._resource_snapshot_id = previous_resources.id
-            session._resource_start_reason = "resume"
+            session._resource_start_reason = "refresh" if refreshing else "resume"
         if config.owns_initial_provider:
             session._owned_providers.append(cast(ClosableModelProvider, config.provider))
         ownership.pop_all()
@@ -1245,7 +1277,27 @@ class CodingSession:
         restored = (await _restore_session_resources(self._config, previous_resources)
                     if previous_resources is not None else None)
         resources = restored or self._current_resources()
-        activation = await self._prepare_resource_activation("branch", resources=resources)
+        extension_resources = self._extension_runtime.context_resources.snapshot
+        if previous_resources is not None and restored is not None:
+            pinned = previous_resources.data["payload"]
+            assert isinstance(pinned, dict)
+            if (pinned["extensions"] != self._extension_runtime.source_manifest()
+                    or pinned["tool_manifest"] != tool_manifest(self.tools)):
+                raise ValueError(
+                    "Extension or tool implementation differs from the branch snapshot"
+                )
+            if (pinned["guidelines"] != list(self._extension_runtime.prompt_guidelines)
+                    or pinned["sections"] != [
+                        asdict(section)
+                        for section in self._extension_runtime.static_prompt_sections
+                    ]):
+                raise ValueError("Extension prompt contributions differ from the branch snapshot")
+            extension_resources = self._extension_runtime.context_resources.decode(
+                pinned["extension_resources"]
+            )
+        activation = await self._prepare_resource_activation(
+            "branch", resources=resources, extension_resources=extension_resources,
+        )
         marker = activation.entry.model_copy(update={"parent_id": target_id})
         branch_entries: tuple[SessionEntry, ...] = (
             (summary_entry, marker) if summary_entry is not None else (marker,)
@@ -1255,6 +1307,7 @@ class CodingSession:
         target_id = marker.id
         self._last_parent_id = marker.id
         self._resource_snapshot_id = marker.id
+        self._extension_runtime.context_resources.snapshot = extension_resources
         self._use_resources(resources)
 
         await self._refresh_persisted_state(leaf_id=target_id)
@@ -1520,9 +1573,12 @@ class CodingSession:
             activation=activation
         )
         self._apply_resource_activation(activation, receipt)
+        self._refresh_runtime_inputs()
         if cancelled:
             raise asyncio.CancelledError
-        await self._extension_runtime.emit_session_start("startup")
+        await self._extension_runtime.emit_session_start(
+            "resume" if self._resource_start_reason == "resume" else "startup"
+        )
         self._commit_project_trust_resolution()
         self._session_start_pending = False
 
@@ -2412,6 +2468,13 @@ class CodingSession:
                 include_user_dir=False,
             )
 
+        staged_runtime.bind(self)
+        try:
+            await staged_runtime.prepare_context_resources()
+        except BaseException:
+            await settle(staged_runtime.aclose())
+            raise
+
         base_tools = (
             self._config.tools
             if self._config.tools is not None
@@ -2839,6 +2902,7 @@ class CodingSession:
                 activation=activation,
             )
             replacement._apply_resource_activation(activation, receipt)
+            replacement._refresh_runtime_inputs()
             replacement._commit_project_trust_resolution()
             replacement._session_start_pending = False
         except BaseException:
@@ -4783,7 +4847,7 @@ async def _restore_session_resources(
     config: CodingSessionConfig, entry: CustomEntry
 ) -> SessionResources | None:
     payload = entry.data.get("payload")
-    if not isinstance(payload, dict) or entry.data.get("builder") != "coding-resources-v1":
+    if not isinstance(payload, dict) or entry.data.get("builder") != "coding-resources-v2":
         raise ValueError("Unknown resource snapshot builder")
     digest = hashlib.sha256(canonical_json(payload).encode()).hexdigest()
     if digest != entry.data.get("content_hash"):

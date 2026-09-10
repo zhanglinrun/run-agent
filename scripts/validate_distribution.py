@@ -23,7 +23,7 @@ from run_agent_core.session.entries import MessageEntry
 from run_agent_core.messages import UserMessage
 from run_agent_coding.application import CodingApplication, ApplicationOptions
 from run_agent_coding.paths import RunAgentPaths
-from run_agent_coding.host.contracts import StateChange
+from run_agent_coding.host.contracts import StateChange, HeadChange
 from run_agent_core.messages import AssistantMessage, TextContent
 from run_agent_core.provider_events import AssistantDoneEvent
 from run_agent_gateway.contracts import RouteIdentity, Submission
@@ -123,7 +123,12 @@ async def check():
     extension = pathlib.Path('installed_extension.py').resolve()
     extension.write_text(chr(10).join([
         'from pathlib import Path',
+        'from run_agent_coding.extensions import ResourceSelection',
         'def setup(api):',
+        '    def resources(view):',
+        '        return [ResourceSelection("project", key, version, key)',
+        '                for key, version in view.heads("project").items()]',
+        '    api.register_resource_provider("notes", resources, version="1")',
         '    async def cleanup():',
         '        Path(__file__).with_suffix(".closed").touch()',
         '    api.register_disposer(cleanup)',
@@ -151,12 +156,20 @@ async def check():
         assert original_skill.path.read_text(encoding='utf-8') == 'Installed skill v1'
         state = runtime._extensions[0].api.context.services.scope().state
         await state.compare_and_set(StateChange('installed', 0, True))
+        resources = runtime._extensions[0].api.context.services.scope('project').resources
+        value = await resources.put_immutable('MEMORY.md', 'installed memory version one')
+        await resources.advance_head(HeadChange('MEMORY.md', None, value.version, 'check', {}))
         await app.command('/reload')
         assert extension.with_suffix('.closed').exists()
         runtime = app.session.extension_runtime
         current_state = runtime._extensions[0].api.context.services.scope().state
         assert (await current_state.get('installed')).value
         assert app.session.skills[0].content == 'Installed skill v2'
+        assert 'installed memory version one' in app.session.system_prompt
+        resources = runtime._extensions[0].api.context.services.scope('project').resources
+        newer = await resources.put_immutable('MEMORY.md', 'installed memory version two')
+        await resources.advance_head(HeadChange('MEMORY.md', value.version, newer.version,
+                                               'check', {}))
         head = (await app.session.storage.get_head()).entry_id
         skill_version = app.session.skills[0].package_digest
     (skill_root / 'SKILL.md').write_text('Unloaded skill v3', encoding='utf-8')
@@ -166,6 +179,9 @@ async def check():
         assert (await app.session.storage.get_head()).entry_id == head
         assert app.session.skills[0].package_digest == skill_version
         assert app.session.skills[0].content == 'Installed skill v2'
+        await app.start()
+        assert 'installed memory version one' in app.session.system_prompt
+        assert 'installed memory version two' not in app.session.system_prompt
     assert not any(name.startswith(('textual', 'run_agent_coding.tui')) for name in sys.modules)
     assert not list(pathlib.Path.cwd().rglob('*.jsonl'))
 asyncio.run(check())
@@ -175,6 +191,7 @@ print(json.dumps({'entry_module':run_agent_entry.__file__, 'scripts':scripts,
                   'sqlite_telemetry':True, 'no_jsonl_output':True,
                   'host_services_and_reload':True, 'context_snapshot':True,
                   'skill_package_and_resume':True, 'extension_disposer':True,
+                  'extension_resource_capture_reload_resume':True,
                   'gateway_transactions':True, 'gateway_live_coding_and_outbox':True,
                   'gateway_steering_consumed':True}))
 """
@@ -374,6 +391,12 @@ def main() -> None:
         )
         assert json.loads(inspection.stdout) == []
         report["gateway_recovery_inspection"] = True
+        refreshed = subprocess.run(
+            [str(launcher), "--refresh-resources", "--print", "unused"],
+            cwd=directory, capture_output=True, text=True, encoding="utf-8", timeout=10,
+        )
+        assert refreshed.returncode != 0 and "requires --session" in refreshed.stderr
+        report["refresh_resources_requires_session"] = True
     report["scope"] = (
         "Wheel import, schema, persistence, command routing, application completion and resume; "
         "terminal interactions and real model execution are separate gates."

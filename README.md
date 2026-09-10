@@ -21,6 +21,7 @@ run --help
 run
 run "分析这个仓库"
 run --session <session-id>
+run --session <session-id> --refresh-resources
 run --print "解释这段代码"
 run --print --mode json "解释这段代码"
 run --sessions
@@ -46,6 +47,8 @@ run bench --help
 
 新版会话不读取、迁移或写出旧格式，不保留旧命令和 Textual 组件 API。旧版本开发状态不作为新版恢复输入。调用账本、轨迹和评测执行记录也写入 SQLite；评测的清单、报告与产物保留为可复核文件。
 
+会话恢复固定已保存的 Skill、扩展资源内容与版本，并校验扩展源码及工具入口。资源发布不自动改变当前会话输入；`/reload` 或恢复时显式指定 `--refresh-resources` 才采用当前资源，并记录新的激活事件。后台会话固定来源快照，不能使用该刷新选项。
+
 ## Gateway
 
 `run gateway` 已使用持久准入、会话队首调度、短控制事务和 Outbox。普通消息与 `/queue` 排队执行；`/status`、`/tasks`、`/stop`、`/cancel <task_id>`、`/new` 不等待模型返回。身份由显式的渠道映射配置提供，默认按发送者隔离群聊会话。
@@ -70,6 +73,8 @@ run bench --help
 Observability 与 Evals 是横向配套模块。默认工具为 `read`、`write`、`edit`、`bash`。可选扩展位于 [extensions](extensions)，通过 `run --extension <路径>` 加载；也可安装到 `~/.run/extensions`。项目扩展发现使用 `--project-extensions`，项目资源是否可信由已有信任策略决定。
 
 扩展 UI 提供文本通知、选择、确认、输入与 `context.ui.set_status(key, text)`，不接管终端控件。重载会使旧扩展 API 失效，并清理其状态显示。该生命周期机制不构成操作系统沙箱。
+
+扩展可通过 `register_resource_provider` 从宿主提供的只读资源视图中选择上下文；资源视图按来源与 session / project / user 作用域隔离，激活前没有状态写入和任务提交能力。接口与限制见 [资源快照执行记录](docs/implementation/checkpoint-13.md)。
 
 ## 开发验证
 

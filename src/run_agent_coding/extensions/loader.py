@@ -11,6 +11,11 @@ from inspect import iscoroutinefunction
 from pathlib import Path
 from typing import Literal
 
+from run_agent_coding.extensions.source_versions import (
+    SourceOnlyLoader,
+    enable_extension_source_imports,
+    source_version,
+)
 from run_agent_coding.resources import ResourceDiagnostic, RunAgentResourcePaths
 
 EXTENSION_ENTRY_ATTRIBUTE = "setup"
@@ -42,6 +47,8 @@ class LoadedExtension:
     source_id: str
     setup: Callable[..., object]
     source: ExtensionSource = "explicit"
+    code_version: str | None = None
+    package_dir: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -323,6 +330,7 @@ def _load_extension(
     spec = spec_from_file_location(
         module_name,
         entry.path,
+        loader=SourceOnlyLoader(module_name, str(entry.path)),
         submodule_search_locations=search_locations,
     )
     if spec is None or spec.loader is None:
@@ -331,7 +339,11 @@ def _load_extension(
     module = module_from_spec(spec)
     sys.modules[module_name] = module
     try:
+        version = source_version(entry.path, entry.package_dir)
+        enable_extension_source_imports()
         spec.loader.exec_module(module)
+        if version != source_version(entry.path, entry.package_dir):
+            raise ValueError("Extension source changed during import")
     except BaseException as exc:  # noqa: BLE001 - extensions are an isolation boundary
         del sys.modules[module_name]
         return None, [_error_diagnostic(entry, f"failed to import extension: {exc!r}")]
@@ -362,6 +374,8 @@ def _load_extension(
         source_id=source_id,
         setup=setup,
         source=entry.source,
+        code_version=version,
+        package_dir=entry.package_dir,
     ), []
 
 

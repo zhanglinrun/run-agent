@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Literal, Protocol
 from uuid import uuid4
 
 from run_agent_coding.extensions.disposers import Disposer
+from run_agent_coding.host.context_resources import ResourceProvider
 from run_agent_coding.host.contracts import HostServices, TaskHandler
 from run_agent_core.messages import AgentMessage, CustomMessage, ToolResultMessage
 from run_agent_core.tools import AgentTool, AgentToolResult
@@ -712,6 +713,13 @@ class ExtensionAPI:
         self._generation.assert_active()
         self._runtime.register_task_handler(self._source_id, name, handler)
 
+    def register_resource_provider(
+        self, name: str, provider: ResourceProvider, *, version: str
+    ) -> None:
+        """Select versioned context from a read-only, host-scoped resource view."""
+        self._generation.assert_active()
+        self._runtime.register_resource_provider(self._source_id, name, version, provider)
+
     def register_disposer(self, disposer: Disposer) -> None:
         """Own an async cleanup callback until setup rollback, reload or close."""
         self._generation.assert_active()
@@ -875,3 +883,5 @@ class RegisteredExtension:
     api: ExtensionAPI
     source: Literal["user", "explicit", "project"] = "explicit"
     handlers: dict[str, list[ExtensionHandler]] = field(default_factory=dict)
+    code_version: str | None = None
+    package_dir: Path | None = None

@@ -61,6 +61,9 @@ from run_agent_coding.extensions.provider_registry import (
     DynamicProviderRegistry,
 )
 from run_agent_coding.extensions.providers import CredentialReader, DynamicProvider
+from run_agent_coding.extensions.resources import ContextResourceProviders
+from run_agent_coding.extensions.source_versions import source_version
+from run_agent_coding.host.context_resources import ResourceProvider
 from run_agent_coding.host.contracts import (
     HostServices,
     HostServicesRegistry,
@@ -243,6 +246,7 @@ class ExtensionRuntime:
         self._host_services: Mapping[str, HostServices] = {}
         self._host_binding: tuple[HostServicesRegistry, str, str] | None = None
         self._task_handlers: dict[str, dict[str, TaskHandler]] = {}
+        self.context_resources = ContextResourceProviders()
         self._disposers = DisposerOwner()
 
     # -- loading -----------------------------------------------------------
@@ -286,6 +290,7 @@ class ExtensionRuntime:
         self._disposers.retire()
         self._host_services = {}
         self._task_handlers.clear()
+        self.context_resources = ContextResourceProviders()
         if self._harness_unsubscribe is not None:
             self._harness_unsubscribe()
             self._harness_unsubscribe = None
@@ -363,10 +368,13 @@ class ExtensionRuntime:
             path=extension.path,
             api=api,
             source=extension.source,
+            code_version=extension.code_version,
+            package_dir=extension.package_dir,
         )
         self._extensions.append(registered)
         try:
             extension.setup(api)
+            self._verify_source(registered)
         except Exception as exc:  # noqa: BLE001 - extensions are an isolation boundary
             api._generation.invalidate("Extension setup failed; this source is inactive")
             self._extensions.remove(registered)
@@ -384,6 +392,7 @@ class ExtensionRuntime:
     def _remove_registrations(self, source_id: str) -> None:
         self._disposers.retire_source(source_id)
         self._task_handlers.pop(source_id, None)
+        self.context_resources.remove(source_id)
         self._ui.clear_status(source_id)
         self._tools = {
             name: registration
@@ -417,6 +426,51 @@ class ExtensionRuntime:
     def register_disposer(self, source_id: str, disposer: Disposer) -> None:
         self._generation.assert_active()
         self._disposers.register(source_id, disposer)
+
+    def register_resource_provider(
+        self, source_id: str, name: str, version: str, provider: ResourceProvider
+    ) -> None:
+        self._generation.assert_active()
+        if self._host_binding is not None:
+            raise ExtensionError("Resource providers must be declared during setup")
+        self.context_resources.register(source_id, name, version, provider)
+
+    @staticmethod
+    def _verify_source(extension: RegisteredExtension) -> None:
+        if (extension.path is not None and extension.code_version is not None
+                and source_version(extension.path, extension.package_dir)
+                != extension.code_version):
+            raise ExtensionError("Extension source changed; explicitly reload before use")
+
+    def verify_sources(self) -> None:
+        self._generation.assert_active()
+        for extension in self._extensions:
+            self._verify_source(extension)
+
+    def source_manifest(self) -> list[JSONValue]:
+        return [
+            {"source_id": extension.source_id, "code_version": extension.code_version}
+            for extension in self._extensions
+        ]
+
+    async def prepare_context_resources(self) -> None:
+        self._generation.assert_active()
+        if self.context_resources.snapshot is not None:
+            return
+        sources = tuple(dict.fromkeys(
+            item.source_id for item in self.context_resources.registrations
+        ))
+        views = {}
+        if sources:
+            session = self.session_view
+            if session.session_id is None:
+                raise ExtensionError("Context resources require a persistent session identity")
+            views = dict(await session.host_services.capture_resources(
+                session.session_id, sources, self._generation.assert_active,
+            ))
+        snapshot = self.context_resources.capture(views)
+        self._generation.assert_active()
+        self.context_resources.snapshot = snapshot
 
     def register_task_handler(self, source_id: str, name: str, handler: TaskHandler) -> None:
         if self._host_binding is not None:
@@ -882,6 +936,13 @@ class ExtensionRuntime:
     @property
     def prompt_sections(self) -> tuple[PromptSection, ...]:
         """Return free-form prompt sections in registration order."""
+        return (
+            *self.static_prompt_sections,
+            *self.context_resources.sections,
+        )
+
+    @property
+    def static_prompt_sections(self) -> tuple[PromptSection, ...]:
         return tuple(section for _, _, section in self._prompt_sections)
 
     # -- actions (called through ExtensionAPI) --------------------------------

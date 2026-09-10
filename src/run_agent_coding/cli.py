@@ -47,6 +47,9 @@ def main(
     resume: Annotated[
         str | None, typer.Option("--session", help="Resume a SQLite session ID.")
     ] = None,
+    refresh_resources: Annotated[
+        bool, typer.Option(help="Explicitly adopt current resources when resuming a session.")
+    ] = False,
     thinking: Annotated[str | None, typer.Option(help="Reasoning level.")] = None,
     extension: Annotated[list[Path] | None, typer.Option(help="Load a Session extension.")] = None,
     no_extensions: Annotated[bool, typer.Option(help="Disable Session extensions.")] = False,
@@ -64,6 +67,8 @@ def main(
 ) -> None:
     """Run Agent: an interactive coding harness. Also: run gateway, run bench."""
     cwd = cwd.resolve()
+    if refresh_resources and resume is None:
+        raise typer.BadParameter("--refresh-resources requires --session")
     if not cwd.is_dir():
         raise typer.BadParameter("Working directory does not exist", param_hint="--cwd")
     load_dotenv(cwd / ".env", override=False)
@@ -102,6 +107,7 @@ def main(
             provider_name=provider,
             model=model,
             resume=resume,
+            refresh_resources=refresh_resources,
             extension_paths=tuple(extension or ()),
             extensions_enabled=not no_extensions,
             project_extensions_enabled=project_extensions,

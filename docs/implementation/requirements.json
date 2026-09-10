@@ -82,11 +82,15 @@
     {
       "id": "P1-3",
       "requirement": "增加资源贡献与快照接口，固定延迟加载 Skill 的版本解析规则。",
-      "status": "in_progress",
+      "status": "complete",
       "evidence": [
         "docs/implementation/checkpoint-05.md",
         "docs/implementation/snapshot-tests.xml",
-        "docs/implementation/distribution-check-05.json"
+        "docs/implementation/distribution-check-05.json",
+        "docs/implementation/checkpoint-13.md",
+        "tests/redesign/test_extension_resources.py",
+        "docs/implementation/resource-provider-tests.xml",
+        "docs/implementation/distribution-check-13.json"
       ]
     },
     {
