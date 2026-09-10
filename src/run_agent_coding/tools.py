@@ -12,16 +12,13 @@ from __future__ import annotations
 import asyncio
 import difflib
 import json
-import os
-import signal
-import subprocess
 import tempfile
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from time import monotonic
-from typing import Any
 
+from run_agent_coding.host.processes import ProcessSupervisor
 from run_agent_coding.image_processing import (
     DEFAULT_MAX_SOURCE_IMAGE_BYTES,
     ImageProcessingFailure,
@@ -170,6 +167,7 @@ def create_coding_tools(
     cwd: str | Path | None = None,
     shell_command_prefix: str | None = None,
     image_support: ImageSupportState | None = None,
+    processes: ProcessSupervisor | None = None,
 ) -> list[AgentTool]:
     """Create the default coding-tool set for a local project.
 
@@ -185,7 +183,7 @@ def create_coding_tools(
         create_read_tool(cwd=root, image_support=image_support),
         create_write_tool(cwd=root),
         create_edit_tool(cwd=root),
-        create_bash_tool(cwd=root, shell_command_prefix=shell_command_prefix),
+        create_bash_tool(cwd=root, shell_command_prefix=shell_command_prefix, processes=processes),
     ]
 
 
@@ -595,16 +593,16 @@ def create_bash_tool_definition(
     *,
     cwd: str | Path | None = None,
     shell_command_prefix: str | None = None,
+    processes: ProcessSupervisor | None = None,
 ) -> ToolDefinition:
     """Create a definition for the `bash` tool.
 
     The tool runs a shell command with `cwd` as the subprocess working
     directory and combines stdout and stderr into one UTF-8 decoded output
     stream. The optional `timeout` argument must be positive when supplied. On
-    timeout, POSIX commands are started in a new session and the entire process
-    group is killed so shell children from pipelines or compound commands do
-    not continue running; non-POSIX platforms fall back to killing the direct
-    subprocess.
+    timeout or cancellation, POSIX process groups and Windows Job Objects are
+    terminated and verified empty before returning. Descendants are also drained
+    after the root command exits; background shell processes cannot outlive a tool.
 
     Output is tail-truncated to `DEFAULT_MAX_OUTPUT_LINES` lines or
     `DEFAULT_MAX_OUTPUT_BYTES` bytes. When truncation occurs, the full output is
@@ -614,6 +612,7 @@ def create_bash_tool_definition(
     """
     root = Path.cwd() if cwd is None else Path(cwd)
     prefix = shell_command_prefix.strip() if shell_command_prefix else None
+    supervisor = processes or ProcessSupervisor()
 
     async def execute(
         arguments: Mapping[str, JSONValue],
@@ -628,29 +627,10 @@ def create_bash_tool_definition(
             raise ToolInputError("Command cancelled")
 
         start = monotonic()
-        if os.name == "posix":
-            process = await asyncio.create_subprocess_shell(
-                shell_command,
-                cwd=root,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                start_new_session=True,
-                executable="bash" if prefix else None,
-            )
-        else:
-            process = await asyncio.create_subprocess_shell(
-                shell_command,
-                cwd=root,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-        output_bytes, _stderr, timed_out, cancelled = await _communicate_with_cancellation(
-            process,
-            timeout=timeout,
-            signal=signal,
+        completed = await supervisor.run(
+            shell_command, cwd=root, timeout=timeout, cancellation=signal, bash=bool(prefix),
         )
-
-        output = output_bytes.decode(errors="replace")
+        output = completed.output.decode(errors="replace")
         truncation = truncate_tail(output)
         full_output_path: str | None = None
         output_text = truncation.content or "(no output)"
@@ -675,14 +655,16 @@ def create_bash_tool_definition(
                     f"Full output: {full_output_path}]"
                 )
 
-        exit_code = process.returncode
+        exit_code = completed.exit_code
         status: str | None = None
-        if timed_out:
+        if completed.timed_out:
             status = (
                 f"Command timed out after {timeout:g} seconds" if timeout else "Command timed out"
             )
-        elif cancelled:
+        elif completed.cancelled:
             status = "Command cancelled"
+        elif completed.output_limited:
+            status = "Command stopped after exceeding the 32 MiB output limit"
         elif exit_code not in (0, None):
             status = f"Command exited with code {exit_code}"
         if status:
@@ -693,8 +675,13 @@ def create_bash_tool_definition(
             details={
                 "command": command,
                 "exit_code": exit_code,
-                "timed_out": timed_out,
-                "cancelled": cancelled,
+                "timed_out": completed.timed_out,
+                "cancelled": completed.cancelled,
+                "output_limited": completed.output_limited,
+                "process": {
+                    "pid": completed.pid, "identity": completed.identity,
+                    "kind": completed.kind, "events": list(completed.events),
+                },
                 "duration_seconds": round(monotonic() - start, 3),
                 "truncation": truncation.to_json(),
                 "full_output_path": full_output_path,
@@ -742,11 +729,13 @@ def create_bash_tool(
     *,
     cwd: str | Path | None = None,
     shell_command_prefix: str | None = None,
+    processes: ProcessSupervisor | None = None,
 ) -> AgentTool:
     """Create an `AgentTool` for executing shell commands with captured output."""
     return create_bash_tool_definition(
         cwd=cwd,
         shell_command_prefix=shell_command_prefix,
+        processes=processes,
     ).to_agent_tool()
 
 
@@ -768,54 +757,6 @@ def format_size(bytes_count: int) -> str:
 def append_status_block(text: str, status: str) -> str:
     """Append command status text after a blank line when output already exists."""
     return f"{text}\n\n{status}" if text else status
-
-
-async def _communicate_with_cancellation(
-    process: asyncio.subprocess.Process,
-    *,
-    timeout: float | None,
-    signal: ToolCancellationToken | None,
-) -> tuple[bytes, bytes | None, bool, bool]:
-    communicate = asyncio.create_task(process.communicate())
-    cancel_watch: asyncio.Task[None] | None = None
-    try:
-        wait_for: set[asyncio.Task[Any]] = {communicate}
-        if signal is not None:
-            cancel_watch = asyncio.create_task(_wait_for_cancel(signal))
-            wait_for.add(cancel_watch)
-
-        done, _pending = await asyncio.wait(
-            wait_for,
-            timeout=timeout,
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        if communicate in done:
-            output_bytes, stderr = communicate.result()
-            return output_bytes, stderr, False, False
-
-        cancelled = cancel_watch is not None and cancel_watch in done
-        _kill_process_tree(process)
-        try:
-            output_bytes, stderr = await communicate
-        except asyncio.CancelledError:
-            output_bytes = b""
-            stderr_result: bytes | None = None
-        else:
-            stderr_result = stderr
-        return output_bytes, stderr_result, not cancelled, cancelled
-    except asyncio.CancelledError:
-        _kill_process_tree(process)
-        if not communicate.done():
-            communicate.cancel()
-        raise
-    finally:
-        if cancel_watch is not None:
-            cancel_watch.cancel()
-
-
-async def _wait_for_cancel(signal: ToolCancellationToken) -> None:
-    while not signal.is_cancelled():
-        await asyncio.sleep(0.05)
 
 
 def truncate_head(
@@ -1173,30 +1114,6 @@ def _base64_text(data: bytes) -> str:
     import base64
 
     return base64.b64encode(data).decode("ascii")
-
-
-def _kill_process_tree(process: asyncio.subprocess.Process) -> None:
-    if os.name == "posix":
-        # `getattr` keeps mypy happy on the Windows stubs (see issue #513).
-        killpg = getattr(os, "killpg")  # noqa: B009
-        sigkill = getattr(signal, "SIGKILL")  # noqa: B009
-        try:
-            killpg(process.pid, sigkill)
-        except ProcessLookupError:
-            return
-    else:
-        completed = subprocess.run(
-            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        if completed.returncode == 0:
-            return
-        try:
-            process.kill()
-        except ProcessLookupError:
-            return
 
 
 def _write_temp_output(output: str) -> str:

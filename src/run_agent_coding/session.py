@@ -57,6 +57,7 @@ from run_agent_coding.extensions.providers import DynamicProvider, ProviderModel
 from run_agent_coding.extensions.runtime import ExtensionRuntime
 from run_agent_coding.host.contracts import HostServicesRegistry, SessionActivation
 from run_agent_coding.host.inputs import CommittedInput, InputBoundary, InputSource
+from run_agent_coding.host.processes import ProcessRecorder, ProcessSupervisor
 from run_agent_coding.models_dev_store import ModelsDevRefreshResult, refresh_models_dev_catalog
 from run_agent_coding.paths import RunAgentPaths
 from run_agent_coding.project_trust import (
@@ -433,6 +434,7 @@ class CodingSession:
         image_support: ImageSupportState | None = None,
         project_trust_resolution: ProjectTrustResolution | None = None,
         base_tools: Sequence[AgentTool] | None = None,
+        processes: ProcessSupervisor | None = None,
     ) -> None:
         self._config = config
         self._state = state
@@ -453,6 +455,8 @@ class CodingSession:
         self._extension_runtime = extension_runtime or ExtensionRuntime()
         self._provider_registry = self._extension_runtime.provider_registry
         self._image_support = image_support or ImageSupportState()
+        self._processes = processes or ProcessSupervisor()
+        self._processes.recorder_factory = self._process_recorder
         self._session_start_pending = False
         self._last_parent_id = last_parent_id
         self._pending_initial_entries = pending_initial_entries
@@ -925,6 +929,8 @@ class CodingSession:
         image_support = ImageSupportState(
             supported=_configured_model_supports_images(config, active_model)
         )
+        processes = ProcessSupervisor()
+        ownership.push_async_callback(processes.aclose)
         base_tools = (
             config.tools
             if config.tools is not None
@@ -932,6 +938,7 @@ class CodingSession:
                 cwd=config.cwd,
                 shell_command_prefix=config.shell_command_prefix,
                 image_support=image_support,
+                processes=processes,
             )
         )
         tools = extension_runtime.compose_tools(base_tools)
@@ -989,6 +996,7 @@ class CodingSession:
             image_support=image_support,
             project_trust_resolution=trust_resolution,
             base_tools=base_tools,
+            processes=processes,
         )
         session._entries = {entry.id: entry for entry in entries}
         if previous_resources is not None:
@@ -1595,6 +1603,7 @@ class CodingSession:
 
     def _require_idle(self, operation: str) -> None:
         """Reject replacement-like operations until an active turn is drained."""
+        self._processes.assert_empty()
         if self.is_running:
             raise RuntimeError(
                 f"Cannot {operation} while Run Agent is working. "
@@ -2409,6 +2418,7 @@ class CodingSession:
                 cwd=self._config.cwd,
                 shell_command_prefix=self._config.shell_command_prefix,
                 image_support=self._image_support,
+                processes=self._processes,
             )
         )
         staged_tools = staged_runtime.compose_tools(base_tools)
@@ -2890,6 +2900,9 @@ class CodingSession:
         self._owned_providers.extend(replacement._owned_providers)
         replacement._owned_providers.clear()
         self._image_support = replacement._image_support
+        self._processes.assert_empty()
+        self._processes = replacement._processes
+        self._processes.recorder_factory = self._process_recorder
         self._project_trust_resolution = replacement._project_trust_resolution
         self._project_trust_commit_pending = False
         self._session_start_pending = False
@@ -3018,6 +3031,12 @@ class CodingSession:
                     error = exc
 
         try:
+            await self._processes.aclose()
+        except BaseException as exc:
+            if error is None:
+                error = exc
+
+        try:
             await self.storage.aclose()
         except BaseException as exc:
             if error is None:
@@ -3057,6 +3076,7 @@ class CodingSession:
         bash_tool = create_bash_tool(
             cwd=self.cwd,
             shell_command_prefix=self._config.shell_command_prefix,
+            processes=self._processes,
         )
         result = await bash_tool.execute("terminal-command", {"command": normalized_command})
         exit_code = None
@@ -3425,6 +3445,7 @@ class CodingSession:
         self._run_error = "Execution revoked by host"
 
     async def _dispatch_agent_settled(self) -> AgentSettledEvent:
+        self._processes.assert_empty()
         if self._pending_message_writes:
             raise RuntimeError("Cannot commit a run with unpersisted intermediate messages")
         token = self._write_context.get()
@@ -3493,6 +3514,17 @@ class CodingSession:
         )
         await self._extension_runtime.emit_event(event)
         return event
+
+    def _process_recorder(self) -> ProcessRecorder:
+        token = self.storage.token
+
+        async def record(payload: dict[str, JSONValue]) -> None:
+            await self._config.telemetry.append("process.lifecycle", {
+                **payload, "session_id": token.session_id, "run_id": token.run_id,
+                "owner_id": token.owner_id, "generation": token.generation,
+            })
+
+        return record
 
     def _diagnostic_context(self) -> AgentCallDiagnosticContext:
         return AgentCallDiagnosticContext(

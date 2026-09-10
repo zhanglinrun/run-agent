@@ -9,7 +9,7 @@
 - 原始调度与存储性能：`baseline-runtime.json`、`baseline-storage.json`。这些是模拟负载，用于同条件比较，不代表模型能力。
 - 新版目标：Provider / Core / Coding / Gateway；唯一产品命令 `run`；SQLite 权威状态；独立 Gateway；Session 扩展装配经验学习；独立环境验收和证据闭环。
 
-当前检查点：[checkpoint-09.md](checkpoint-09.md)。已接通独立后台 Session/worktree、固定源历史与 Skill、结果产物以及原渠道通知；153 项新版测试通过，1 项 Windows 符号链接测试跳过。全量 mypy 检查 157 个源文件及 Ruff 通过；全新安装包的实际 `run gateway` 启动、重启、去重和首次后台任务验收通过。完整目标继续开放，任务状态以 `requirements.json` 为准；早期检查点保留为历史记录。
+当前检查点：[checkpoint-10.md](checkpoint-10.md)。内置命令已使用 Windows Job Object / POSIX 进程组管理，无法确认退出时保留工作区隔离与运行名额。Windows 全套 165 项通过、2 项跳过；Linux 进程专项 12 项通过、1 项跳过。全量 mypy 检查 159 个源文件及 Ruff 通过；全新安装包的实际终端命令、网关启动、重启、去重和首次后台任务验收通过。完整目标继续开放，任务状态以 `requirements.json` 为准；早期检查点保留为历史记录。
 
 已落地并验证：
 
@@ -38,4 +38,4 @@
 
 检查点 04 接通 HostServices 的作用域、事务发布和本地受管理任务；观测扩展可异步导出报告。75 项新版测试、146 个源文件 mypy、Ruff 和干净安装通过。
 
-下一阶段补齐进程收敛与恢复、完整资源提供方快照、experience、独立验收、真实模型样本与消融。模拟模型测试不代表真实编码能力。
+下一阶段补齐崩溃后的进程核对与恢复、完整资源提供方快照、experience、独立验收、真实模型样本与消融。模拟模型测试不代表真实编码能力。

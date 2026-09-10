@@ -54,7 +54,7 @@ run bench --help
 
 `/background <内容>` 从干净 Git 提交创建独立 worktree 和会话，固定源历史与 Skill 版本；产物保存为补丁、文件和清单，完成结果仍发往原渠道。不会自动合并回主目录。首版不支持脏目录、非 Git 目录、子模块及符号链接。
 
-飞书启动方法和身份映射示例见 [Gateway 扩展说明](examples/gateway_extensions/README.md)。未知外部副作用的人工恢复、进程树核对与混合负载验收尚未完成，详见 [执行记录](docs/implementation/checkpoint-09.md)。
+内置命令按 Windows Job Object / POSIX 进程组管理，取消时等待退出，无法核实退出则保留工作区隔离及运行名额。飞书启动方法和身份映射示例见 [Gateway 扩展说明](examples/gateway_extensions/README.md)。崩溃后的进程核对、未知外部副作用的人工恢复与混合负载验收尚未完成，详见 [执行记录](docs/implementation/checkpoint-10.md)。
 
 ## 分层与扩展
 

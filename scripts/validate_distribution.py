@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 SMOKE = """
-import asyncio, json, pathlib, sys
+import asyncio, json, os, pathlib, shlex, subprocess, sys
 from importlib.metadata import distribution
 import run_agent_entry
 from run_agent_coding.storage.sqlite import SqliteDatabase
@@ -131,6 +131,11 @@ async def check():
     options = ApplicationOptions(cwd=pathlib.Path.cwd(), paths=paths, model='test',
                                  extensions_enabled=False, extension_paths=(extension,))
     async with await CodingApplication.open(options, provider=Provider()) as app:
+        arguments = [sys.executable, '-c', 'print(12345)']
+        command = subprocess.list2cmdline(arguments) if os.name == 'nt' else shlex.join(arguments)
+        terminal = await app.session.run_terminal_command(command, add_to_context=False)
+        assert terminal.ok and terminal.output.strip() == '12345'
+        assert app.session._processes.active_count == 0
         events = [event async for event in app.prompt('persist installed session')]
         assert events[-1].status == 'succeeded'
         identity = app.session.session_id
