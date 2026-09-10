@@ -108,10 +108,42 @@ winget 构建接受，且本机 `127.0.0.1:7897` 代理下 curl 对任何 HTTPS 
 | --- | --- |
 | 二进制 | `%LOCALAPPDATA%\Programs\mise\bin\mise.exe`（v2026.8.5 windows-x64） |
 | 用户 PATH | 已追加该 `bin` 目录（后续会话生效） |
-| 当前进程解析 | `%APPDATA%\npm\mise.cmd` 转发脚本（该目录已在 Pi 进程的 PATH 上） |
+| 当前进程解析 | `%APPDATA%\npm\mise.exe` —— 指向真二进制的**硬链接** |
 
-那个 `mise.cmd` 存在的原因：Pi 在启动时快照 PATH，安装后不会自动看到新目录。它是**透明转发**
-到真 mise 的启动器，不是同名伪装实现。
+### 为什么必须是硬链接，而不能是 `.cmd` 转发脚本
+
+最初的方案是在 `%APPDATA%\npm` 放一个 `mise.cmd` 转发脚本（该目录已在 Pi 进程的 PATH 上）。
+**这不行**，而且失败形态与原始故障完全一样：
+
+CI 执行器的 `spawn` 调用（`lib/ci/runner.ts`）：
+
+```ts
+spawn(argv[0], argv.slice(1), { cwd, shell: false })
+```
+
+注意 `shell: false`。在 Windows 上，Node 的 `spawn` 不带 shell 时**只解析 `.exe`，不会
+解析 `.cmd`/`.bat`**（CVE-2024-27980 之后就如此）。因此 `spawn("mise", ...)` 看到
+`mise.cmd` 时直接报 `ENOENT`：
+
+```
+ERROR code= ENOENT msg= spawn mise ENOENT
+close -4058
+```
+
+`-4058` 正是最初那条 CI 失败里四个检查的退出码。所以 `mise.cmd` 会让钩子看起来“装了 mise
+但依旧 ENOENT”。
+
+改为硬链接 `%APPDATA%\npm\mise.exe` → 真二进制后，用同样的 `shell: false` 路径实测：
+
+```text
+spawn('mise','--version')            -> {"exit":0,"error":null,"out":"2026.8.5 windows-x64 ..."}
+spawn('mise','tasks','ls','--json')  -> {"exit":0,"names":["build","compile","format","lint",
+                                         "test","typecheck","verify","verify-fast"]}
+spawn('mise','run','<verb>')         -> exit=0  （typecheck/lint/format/compile/test/build 全部）
+```
+
+硬链接与真二进制是同一个文件，不占额外磁盘（实测 145,616,896 字节，与源文件一致）。
+复现脚本：`.run/verify/mise-probe.js`（位于 `.gitignore` 内，仅作本机诊断用）。
 
 （历史：用户最初明确拒绝引入 mise，理由是计划未把它列为交付要求；随后 CI 钩子自动发现的
 4 条命令全被 `mise exec --` 包裹而失败，用户重新裁定「安装 mise + mise.toml 委托给闸门」。
