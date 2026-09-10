@@ -41,9 +41,19 @@ def candidate_ids(message: str) -> list[str]:
     return ids
 
 
-def newest_token(message: str) -> str:
-    """The most recently proposed candidate, which is listed last."""
-    return candidate_ids(message)[-1]
+def candidate_with_base(message: str, base: str | None) -> str:
+    """The candidate superseding ``base``.
+
+    The listing is keyed by candidate id, so its order is not chronological and
+    picking the last line would be a coin flip. The base version is what
+    identifies the candidate that supersedes the currently published one.
+    """
+    wanted = f"base={base}"
+    for line in message.splitlines():
+        fields = line.split()
+        if len(fields) >= 4 and fields[3] == wanted:
+            return fields[0]
+    raise AssertionError(f"no candidate with {wanted} in: {message}")
 
 
 async def test_e04_a_skill_is_not_published_without_a_passing_report(tmp_path):
@@ -59,7 +69,7 @@ async def test_e04_a_skill_is_not_published_without_a_passing_report(tmp_path):
         listed = await app.command("/experience list project")
         assert "run tests before commit" not in listed.message, listed.message
 
-        candidate_id = candidate_ids(candidates.message)[0]
+        candidate_id = candidate_with_base(candidates.message, None)
         await app.command(f"/experience publish project {candidate_id}")
         published = await app.command("/experience list project")
         assert "run tests before commit" in published.message, published.message
@@ -71,7 +81,9 @@ async def test_e05_rollback_restores_the_previous_version_and_keeps_history(tmp_
     ) as app:
         await app.start()
         await app.command('/experience propose project skill deploy "version one"')
-        first = newest_token((await app.command("/experience candidates project")).message)
+        first = candidate_with_base(
+            (await app.command("/experience candidates project")).message, None
+        )
         await app.command(f"/experience publish project {first}")
         # A published head only becomes active context on an explicit reload.
         await app.command("/reload")
@@ -81,7 +93,9 @@ async def test_e05_rollback_restores_the_previous_version_and_keeps_history(tmp_
         assert older is not None, listed.message
 
         await app.command('/experience propose project skill deploy "version two"')
-        second = newest_token((await app.command("/experience candidates project")).message)
+        candidates = await app.command("/experience candidates project")
+        assert len(candidate_ids(candidates.message)) == 2, candidates.message
+        second = candidate_with_base(candidates.message, older.group(1))
         await app.command(f"/experience publish project {second}")
         await app.command("/reload")
         newer = await app.command("/experience list project")
