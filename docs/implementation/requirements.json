@@ -254,11 +254,13 @@
     {
       "id": "P2-6",
       "requirement": "实现上下文快照、版本绑定和分支恢复。",
-      "status": "in_progress",
+      "status": "complete",
       "evidence": [
-        "src/run_agent_coding/storage/sessions.py",
-        "docs/implementation/checkpoint-05.md",
-        "docs/implementation/snapshot-tests.xml"
+        "src/run_agent_coding/storage/snapshots.py",
+        "tests/redesign/test_snapshot_and_skill_commit.py::test_full_history_rebuild_matches_the_recorded_snapshot",
+        "tests/redesign/test_snapshot_fallback.py::test_incompatible_builder_version_still_restores_from_events",
+        "tests/redesign/test_snapshot_fallback.py::test_an_undecodable_snapshot_does_not_block_resume",
+        "tests/redesign/test_snapshot_fallback.py::test_tampered_context_blocks_are_refused_on_the_next_write"
       ]
     },
     {
