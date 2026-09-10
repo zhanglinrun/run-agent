@@ -511,8 +511,14 @@
     {
       "id": "P6-1",
       "requirement": "完善 EnvironmentBackend、多轮脚本、独立 grader 与参考解准入。",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "src/run_agent_evals/environment.py",
+        "src/run_agent_evals/grader_runner.py",
+        "src/run_agent_evals/task_spec.py",
+        "tests/redesign/test_evaluation_environment.py::test_each_stop_condition_is_decidable_on_its_own",
+        "tests/redesign/test_grader_suite_runner.py::test_the_reference_solution_proves_the_fix_and_breaks_nothing"
+      ]
     },
     {
       "id": "P6-2",
@@ -541,14 +547,21 @@
     {
       "id": "P6-6",
       "requirement": "实现候选案例到 TaskSpec 的回流流程及人工校准记录。",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "src/run_agent_evals/reflow.py",
+        "tests/redesign/test_reflow.py::test_a_symptom_patching_failure_becomes_a_task_with_the_two_hard_constraints"
+      ]
     },
     {
       "id": "P6-7",
       "requirement": "执行 V01—V06，验证只靠持久证据可以重算原报告。",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "src/run_agent_evals/suite.py",
+        "src/run_agent_evals/verifier.py",
+        "tests/redesign/test_reflow.py::test_the_report_is_rebuildable_from_stored_evidence_without_calling_a_model"
+      ]
     },
     {
       "id": "P6-8",
@@ -1005,29 +1018,43 @@
       "id": "V03",
       "scenario": "参考解与空操作",
       "invariant": "任务准入按规格判定，不是答案字符串匹配",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "tests/redesign/test_real_task_specs.py::test_reference_solution_is_admitted",
+        "tests/redesign/test_real_task_specs.py::test_no_op_solution_is_rejected",
+        "tests/redesign/test_grader_suite_runner.py::test_the_reference_solution_proves_the_fix_and_breaks_nothing"
+      ]
     },
     {
       "id": "V04",
       "scenario": "相同 task_id 的内容或候选变更",
       "invariant": "清单哈希检测，旧报告不能用于新版本发布",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "tests/redesign/test_candidate_promotion.py::test_a_report_that_measured_other_content_is_refused",
+        "tests/redesign/test_evaluation_service_contract.py::test_evaluation_report_binds_what_was_actually_measured"
+      ]
     },
     {
       "id": "V05",
       "scenario": "学习后跑保留集",
       "invariant": "资源固定、无写回、无跨 trial 泄漏",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "src/run_agent_evals/reflow.py",
+        "tests/redesign/test_reflow.py::test_learned_material_may_not_sit_inside_the_holdout"
+      ]
     },
     {
       "id": "V06",
       "scenario": "不重新调用模型复核报告",
       "invariant": "固定证据可重算原统计，缺少产物明确失败",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "src/run_agent_evals/suite.py",
+        "tests/redesign/test_reflow.py::test_the_report_is_rebuildable_from_stored_evidence_without_calling_a_model",
+        "tests/redesign/test_reflow.py::test_rederiving_twice_gives_the_same_report"
+      ]
     }
   ]
 }

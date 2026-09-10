@@ -17,7 +17,7 @@ import asyncio
 import json
 import shutil
 import tempfile
-from collections.abc import Callable, Coroutine, Mapping
+from collections.abc import Callable, Coroutine, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -25,7 +25,7 @@ from typing import Any
 from run_agent_evals.grader_runner import GraderSuiteRunner
 from run_agent_evals.statistics import Ratio
 from run_agent_evals.task_spec import TaskSpec, load_task_spec, materialize_environment
-from run_agent_evals.verifier import DualPropositionVerifier
+from run_agent_evals.verifier import DualPropositionVerifier, SuiteResult, classify
 
 MANIFEST = "tasks.json"
 READY = "ready"
@@ -156,3 +156,36 @@ def _run(coroutine: Coroutine[Any, Any, SuiteReport]) -> SuiteReport:
 def report_for_directory(root: Path, *, use_reference: bool = True) -> Mapping[str, Any]:
     """Build a report for a task directory, used by the CLI."""
     return TaskSuite(Path(root)).evaluate_default(use_reference=use_reference).to_json()
+
+
+def rederive(
+    pristine: Mapping[str, Mapping[str, bool]],
+    candidate: Mapping[str, Mapping[str, bool]],
+    targets: Mapping[str, Iterable[str]],
+) -> SuiteReport:
+    """Rebuild a report from stored per-test outcomes, running nothing (V06).
+
+    A report that can only be produced by grading everything again cannot be audited,
+    and chapter 7 wants the durable evidence to be sufficient. This takes what was
+    persisted per test for the pristine and candidate states and replays the same
+    classification: no subprocess, no model call.
+    """
+    verdicts = []
+    for task_id in sorted(candidate):
+        proposition = classify(
+            SuiteResult.of_single(pristine.get(task_id, {})),
+            SuiteResult.of_single(candidate[task_id]),
+            targets=targets.get(task_id, ()),
+        )
+        verdicts.append(
+            TaskVerdict(
+                task_id=task_id,
+                succeeded=proposition.succeeded,
+                fail_to_pass=tuple(sorted(proposition.fail_to_pass)),
+                pass_to_pass=tuple(sorted(proposition.pass_to_pass)),
+                unmet_targets=tuple(sorted(proposition.unmet_targets)),
+                newly_failing=tuple(sorted(proposition.newly_failing)),
+                flaky=tuple(sorted(proposition.flaky)),
+            )
+        )
+    return SuiteReport(tuple(verdicts))
