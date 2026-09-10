@@ -560,8 +560,10 @@
       "id": "A01",
       "scenario": "扩展注册一半抛异常",
       "invariant": "不留下工具、Prompt、处理器和资源",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "tests/redesign/test_acceptance_extensions.py::test_half_failed_setup_leaves_no_tool_command_or_guideline"
+      ]
     },
     {
       "id": "A02",
@@ -574,22 +576,28 @@
       "id": "A03",
       "scenario": "experience 未启用",
       "invariant": "普通编码、Skill、压缩、恢复可用",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "tests/redesign/test_acceptance_extensions.py::test_coding_compaction_skills_and_recovery_survive_without_extensions"
+      ]
     },
     {
       "id": "A04",
       "scenario": "CLI 不加载 Gateway",
       "invariant": "experience 正常读取和显式管理",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "tests/redesign/test_acceptance_cli.py::test_coding_cli_manages_experience_without_loading_the_gateway"
+      ]
     },
     {
       "id": "A05",
       "scenario": "扩展关闭/退出",
       "invariant": "任务取消、预算和资源收敛结果可查",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "tests/redesign/test_acceptance_extensions.py::test_extension_shutdown_reports_concrete_convergence"
+      ]
     },
     {
       "id": "A06",
@@ -605,10 +613,10 @@
       "id": "A07",
       "scenario": "管道、无 TTY、Ctrl+C",
       "invariant": "无控制码污染机器输出，不等待交互输入，取消与退出状态真实",
-      "status": "in_progress",
+      "status": "complete",
       "evidence": [
-        "docs/implementation/checkpoint-02.md",
-        "docs/implementation/application-tests.xml"
+        "tests/redesign/test_acceptance_cli.py::test_redirected_stdin_without_print_is_refused_not_awaited",
+        "tests/redesign/test_acceptance_cli.py::test_keyboard_interrupt_maps_to_exit_code_130"
       ]
     },
     {
