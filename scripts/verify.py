@@ -103,12 +103,42 @@ def fast_plan(python: str) -> runner.Plan:
     return runner.Plan(tuple(steps), tuple(notes))
 
 
+VERB_ALIASES = {"typecheck": "types", "test": "tests"}
+DIST_STEP_NAMES = ("build", "wheel-audit", "install", "pip-check", "dist-check")
+
+
+def select_only(plan: runner.Plan, names: tuple[str, ...]) -> runner.Plan:
+    """Keep only the named steps, pulling in build when a later dist step needs it.
+
+    Verbb names used by the CI hook (typecheck, test) are accepted as aliases of
+    the gate's own step names so both spellings resolve to one implementation.
+    """
+    wanted = {VERB_ALIASES.get(name, name) for name in names}
+    if wanted & (set(DIST_STEP_NAMES) - {"build"}):
+        wanted.add("build")
+    available = [step.name for step in plan.steps]
+    unknown = sorted(wanted - set(available))
+    if unknown:
+        raise SystemExit(
+            f"unknown step(s): {', '.join(unknown)}; available: {', '.join(available)}"
+        )
+    return runner.Plan(tuple(step for step in plan.steps if step.name in wanted), plan.notes)
+
+
 def main() -> int:
     """Run the requested plan and return its exit code."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fast", action="store_true", help="changed-file subset for iteration")
     parser.add_argument("--skip-dist", action="store_true", help="full gate without build steps")
+    parser.add_argument(
+        "--only",
+        help="comma-separated steps or verbs to run alone, e.g. lint or typecheck,format",
+    )
     args = parser.parse_args()
+    if args.only:
+        names = tuple(part.strip() for part in args.only.split(",") if part.strip())
+        plan = select_only(full_plan(sys.executable, skip_dist=False), names)
+        return runner.run_plan(plan, ROOT)
     plan = fast_plan(sys.executable) if args.fast else full_plan(sys.executable, args.skip_dist)
     return runner.run_plan(plan, ROOT)
 

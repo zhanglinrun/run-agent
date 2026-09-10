@@ -5,10 +5,18 @@
 ## 用法
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\verify.py            # 全量闸门（10 步）
-.\.venv\Scripts\python.exe scripts\verify.py --fast      # 变更文件子集，供本地迭代
-.\.venv\Scripts\python.exe scripts\verify.py --skip-dist # 全量但跳过构建/安装步骤
+mise run verify                                        # 全量闸门（推荐入口）
+mise run verify-fast                                   # 变更文件子集，供本地迭代
+mise run typecheck    # 或 lint / format / compile / test / build 单 verb
+
+.\.venv\Scripts\python.exe scripts\verify.py             # 全量闸门（10 步）
+.\.venv\Scripts\python.exe scripts\verify.py --fast       # 变更文件子集
+.\.venv\Scripts\python.exe scripts\verify.py --only lint,types   # 只跑指定步骤
+.\.venv\Scripts\python.exe scripts\verify.py --skip-dist  # 全量但跳过构建/安装
 ```
+
+`--only` 接受步骤名或 CI verb 别名（`typecheck`→`types`、`test`→`tests`）；选中
+`wheel-audit`/`install`/`pip-check`/`dist-check` 时会自动带上 `build`。
 
 退出码：0 表示全部步骤通过；非零表示第一个失败步骤的退出码，且后续步骤不执行。
 
@@ -67,15 +75,47 @@
 - 步骤串行执行是刻意选择而非遗漏：测试套件共享同一个真实 SQLite 状态目录与单写者，
   并行步骤会竞争真实持久状态。理由写在 `scripts/verifylib/runner.py` 的模块 docstring 里。
 
-## 偏离记录：mise-first
+## mise 任务（verb 级闸门）
 
-通用规则要求 mise-first。本仓库不引入 mise，理由由用户明确给出：
+`mise.toml` 定义 8 个任务，其中 6 个使用 CI 钩子会发现的 verb 名（`compile`、`format`、
+`lint`、`typecheck`、`test`、`build`），每个都委托给同一个闸门：
 
-> 「不做这个mise啊，我看计划里面没有啊，别自己乱加要求」
+```powershell
+mise run typecheck     # -> python scripts/gate.py --only typecheck
+mise run verify        # -> 完整 10 步闸门
+mise run verify-fast   # -> 变更文件子集
+```
 
-即：`study/简历五条/00-RunAgent完整改进执行计划.md` 未把 mise 列为交付要求，
-因此不新增该外部依赖。规范入口由 `scripts/verify.py` + `.venv` 承担，效果等价：
-单条命令、与 CI 逐条等价、可复现、可缓存。
+`mise run typecheck` / `lint` / `format` / `compile` / `test` / `build` 实测全部 exit 0
+（`test` 194 passed / 2 skipped，耗时 55.2s；`build` 含 wheel 布局审计，8.6s）。
+
+### 为什么要 `scripts/gate.py` 这一层
+
+mise 的 `python` 解析到 PATH 上的解释器（本机是 `E:\Anaconda\python.exe`），它**没有**项目
+依赖。`scripts/gate.py` 只依赖标准库，因此任何 Python 都能启动它；它再定位 `.venv` 并调用
+`scripts/verify.py`，使检查始终在项目自己的解释器里执行。这样 verb 任务与闸门是**同一个**
+实现，不存在第二套检查。
+
+### mise 的安装方式（首次）
+
+`winget install jdx.mise` **失败**：`InternetOpenUrl() failed 0x80072efd`，`--proxy` 也不被该
+winget 构建接受，且本机 `127.0.0.1:7897` 代理下 curl 对任何 HTTPS 主机都报 schannel 握手失败。
+实际可行的是**直连**：`curl --noproxy "*"` 从 GitHub 直接下载（43.5 MB，4.6s）。
+
+落地位置与解析方式：
+
+| 项 | 值 |
+| --- | --- |
+| 二进制 | `%LOCALAPPDATA%\Programs\mise\bin\mise.exe`（v2026.8.5 windows-x64） |
+| 用户 PATH | 已追加该 `bin` 目录（后续会话生效） |
+| 当前进程解析 | `%APPDATA%\npm\mise.cmd` 转发脚本（该目录已在 Pi 进程的 PATH 上） |
+
+那个 `mise.cmd` 存在的原因：Pi 在启动时快照 PATH，安装后不会自动看到新目录。它是**透明转发**
+到真 mise 的启动器，不是同名伪装实现。
+
+（历史：用户最初明确拒绝引入 mise，理由是计划未把它列为交付要求；随后 CI 钩子自动发现的
+4 条命令全被 `mise exec --` 包裹而失败，用户重新裁定「安装 mise + mise.toml 委托给闸门」。
+本节记录的是最终状态。）
 
 ## 已知缺口
 
