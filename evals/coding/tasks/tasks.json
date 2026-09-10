@@ -1,0 +1,81 @@
+{
+  "schema": "run-agent.evaluation.task-selection.v1",
+  "note": "P0-4 selection of representative tasks. Only entries whose status is 'ready' have a task directory on disk; 'planned' entries record the intended family coverage and are not loadable yet. Tasks with grader/ and reference/ support no-op, reference and answer-only admission checks.",
+  "tasks": [
+    {
+      "id": "python-off-by-one",
+      "family": "bug-fix",
+      "status": "ready",
+      "tags": [
+        "python",
+        "boundary",
+        "arithmetic"
+      ]
+    },
+    {
+      "id": "python-slug-normalization",
+      "family": "bug-fix",
+      "status": "ready",
+      "tags": [
+        "python",
+        "string",
+        "normalization"
+      ]
+    },
+    {
+      "id": "python-config-precedence",
+      "family": "cross-module",
+      "status": "ready",
+      "tags": [
+        "python",
+        "defaults",
+        "precedence"
+      ]
+    },
+    {
+      "id": "python-multiturn-correction",
+      "family": "multi-turn",
+      "status": "planned",
+      "tags": [
+        "python",
+        "steering"
+      ]
+    },
+    {
+      "id": "python-compaction-continues",
+      "family": "long-context",
+      "status": "planned",
+      "tags": [
+        "python",
+        "compaction"
+      ]
+    },
+    {
+      "id": "python-tool-failure-retry",
+      "family": "tool-recovery",
+      "status": "planned",
+      "tags": [
+        "python",
+        "tooling"
+      ]
+    },
+    {
+      "id": "python-preference-following",
+      "family": "learning",
+      "status": "planned",
+      "tags": [
+        "python",
+        "preference"
+      ]
+    },
+    {
+      "id": "python-stale-fact-detection",
+      "family": "learning",
+      "status": "planned",
+      "tags": [
+        "python",
+        "memory"
+      ]
+    }
+  ]
+}

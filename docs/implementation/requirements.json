@@ -30,8 +30,16 @@
     {
       "id": "P0-4",
       "requirement": "选择 6—10 个代表任务，先实现其中 2—3 个独立验收与参考解检查。",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "src/run_agent_evals/task_spec.py",
+        "evals/coding/tasks/tasks.json",
+        "tests/redesign/test_task_specs.py::test_workspace_tampering_cannot_weaken_the_authoritative_grader",
+        "tests/redesign/test_task_specs.py::test_grader_runs_outside_the_workspace",
+        "tests/redesign/test_real_task_specs.py::test_the_selection_names_between_six_and_ten_representative_tasks",
+        "tests/redesign/test_real_task_specs.py::test_reference_solution_is_admitted",
+        "tests/redesign/test_real_task_specs.py::test_editing_the_visible_tests_cannot_win_admission"
+      ]
     },
     {
       "id": "P0-5",

@@ -1,0 +1,9 @@
+[task]
+id = "python-config-precedence"
+version = "1"
+kind = "cross-module"
+budget_seconds = 120
+artifacts = ["config.py"]
+
+[grader]
+command = ["{python}", "-m", "pytest", "-q", "grader"]

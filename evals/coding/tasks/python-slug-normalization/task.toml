@@ -1,0 +1,9 @@
+[task]
+id = "python-slug-normalization"
+version = "1"
+kind = "bug-fix"
+budget_seconds = 120
+artifacts = ["slug.py"]
+
+[grader]
+command = ["{python}", "-m", "pytest", "-q", "grader"]
