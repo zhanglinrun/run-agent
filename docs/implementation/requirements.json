@@ -236,10 +236,10 @@
     {
       "id": "P2-4",
       "requirement": "接入 CodingSession 持久化，消除最终事件与宿主终态分开提交的问题。",
-      "status": "in_progress",
+      "status": "complete",
       "evidence": [
-        "docs/implementation/checkpoint-02.md",
-        "docs/implementation/application-tests.xml"
+        "docs/implementation/p2-closeout.md",
+        "tests/redesign/test_coding_application.py::test_completion_failure_is_atomic_and_never_emits_settled"
       ]
     },
     {
@@ -277,10 +277,13 @@
     {
       "id": "P2-8",
       "requirement": "执行 S01—S08 的阶段适用用例，验证空库启动、备份与产物恢复，测量长历史读写与事件循环延迟。",
-      "status": "in_progress",
+      "status": "complete",
       "evidence": [
-        "docs/implementation/component-tests.xml",
-        "docs/implementation/storage-component-results.json"
+        "scripts/measure_storage.py",
+        "scripts/measurelib/storage.py",
+        "docs/implementation/storage-measurements.json",
+        "docs/implementation/p2-closeout.md",
+        "tests/redesign/test_backup.py::test_live_wal_backup_restores_history_resources_and_fences"
       ]
     },
     {
@@ -578,8 +581,14 @@
       "id": "A02",
       "scenario": "reload 时旧复盘仍在返回",
       "invariant": "旧实例无法发布资产，新实例可用",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "tests/redesign/test_resources.py::test_reload_retired_worker_cannot_write_or_publish",
+        "tests/redesign/test_extension_tasks.py::test_reload_cancels_running_and_queued_jobs_and_old_api_cannot_submit",
+        "tests/redesign/test_extension_tasks.py::test_noncooperative_task_is_reported_and_cannot_publish_after_retirement",
+        "tests/redesign/test_host_services.py::test_services_are_unavailable_during_setup_and_state_survives_reload",
+        "tests/redesign/test_terminal.py::test_extension_status_is_owned_by_source_and_old_api_retires"
+      ]
     },
     {
       "id": "A03",
@@ -766,11 +775,10 @@
       "id": "S01",
       "scenario": "追加中任意提交故障",
       "invariant": "分支头、序号和事件一致",
-      "status": "in_progress",
+      "status": "complete",
       "evidence": [
-        "docs/implementation/component-tests.xml",
-        "docs/implementation/checkpoint-02.md",
-        "docs/implementation/application-tests.xml"
+        "tests/redesign/test_sqlite_sessions.py::test_fault_rolls_back_all_events_sequence_and_head",
+        "tests/redesign/test_sqlite_sessions.py::test_process_death_inside_transaction_leaves_no_partial_head"
       ],
       "note": "Component evidence exists; full application/host integration is still pending."
     },
@@ -778,11 +786,10 @@
       "id": "S02",
       "scenario": "旧 owner/旧 run 再提交",
       "invariant": "活动状态写入被拒绝",
-      "status": "in_progress",
+      "status": "complete",
       "evidence": [
-        "docs/implementation/component-tests.xml",
-        "docs/implementation/checkpoint-02.md",
-        "docs/implementation/application-tests.xml"
+        "tests/redesign/test_sqlite_sessions.py::test_ownership_fence_survives_release_and_takeover",
+        "tests/redesign/test_sqlite_sessions.py::test_expired_owner_cannot_renew_or_write"
       ],
       "note": "Component evidence exists; full application/host integration is still pending."
     },
@@ -813,8 +820,13 @@
       "id": "S05",
       "scenario": "最终事件/任务/Outbox 故障",
       "invariant": "无半完成状态，可恢复待投递结果",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "tests/redesign/test_gateway_repository.py::test_final_history_task_outcome_and_delivery_commit_atomically",
+        "tests/redesign/test_coding_application.py::test_completion_failure_is_atomic_and_never_emits_settled",
+        "tests/redesign/test_gateway_steering.py::test_steer_transaction_rolls_back_history_receipt_and_state",
+        "tests/redesign/test_gateway_recovery.py::test_recovery_commit_rollback_retains_slot_workspace_and_notification"
+      ]
     },
     {
       "id": "S06",
@@ -832,9 +844,11 @@
       "id": "S07",
       "scenario": "活跃 WAL 备份及新目录恢复",
       "invariant": "数据库与产物一致、无缺失引用，不在线 fallback 到 JSONL",
-      "status": "in_progress",
+      "status": "complete",
       "evidence": [
-        "docs/implementation/component-tests.xml"
+        "tests/redesign/test_backup.py::test_live_wal_backup_restores_history_resources_and_fences",
+        "tests/redesign/test_backup.py::test_missing_artifact_fails_backup_without_publishing_partial_package",
+        "tests/redesign/test_backup.py::test_tampered_backup_fails_before_creating_restore_target"
       ],
       "note": "Component evidence exists; full application/host integration is still pending."
     },

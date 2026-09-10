@@ -1,0 +1,66 @@
+{
+  "schema": "run.storage-measurements.v1",
+  "revision": "daaff12eb74821c529f6c866245cdbfcd99b53d9",
+  "platform": "Windows-11-10.0.26100-SP0",
+  "python": "3.12.4",
+  "conditions": "SQLite WAL, synchronous=FULL, single worker, Windows local filesystem, in-process. The fresh-connection read warms the OS page cache, so it is not a cold-cache measurement. Loop lag is sampled at ~1kHz while the batch populate runs and is reported as a distribution rather than a single figure; the sample count is itself a signal, because the sampler only runs when the loop is free, so fewer samples over a longer populate means the loop was blocked for longer. Synthetic sequential history; no claim about model or tool performance.",
+  "samples": [
+    {
+      "entries": 1000,
+      "populate_ms": 27.76090000043041,
+      "append_ms": [
+        0.8933999997680075,
+        0.6345000001601875,
+        0.7016999988991302
+      ],
+      "paginated_read_ms": 7.012699999904726,
+      "fork_ms": 0.6590000011783559,
+      "fresh_connection_read_ms": 3.2988999992085155,
+      "bytes": 851968,
+      "write_load_loop_lag": {
+        "samples": 2,
+        "max_ms": 12.492099998984486,
+        "p95_ms": 1.3849999997764826,
+        "mean_ms": 6.938549999380484
+      }
+    },
+    {
+      "entries": 10000,
+      "populate_ms": 299.9936999985948,
+      "append_ms": [
+        4.516199998761294,
+        0.6725999992340803,
+        0.6552999984705821
+      ],
+      "paginated_read_ms": 69.43119999777991,
+      "fork_ms": 1.3078999982099049,
+      "fresh_connection_read_ms": 3.559499997209059,
+      "bytes": 6598656,
+      "write_load_loop_lag": {
+        "samples": 12,
+        "max_ms": 15.032899999117944,
+        "p95_ms": 15.020899998693494,
+        "mean_ms": 13.313666666870025
+      }
+    },
+    {
+      "entries": 100000,
+      "populate_ms": 3442.429099999572,
+      "append_ms": [
+        35.18889999759267,
+        0.7651999985682778,
+        0.6064999979571439
+      ],
+      "paginated_read_ms": 721.5930999991542,
+      "fork_ms": 1.4840999974694569,
+      "fresh_connection_read_ms": 3.8148000021465123,
+      "bytes": 64536576,
+      "write_load_loop_lag": {
+        "samples": 112,
+        "max_ms": 28.199700002209283,
+        "p95_ms": 15.097900002932874,
+        "mean_ms": 14.541906249999167
+      }
+    }
+  ]
+}
