@@ -35,6 +35,7 @@ class _Dialog:
     title: str
     result: asyncio.Future[str | None]
     secret: bool = False
+    retired: asyncio.Event | None = None
 
 
 class _InputInterrupted(Exception):
@@ -78,11 +79,15 @@ class TerminalUi(NullUiBridge):
         timeout: float | None = None,
     ) -> str | None:
         future: asyncio.Future[str | None] = asyncio.get_running_loop().create_future()
-        await self.dialogs.put(_Dialog(title, future, secret))
+        retired = asyncio.Event()
+        await self.dialogs.put(_Dialog(title, future, secret, retired))
         try:
             async with asyncio.timeout(timeout):
                 return await future
         except TimeoutError:
+            # The reader must have let go of the terminal before the caller runs again,
+            # otherwise a line arriving now is consumed by the reader on its way out.
+            await asyncio.shield(retired.wait())
             return None
 
     async def confirm(self, title: str, message: str, *, timeout: float | None = None) -> bool:
@@ -220,6 +225,8 @@ class Terminal:
                     dialog = dialog_ready.result()
                     if dialog.result.done():
                         self._prefill = saved
+                        if dialog.retired is not None:
+                            dialog.retired.set()
                         continue
                     answering = asyncio.create_task(self._dialog_prompt(dialog))
                     try:
@@ -245,6 +252,8 @@ class Terminal:
                         answering.cancel()
                         timeout_waiter.cancel()
                         await asyncio.gather(answering, timeout_waiter, return_exceptions=True)
+                        if dialog.retired is not None:
+                            dialog.retired.set()
                     self._prefill = saved
                 else:
                     return typing.result()
