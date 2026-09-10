@@ -47,7 +47,8 @@
       "status": "complete",
       "evidence": [
         "docs/implementation/p0-5-cost-estimate.md",
-        "docs/implementation/real-sample-evidence/report.json"
+        "docs/implementation/real-sample-evidence/p0-5-first-run/report.json",
+        "docs/implementation/real-sample-evidence/p0-5-first-run/ledger-extract.json"
       ]
     },
     {
@@ -541,8 +542,8 @@
       "status": "complete",
       "evidence": [
         "src/run_agent_evals/suite.py",
-        "docs/implementation/real-sample-evidence/manifest.json",
-        "docs/implementation/real-sample-evidence/inventory.json"
+        "docs/implementation/real-sample-evidence/p6-8-passed-run/manifest.json",
+        "docs/implementation/real-sample-evidence/p6-8-passed-run/inventory.json"
       ]
     },
     {
@@ -587,7 +588,8 @@
       "requirement": "从 run bench 运行真实小样本，确认 SQLite 账本/轨迹与完整 JSON 报告齐全，完成 S08 全链路验收。",
       "status": "complete",
       "evidence": [
-        "docs/implementation/real-sample-evidence/report.json",
+        "docs/implementation/real-sample-evidence/p6-8-passed-run/report.json",
+        "docs/implementation/real-sample-evidence/p6-8-passed-run/ledger-extract.json",
         "docs/implementation/p0-5-cost-estimate.md"
       ]
     },
