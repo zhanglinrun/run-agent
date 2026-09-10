@@ -918,22 +918,31 @@
       "id": "E01",
       "scenario": "显式偏好跨会话使用",
       "invariant": "保持偏好且有来源和版本",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "tests/redesign/test_experience.py::test_manual_preference_persists_scopes_refresh_forget_and_rollback",
+        "extensions/experience/context.py"
+      ]
     },
     {
       "id": "E02",
       "scenario": "项目事实更新、别的项目同名事实",
       "invariant": "正确失效/作用域，不相互污染",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "tests/redesign/test_experience.py::test_manual_preference_persists_scopes_refresh_forget_and_rollback",
+        "tests/redesign/test_experience.py::test_expired_resources_are_omitted_from_new_snapshots_and_extension_is_optional"
+      ]
     },
     {
       "id": "E03",
       "scenario": "同资产并发候选发布",
       "invariant": "CAS 拒绝过期候选，不丢更新",
-      "status": "pending",
-      "evidence": []
+      "status": "complete",
+      "evidence": [
+        "tests/redesign/test_experience.py::test_candidates_do_not_publish_and_concurrent_heads_do_not_lose_updates",
+        "extensions/experience/repository.py"
+      ]
     },
     {
       "id": "E04",
