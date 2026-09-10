@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from run_agent_evals.grader_runner import GraderSuiteRunner
+from run_agent_evals.ledger import LedgerSummary
 from run_agent_evals.statistics import Ratio
 from run_agent_evals.task_spec import TaskSpec, load_task_spec, materialize_environment
 from run_agent_evals.verifier import DualPropositionVerifier, SuiteResult, classify
@@ -57,9 +58,10 @@ class TaskVerdict:
 
 @dataclass(frozen=True, slots=True)
 class SuiteReport:
-    """Per-task verdicts plus the rate and interval the plan asks reports to carry."""
+    """Per-task verdicts plus the rate, interval and ledger the plan asks a report to carry."""
 
     verdicts: tuple[TaskVerdict, ...]
+    ledger: LedgerSummary | None = None
 
     @property
     def rate(self) -> Ratio:
@@ -67,7 +69,7 @@ class SuiteReport:
 
     def to_json(self) -> dict[str, Any]:
         low, high = self.rate.interval()
-        return {
+        payload: dict[str, Any] = {
             "tasks": [verdict.to_json() for verdict in self.verdicts],
             "rate": {
                 "successes": self.rate.successes,
@@ -77,6 +79,9 @@ class SuiteReport:
                 "interval": [low, high],
             },
         }
+        if self.ledger is not None:
+            payload["ledger"] = self.ledger.to_json()
+        return payload
 
 
 def ready_task_ids(root: Path) -> tuple[str, ...]:
