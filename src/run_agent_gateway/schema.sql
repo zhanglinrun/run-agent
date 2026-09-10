@@ -15,7 +15,9 @@ CREATE TABLE gateway_routes (
     session_id TEXT NOT NULL REFERENCES sessions(session_id),
     epoch INTEGER NOT NULL CHECK(epoch>=1),
     destination_json TEXT NOT NULL CHECK(json_valid(destination_json)),
-    pending_new INTEGER NOT NULL DEFAULT 0 CHECK(pending_new IN (0,1))
+    pending_new INTEGER NOT NULL DEFAULT 0 CHECK(pending_new IN (0,1)),
+    control_generation INTEGER NOT NULL DEFAULT 0,
+    preparing INTEGER NOT NULL DEFAULT 0 CHECK(preparing>=0)
 );
 
 CREATE TABLE gateway_workspaces (
@@ -35,6 +37,10 @@ CREATE TABLE gateway_tasks (
     origin_session_id TEXT NOT NULL REFERENCES sessions(session_id),
     conversation_epoch INTEGER NOT NULL,
     source_head_id TEXT,
+    source_watermark INTEGER,
+    resource_entry_id TEXT,
+    revision_json TEXT CHECK(revision_json IS NULL OR json_valid(revision_json)),
+    artifacts_json TEXT CHECK(artifacts_json IS NULL OR json_valid(artifacts_json)),
     lane TEXT NOT NULL CHECK(lane IN ('foreground','background')),
     workspace_id TEXT NOT NULL REFERENCES gateway_workspaces(workspace_id),
     content TEXT NOT NULL,

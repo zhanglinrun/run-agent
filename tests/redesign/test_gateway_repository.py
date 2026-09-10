@@ -3,6 +3,7 @@ from dataclasses import replace
 from time import time
 
 import pytest
+from tests.redesign.git_helpers import create_repository
 from tests.redesign.test_coding_application import ReplyProvider, options
 
 from run_agent_coding.application import CodingApplication
@@ -46,6 +47,8 @@ def submission(tmp_path, index=0, *, session="one", lane="foreground", principal
 
 
 async def admit(repo, owner, value):
+    if value.lane == "background" and not (value.workspace / ".git").exists():
+        create_repository(value.workspace)
     return await repo.admit(owner, value, model="test")
 
 
@@ -273,7 +276,7 @@ async def test_stop_after_success_keeps_success_and_leaves_background_owned(gate
     background = await admit(
         repo,
         owner,
-        replace(submission(tmp_path, 1, lane="background"), workspace=tmp_path / "background"),
+        submission(tmp_path, 1, lane="background"),
     )
     first = await repo.claim_next(owner)
     await repo.complete(owner, first, status="succeeded", output="finished")

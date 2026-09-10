@@ -190,11 +190,13 @@ class Adapter:
 
     async def messages(self):
         index = os.environ['GATEWAY_TEST_INDEX']
-        if index != '1':
+        if index == '2':
             yield InboundMessage('cli-1', 'account', 'sender', 'chat', 'prompt 1')
-        yield InboundMessage('cli-' + index, 'account', 'sender', 'chat', 'prompt ' + index)
+        chat = 'background-chat' if index == '3' else 'chat'
+        prompt = '/background isolated prompt' if index == '3' else 'prompt ' + index
+        yield InboundMessage('cli-' + index, 'account', 'sender', chat, prompt)
         await asyncio.wait_for(self.result.wait(), 15)
-        yield InboundMessage('status-' + index, 'account', 'sender', 'chat', '/status')
+        yield InboundMessage('status-' + index, 'account', 'sender', chat, '/status')
         await asyncio.wait_for(self.status.wait(), 5)
 
     async def send(self, delivery):
@@ -217,6 +219,15 @@ def setup_gateway(api):
 
 def check_gateway_cli(launcher: Path, directory: Path) -> dict[str, object]:
     requests: list[object] = []
+    workspace = directory / "cli-workspace"
+    workspace.mkdir()
+    (workspace / "tracked.txt").write_text("clean source\n", encoding="utf-8")
+    for arguments in (["init"], ["add", "tracked.txt"], ["commit", "-m", "fixture"]):
+        subprocess.run(
+            ["git", "-c", "core.hooksPath=", "-c", "user.name=Distribution Fixture",
+             "-c", "user.email=fixture@example.invalid", "-C", str(workspace), *arguments],
+            capture_output=True, check=True, timeout=15,
+        )
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
@@ -248,7 +259,7 @@ def check_gateway_cli(launcher: Path, directory: Path) -> dict[str, object]:
     identities = directory / "identities.json"
     identities.write_text(json.dumps([{
         "adapter_instance_id": "installed-cli", "account_id": "account",
-        "sender_id": "sender", "principal_id": "local", "workspace": str(directory),
+        "sender_id": "sender", "principal_id": "local", "workspace": str(workspace),
     }]), encoding="utf-8")
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -264,7 +275,7 @@ def check_gateway_cli(launcher: Path, directory: Path) -> dict[str, object]:
     })
     state = directory / "cli-gateway-state"
     try:
-        for index in (1, 2):
+        for index in (1, 2, 3):
             report = directory / f"gateway-deliveries-{index}.json"
             result = subprocess.run(
                 [str(launcher), "gateway", "--extension", str(adapter),
@@ -278,13 +289,18 @@ def check_gateway_cli(launcher: Path, directory: Path) -> dict[str, object]:
             assert [d["kind"] for d in deliveries] == ["accepted", "result", "control"]
             assert deliveries[1]["content"]["output"] == "offline gateway reply"
             assert len(deliveries[2]["content"]["tasks"]) == index
+            if index == 3:
+                assert deliveries[1]["content"]["lane"] == "background"
+                assert deliveries[1]["content"]["artifacts"]["manifest"]
+                assert (deliveries[1]["content"]["origin_session_id"]
+                        != deliveries[1]["content"]["session_id"])
         with closing(sqlite3.connect(state / "state.sqlite3")) as connection:
-            assert connection.execute("SELECT COUNT(*) FROM gateway_tasks").fetchone()[0] == 2
-            assert connection.execute("SELECT COUNT(*) FROM gateway_routes").fetchone()[0] == 1
-            assert connection.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+            assert connection.execute("SELECT COUNT(*) FROM gateway_tasks").fetchone()[0] == 3
+            assert connection.execute("SELECT COUNT(*) FROM gateway_routes").fetchone()[0] == 2
+            assert connection.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 3
             assert connection.execute(
                 "SELECT COUNT(*) FROM gateway_tasks WHERE status='succeeded'"
-            ).fetchone()[0] == 2
+            ).fetchone()[0] == 3
             assert connection.execute(
                 "SELECT COUNT(*) FROM gateway_outbox WHERE status!='sent'"
             ).fetchone()[0] == 0
@@ -294,8 +310,9 @@ def check_gateway_cli(launcher: Path, directory: Path) -> dict[str, object]:
         assert any("prompt 1" in json.dumps(body) and "prompt 2" in json.dumps(body)
                    for body in requests)
         assert not list(directory.rglob("*.jsonl"))
-        return {"launches": 2, "tasks": 2, "sessions": 1, "all_deliveries_sent": True,
+        return {"launches": 3, "tasks": 3, "sessions": 3, "all_deliveries_sent": True,
                 "duplicate_on_restart": True, "resumed_context": True,
+                "background_first_input_worktree_and_artifacts": True,
                 "provider": "local HTTP fixture; no real model"}
     finally:
         server.shutdown()

@@ -120,6 +120,12 @@ class SessionController:
                                 "workspace_error",
                                 "target_run_id",
                                 "consumed_entry_id",
+                                "origin_session_id",
+                                "source_head_id",
+                                "source_watermark",
+                                "resource_entry_id",
+                                "revision_json",
+                                "artifacts_json",
                             )
                         }
                         for row in rows
@@ -137,6 +143,10 @@ class SessionController:
                     )
                 cancelled: dict[str, str] = {}
                 if binding is not None:
+                    connection.execute(
+                        "UPDATE gateway_routes SET control_generation=control_generation+1 "
+                        "WHERE route_key=?", (key,),
+                    )
                     rows = connection.execute(
                         "SELECT * FROM gateway_tasks WHERE session_id=? AND lane='foreground' "
                         "AND status IN ('queued','steering','running','cancelling')",
@@ -244,7 +254,7 @@ class SessionController:
                 "SELECT c.control_id,o.destination_json AS control_destination,r.* "
                 "FROM gateway_controls c JOIN gateway_routes r ON c.route_key=r.route_key "
                 "JOIN gateway_outbox o ON o.control_id=c.control_id AND o.kind='accepted' "
-                "WHERE c.command='/new' AND c.state='waiting' "
+                "WHERE c.command='/new' AND c.state='waiting' AND r.preparing=0 "
                 "AND NOT EXISTS (SELECT 1 FROM gateway_attempts a JOIN gateway_tasks t "
                 "ON a.task_id=t.task_id WHERE t.session_id=r.session_id "
                 "AND t.lane='foreground' AND a.released=0)"

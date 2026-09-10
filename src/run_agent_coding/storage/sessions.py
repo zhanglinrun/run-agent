@@ -26,7 +26,7 @@ from run_agent_core.session.contracts import (
     SessionConflict,
     StaleRunToken,
 )
-from run_agent_core.session.entries import SessionEntry
+from run_agent_core.session.entries import SessionEntry, SessionInfoEntry
 
 ENTRY_ADAPTER: TypeAdapter[SessionEntry] = TypeAdapter(SessionEntry)
 
@@ -188,6 +188,67 @@ class SqliteSessionRepository:
 
     async def get_session(self, session_id: str) -> SessionRecord:
         return await self.database.run(lambda connection: self._record(connection, session_id))
+
+    def clone_in_transaction(
+        self, connection: sqlite3.Connection, *, origin_session_id: str,
+        session_id: str, cwd: Path, principal_id: str,
+    ) -> tuple[SessionRecord, str | None, int, str | None]:
+        """Freeze the active source ancestry into an independent session in this transaction."""
+        origin = self._record(connection, origin_session_id)
+        if origin.principal_id != principal_id:
+            raise PermissionError("Cannot clone another principal's session")
+        source = connection.execute(
+            "SELECT b.head_id,s.last_seq FROM sessions s JOIN branches b "
+            "ON b.session_id=s.session_id AND b.branch_id=s.active_branch_id WHERE s.session_id=?",
+            (origin_session_id,),
+        ).fetchone()
+        head, watermark = source["head_id"], source["last_seq"]
+        self.create_in_transaction(
+            connection, session_id=session_id, principal_id=principal_id, cwd=cwd,
+            model=origin.model, provider_name=origin.provider_name, project_id=origin.project_id,
+        )
+        connection.execute(
+            "WITH RECURSIVE ancestry(entry_id,parent_id,seq) AS ("
+            "SELECT entry_id,parent_id,seq FROM entries WHERE session_id=? AND entry_id=? "
+            "UNION ALL SELECT e.entry_id,e.parent_id,e.seq FROM entries e JOIN ancestry a "
+            "ON e.entry_id=a.parent_id WHERE e.session_id=? AND e.seq<a.seq) "
+            "INSERT INTO entries(session_id,entry_id,seq,parent_id,origin_branch_id,"
+            "run_id,kind,body_json) "
+            "SELECT ?,e.entry_id,e.seq,e.parent_id,'main',e.run_id,e.kind,e.body_json "
+            "FROM entries e JOIN ancestry a ON e.entry_id=a.entry_id "
+            "WHERE e.session_id=? ORDER BY e.seq",
+            (origin_session_id, head, origin_session_id, session_id, origin_session_id),
+        )
+        resource = connection.execute(
+            "SELECT entry_id FROM entries WHERE session_id=? AND kind='custom' "
+            "AND json_extract(body_json,'$.namespace')='run.resources' ORDER BY seq DESC LIMIT 1",
+            (session_id,),
+        ).fetchone()
+        resource_id = resource["entry_id"] if resource is not None else None
+        metadata = {**origin.metadata, "origin_session_id": origin_session_id,
+                    "source_head_id": head, "source_watermark": watermark,
+                    "source_resource_entry_id": resource_id}
+        # A new info entry records the new workspace without rewriting the source events.
+        info = SessionInfoEntry(parent_id=head, cwd=str(cwd), title=None)
+        sequence = connection.execute(
+            "SELECT COALESCE(MAX(seq),0)+1 FROM entries WHERE session_id=?", (session_id,)
+        ).fetchone()[0]
+        connection.execute(
+            "INSERT INTO entries VALUES (?,?,?,?,?,?,?,?)",
+            (session_id, info.id, sequence, head, "main", f"fork-{session_id}",
+             info.type, entry_body(info)),
+        )
+        connection.execute(
+            "UPDATE branches SET head_id=? WHERE session_id=? AND branch_id='main'",
+            (info.id, session_id),
+        )
+        connection.execute(
+            "UPDATE sessions SET last_seq=?,metadata_json=? WHERE session_id=?",
+            (sequence, canonical_json(metadata), session_id),
+        )
+        if self.fault:
+            self.fault("session_cloned")
+        return self._record(connection, session_id), head, watermark, resource_id
 
     async def update_metadata(
         self,

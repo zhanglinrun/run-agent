@@ -37,6 +37,7 @@ class ApplicationOptions:
     trust_default: TrustDefault | None = None
     thinking: ThinkingLevel | None = None
     system: str | None = None
+    pinned_resources: bool = False
 
 
 class CodingApplication:
@@ -83,6 +84,7 @@ class CodingApplication:
                     provider=provider,
                     provider_transform=provider_transform,
                     input_source=input_source,
+                    pinned_resources=options.pinned_resources,
                     model=options.model or record.model,
                     storage=storage,
                     telemetry=await manager.telemetry(),

@@ -87,7 +87,19 @@ Outbox. Each Feishu text chunk uses a stable UUID derived from the delivery ID.
 Retries retain those UUIDs and original reply/thread targets. This uses the
 channel's idempotency window; it does not promise end-to-end exactly-once delivery.
 
-`/background` remains unavailable until its worktree protocol is completed.
+`/background <content>` captures a clean Git commit and the source session's active
+history, then runs in a separate detached worktree and session. First use initializes
+source resources without making a model request. Skills remain pinned; changed prompt
+contributions or trust policy are rejected. Background results retain the original
+session and channel after `/new`, with a binary patch and untracked-file manifest.
+Outputs are not merged automatically. Dirty/non-Git sources, submodules and symlinks
+are not supported. Result capture accepts at most 1024 untracked files and 32 MiB total.
+This is workspace separation, not a sandbox for arbitrary shell commands.
+
+Preparation is bounded to two requests and control commands continue while it runs.
+Stop/new invalidate unfinished preparation; shutdown drains preparation reservations.
+Completed message deduplication does not consume preparation capacity.
+
 Crash recovery currently retains unknown
 executions and quarantines their workspaces; automatic process reconciliation and
 the operator recovery command are still under implementation.
@@ -100,5 +112,5 @@ identity and passes account, sender, chat, thread and source-message IDs. The ho
 maps these to an internal principal and route. `BoundedIngress` and
 `QueueGatewayAdapter` provide the same contract for local integration tests.
 
-The Gateway uses schema version 3 initialization only. Old development schemas and
+The Gateway uses schema version 4 initialization only. Old development schemas and
 API version 1 are not migrated or adapted.

@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Sequence
-from dataclasses import dataclass, field
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
 from run_agent_core.types import JSONValue
@@ -111,6 +111,7 @@ class AgentGateway:
         model: str,
         provider_name: str | None = None,
         send_timeout: float = 15,
+        prepare_background: Callable[[Submission], Awaitable[None]] | None = None,
     ) -> None:
         if len({adapter.name for adapter in adapters}) != len(adapters):
             raise ValueError("Gateway adapter instance names must be unique")
@@ -123,7 +124,11 @@ class AgentGateway:
         self.adapters = {adapter.name: adapter for adapter in adapters}
         self.model, self.provider_name = model, provider_name
         self.send_timeout = send_timeout
+        self.prepare_background = prepare_background
         self._consumers: list[asyncio.Task[None]] = []
+        self._preparations: set[asyncio.Task[None]] = set()
+        self._preparation_monitors: set[asyncio.Task[None]] = set()
+        self._preparation_failure: BaseException | None = None
         self._sender: asyncio.Task[None] | None = None
         self._rejection_sender: asyncio.Task[None] | None = None
         self._rejected: asyncio.Queue[tuple[GatewayAdapter, Delivery]] = asyncio.Queue(32)
@@ -152,69 +157,160 @@ class AgentGateway:
         async for message in adapter.messages():
             if self._closing:
                 return
-            try:
-                rule, route = self.policy.resolve(
-                    adapter.name,
-                    message.account_id,
-                    message.sender_id,
-                    message.chat_id,
-                    message.thread_id,
-                )
-                text = message.text.strip()
-                command, _, argument = text.partition(" ")
-                submission = Submission(
-                    route,
-                    rule.principal_id,
-                    message.source_message_id,
-                    argument.strip() if command == "/queue" else text,
-                    rule.workspace,
-                    metadata=message.metadata,
-                )
-                if command in CONTROL_COMMANDS:
-                    await self.controller.handle(
-                        self.owner, submission, model=self.model, provider_name=self.provider_name
-                    )
-                elif command == "/background":
-                    raise AdmissionRejected(f"{command} is not enabled in this Gateway build")
-                else:
-                    await self.repository.admit(
-                        self.owner, submission, model=self.model, provider_name=self.provider_name
-                    )
-                self.scheduler.wake()
-                self._delivery_wake.set()
-            except (PermissionError, ValueError, KeyError, RuntimeError) as exc:
-                self.rejections.append(str(exc))
-                del self.rejections[:-64]
-                # A rejection is not a durable business receipt. Never claim accepted
-                # if identity validation or the admission transaction did not succeed.
-                route = RouteIdentity(
-                    adapter.name,
-                    message.account_id,
-                    message.chat_id,
-                    message.thread_id,
-                    message.sender_id,
-                )
-                delivery = Delivery(
-                    "rejected-"
-                    + hashlib.sha256(
-                        (route_key(route) + message.source_message_id).encode()
-                    ).hexdigest(),
-                    None,
-                    "rejected",
-                    {
-                        "source_message_id": message.source_message_id,
-                        "account_id": message.account_id,
-                        "chat_id": message.chat_id,
-                        "thread_id": message.thread_id,
-                        "adapter_instance_id": adapter.name,
-                    },
-                    {"status": "rejected", "error": str(exc)},
-                    1,
-                )
+            if message.text.strip().partition(" ")[0] == "/background":
                 try:
-                    self._rejected.put_nowait((adapter, delivery))
-                except asyncio.QueueFull:
-                    self.rejections[-1] += "; rejection delivery queue full"
+                    if not message.text.strip().partition(" ")[2].strip():
+                        raise ValueError("Usage: /background <content>")
+                    rule, route = self.policy.resolve(
+                        adapter.name,
+                        message.account_id,
+                        message.sender_id,
+                        message.chat_id,
+                        message.thread_id,
+                    )
+                    anchor = await self.repository.background_anchor(
+                        self.owner,
+                        Submission(
+                            route,
+                            rule.principal_id,
+                            message.source_message_id,
+                            message.text,
+                            rule.workspace,
+                        ),
+                        model=self.model,
+                        provider_name=self.provider_name,
+                    )
+                except (PermissionError, ValueError, KeyError, RuntimeError) as exc:
+                    self._reject(adapter, message, exc)
+                    continue
+                if anchor[2] == -1:
+                    await self._receive(adapter, message, expected_route=anchor)
+                    continue
+                if len(self._preparations) >= 2:
+                    from run_agent_coding.storage.settle import settle
+
+                    _, cancelled = await settle(
+                        self.repository.release_background_anchor(self.owner, route)
+                    )
+                    if cancelled:
+                        raise asyncio.CancelledError
+                    self._reject(
+                        adapter, message, AdmissionRejected("Background preparation is full")
+                    )
+                    continue
+                task = asyncio.create_task(
+                    self._receive(adapter, message, expected_route=anchor),
+                    name="gateway-background-admission",
+                )
+                self._preparations.add(task)
+                monitor = asyncio.create_task(self._finish_preparation(task, route))
+                self._preparation_monitors.add(monitor)
+                monitor.add_done_callback(self._preparation_monitors.discard)
+            else:
+                await self._receive(adapter, message)
+
+    async def _finish_preparation(
+        self, task: asyncio.Task[None], route: RouteIdentity
+    ) -> None:
+        # This monitor is drained, never cancelled. It releases the reservation even
+        # when the admission coroutine was cancelled before its first instruction.
+        from run_agent_coding.storage.settle import settle
+
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            self._preparation_failure = exc
+        finally:
+            try:
+                await settle(self.repository.release_background_anchor(self.owner, route))
+            except Exception as exc:
+                self._preparation_failure = exc
+            finally:
+                self._preparations.discard(task)
+                self.scheduler.wake()
+
+    async def _receive(
+        self,
+        adapter: GatewayAdapter,
+        message: InboundMessage,
+        *,
+        expected_route: tuple[str, int, int] | None = None,
+    ) -> None:
+        try:
+            if self._closing:
+                return
+            rule, route = self.policy.resolve(
+                adapter.name,
+                message.account_id,
+                message.sender_id,
+                message.chat_id,
+                message.thread_id,
+            )
+            text = message.text.strip()
+            command, _, argument = text.partition(" ")
+            submission = Submission(
+                route,
+                rule.principal_id,
+                message.source_message_id,
+                argument.strip() if command == "/queue" else text,
+                rule.workspace,
+                metadata=message.metadata,
+            )
+            if command in CONTROL_COMMANDS:
+                await self.controller.handle(
+                    self.owner, submission, model=self.model, provider_name=self.provider_name
+                )
+            elif command == "/background":
+                if not argument.strip():
+                    raise ValueError("Usage: /background <content>")
+                if self.prepare_background is None:
+                    raise AdmissionRejected("This host has no background workspace service")
+                submission = replace(submission, content=argument.strip(), lane="background")
+                if expected_route is None or expected_route[2] != -1:
+                    await self.prepare_background(submission)
+                await self.repository.admit(
+                    self.owner,
+                    submission,
+                    model=self.model,
+                    provider_name=self.provider_name,
+                    expected_route=expected_route,
+                )
+            else:
+                await self.repository.admit(
+                    self.owner, submission, model=self.model, provider_name=self.provider_name
+                )
+            self.scheduler.wake()
+            self._delivery_wake.set()
+        except (PermissionError, ValueError, KeyError, RuntimeError, OSError) as exc:
+            self._reject(adapter, message, exc)
+
+    def _reject(self, adapter: GatewayAdapter, message: InboundMessage, exc: Exception) -> None:
+        self.rejections.append(str(exc))
+        del self.rejections[:-64]
+        route = RouteIdentity(
+            adapter.name, message.account_id, message.chat_id, message.thread_id, message.sender_id
+        )
+        delivery = Delivery(
+            "rejected-"
+            + hashlib.sha256((route_key(route) + message.source_message_id).encode()).hexdigest(),
+            None,
+            "rejected",
+            {
+                "source_message_id": message.source_message_id,
+                "account_id": message.account_id,
+                "chat_id": message.chat_id,
+                "thread_id": message.thread_id,
+                "adapter_instance_id": adapter.name,
+            },
+            {"status": "rejected", "error": str(exc)},
+            1,
+        )
+        try:
+            self._rejected.put_nowait((adapter, delivery))
+        except asyncio.QueueFull:
+            self.rejections[-1] += "; rejection delivery queue full"
 
     async def _send_rejections(self) -> None:
         while True:
@@ -255,7 +351,15 @@ class AgentGateway:
             await self.outbox.acknowledge(self.owner, delivery, receipt)
 
     async def wait_closed(self) -> None:
-        while any(not task.done() for task in self._consumers):
+        while (
+            any(not task.done() for task in self._consumers)
+            or self._preparations
+            or self._preparation_monitors
+        ):
+            if self._preparation_failure is not None:
+                raise RuntimeError(
+                    "Gateway background preparation failed"
+                ) from self._preparation_failure
             if self.scheduler.failure is not None:
                 raise RuntimeError("Gateway scheduler failed") from self.scheduler.failure
             if self._sender is not None and self._sender.done():
@@ -266,6 +370,10 @@ class AgentGateway:
                     task.result()
             await asyncio.sleep(0.1)
         await asyncio.gather(*self._consumers)
+        if self._preparation_failure is not None:
+            raise RuntimeError(
+                "Gateway background preparation failed"
+            ) from self._preparation_failure
 
     async def shutdown(self, *, grace_period: float = 5) -> None:
         from run_agent_coding.storage.settle import settle
@@ -287,9 +395,15 @@ class AgentGateway:
 
     async def _shutdown_owned(self, grace_period: float) -> None:
         # Keep channels available until outcomes have committed and sending has drained.
+        await self.repository.stop_accepting(self.owner)
         for task in self._consumers:
             task.cancel()
         await asyncio.gather(*self._consumers, return_exceptions=True)
+        preparing = tuple(self._preparations)
+        for task in preparing:
+            task.cancel()
+        await asyncio.gather(*preparing, return_exceptions=True)
+        await asyncio.gather(*self._preparation_monitors)
         try:
             await self.scheduler.shutdown(grace_period=grace_period, retain_lease=True)
             await self.controller.reconcile(self.owner)

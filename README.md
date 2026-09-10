@@ -52,7 +52,9 @@ run bench --help
 
 `/steer <内容>` 在忙时绑定当前运行，先返回 `accepted`，在消息与消费回执原子写入后返回 `consumed`。原运行结束而尚未消费的纠正会保持原接收顺序转为普通任务；空闲时直接排队。`consumed` 表示已进入运行的持久历史，不代表模型已执行成功；运行结果另行通知。
 
-飞书启动方法和身份映射示例见 [Gateway 扩展说明](examples/gateway_extensions/README.md)。目前 `/background` 入口仍明确拒绝；独立后台 worktree、未知外部副作用的人工恢复、进程树核对与混合负载验收尚未完成，详见 [执行记录](docs/implementation/checkpoint-08.md)。
+`/background <内容>` 从干净 Git 提交创建独立 worktree 和会话，固定源历史与 Skill 版本；产物保存为补丁、文件和清单，完成结果仍发往原渠道。不会自动合并回主目录。首版不支持脏目录、非 Git 目录、子模块及符号链接。
+
+飞书启动方法和身份映射示例见 [Gateway 扩展说明](examples/gateway_extensions/README.md)。未知外部副作用的人工恢复、进程树核对与混合负载验收尚未完成，详见 [执行记录](docs/implementation/checkpoint-09.md)。
 
 ## 分层与扩展
 

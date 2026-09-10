@@ -401,6 +401,7 @@ class CodingSessionConfig:
     # PreparedCodingSession.adopt() reaches its durable commit point.
     defer_authoritative_writes: bool = False
     input_source: InputSource | None = None
+    pinned_resources: bool = False
 
 
 class CodingSession:
@@ -833,6 +834,8 @@ class CodingSession:
             extension_runtime=extension_runtime,
         )
         previous_resources = _resource_entry(state.custom_entries)
+        if config.pinned_resources and previous_resources is None:
+            raise ValueError("Pinned session is missing its source resource snapshot")
         restored = (await _restore_session_resources(config, previous_resources)
                     if previous_resources is not None else None)
         if restored is not None:
@@ -867,6 +870,20 @@ class CodingSession:
                 include_resource_dirs=True,
                 include_project_dir=True,
                 include_user_dir=False,
+            )
+
+        if config.pinned_resources:
+            assert previous_resources is not None
+            pinned = previous_resources.data["payload"]
+            assert isinstance(pinned, dict)
+            sections = [asdict(section) for section in extension_runtime.prompt_sections]
+            if (pinned["guidelines"] != list(extension_runtime.prompt_guidelines)
+                    or pinned["sections"] != sections):
+                raise ValueError("Extension prompt contributions differ from the pinned source")
+            config = replace(
+                config, system=cast(str | None, pinned["explicit_system"]),
+                custom_system_prompt=cast(str | None, pinned["custom_override"]),
+                append_system_prompt=cast(str | None, pinned["append_override"]),
             )
 
         if config.provider is None:
@@ -4738,6 +4755,8 @@ async def _restore_session_resources(
     paths = config.resource_paths
     if (paths is not None
             and payload["project_resources_enabled"] != paths.project_resources_enabled):
+        if config.pinned_resources:
+            raise ValueError("Project trust differs from the pinned source resource snapshot")
         return None
     resources = TypeAdapter(SessionResources).validate_python(payload["resources"])
     skills = []

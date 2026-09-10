@@ -71,6 +71,7 @@ async def run_gateway(args: argparse.Namespace) -> None:
                 policy,
                 model=options.model or "",
                 provider_name=options.provider_name,
+                prepare_background=runtime.prepare_background,
             )
             try:
                 await gateway.start()
