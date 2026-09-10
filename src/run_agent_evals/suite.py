@@ -26,7 +26,7 @@ from run_agent_evals.grader_runner import GraderSuiteRunner
 from run_agent_evals.ledger import LedgerSummary
 from run_agent_evals.statistics import Ratio
 from run_agent_evals.task_spec import TaskSpec, load_task_spec, materialize_environment
-from run_agent_evals.verifier import DualPropositionVerifier, SuiteResult, classify
+from run_agent_evals.verifier import DualProposition, DualPropositionVerifier, SuiteResult, classify
 
 MANIFEST = "tasks.json"
 READY = "ready"
@@ -92,6 +92,19 @@ def ready_task_ids(root: Path) -> tuple[str, ...]:
     )
 
 
+def verdict_from(task_id: str, proposition: DualProposition) -> TaskVerdict:
+    """One task's verdict, so both callers build it the same way."""
+    return TaskVerdict(
+        task_id=task_id,
+        succeeded=proposition.succeeded,
+        fail_to_pass=tuple(sorted(proposition.fail_to_pass)),
+        pass_to_pass=tuple(sorted(proposition.pass_to_pass)),
+        unmet_targets=tuple(sorted(proposition.unmet_targets)),
+        newly_failing=tuple(sorted(proposition.newly_failing)),
+        flaky=tuple(sorted(proposition.flaky)),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class TaskSuite:
     """The ready tasks under one directory."""
@@ -117,15 +130,7 @@ class TaskSuite:
         materialize_environment(spec, pristine)
         verifier = DualPropositionVerifier(GraderSuiteRunner(spec), repeats=self.repeats)
         verdict = await verifier.verify(pristine, candidate, targets=spec.fail_to_pass)
-        return TaskVerdict(
-            task_id=spec.id,
-            succeeded=verdict.succeeded,
-            fail_to_pass=tuple(sorted(verdict.fail_to_pass)),
-            pass_to_pass=tuple(sorted(verdict.pass_to_pass)),
-            unmet_targets=tuple(sorted(verdict.unmet_targets)),
-            newly_failing=tuple(sorted(verdict.newly_failing)),
-            flaky=tuple(sorted(verdict.flaky)),
-        )
+        return verdict_from(spec.id, verdict)
 
     def evaluate_default(self, *, use_reference: bool) -> SuiteReport:
         """Synchronous convenience: grade each task's reference, or its pristine tree.
@@ -182,15 +187,5 @@ def rederive(
             SuiteResult.of_single(candidate[task_id]),
             targets=targets.get(task_id, ()),
         )
-        verdicts.append(
-            TaskVerdict(
-                task_id=task_id,
-                succeeded=proposition.succeeded,
-                fail_to_pass=tuple(sorted(proposition.fail_to_pass)),
-                pass_to_pass=tuple(sorted(proposition.pass_to_pass)),
-                unmet_targets=tuple(sorted(proposition.unmet_targets)),
-                newly_failing=tuple(sorted(proposition.newly_failing)),
-                flaky=tuple(sorted(proposition.flaky)),
-            )
-        )
+        verdicts.append(verdict_from(task_id, proposition))
     return SuiteReport(tuple(verdicts))

@@ -66,6 +66,20 @@ def cpu_load(stop: threading.Event, workers: int) -> list[threading.Thread]:
     return threads
 
 
+def report(failures: Counter[str], durations: list[float]) -> int:
+    """Print the survey result and return the exit code."""
+    print("\n=== result ===")
+    print(f"  passes: {len(durations)}")
+    print(f"  wall time: min {min(durations):.1f}s max {max(durations):.1f}s")
+    if not failures:
+        print("  no failures observed in any pass")
+        return 0
+    print(f"  distinct failing tests: {len(failures)}")
+    for name, count in failures.most_common():
+        print(f"    {count}/{len(durations)}  {name}")
+    return 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("passes", type=int, nargs="?", default=6)
@@ -89,17 +103,7 @@ def main() -> int:
                 thread.join(timeout=1.0)
         durations.append(elapsed)
         failures.update(failed)
-
-    print("\n=== result ===")
-    print(f"  passes: {len(durations)}")
-    print(f"  wall time: min {min(durations):.1f}s max {max(durations):.1f}s")
-    if not failures:
-        print("  no failures observed in any pass")
-        return 0
-    print(f"  distinct failing tests: {len(failures)}")
-    for name, count in failures.most_common():
-        print(f"    {count}/{len(durations)}  {name}")
-    return 1
+    return report(failures, durations)
 
 
 if __name__ == "__main__":
