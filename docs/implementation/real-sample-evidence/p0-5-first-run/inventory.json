@@ -1,0 +1,10 @@
+{
+  "files": {
+    "trials/eb72bddc29904424839e5ac551d771fd.json": {
+      "bytes": 1846,
+      "sha256": "02a8e1892d4a4203adbf79fc531c4fbfdddb00e7103aed5367f1497f198a169d"
+    }
+  },
+  "inventory_digest": "2b9b967e7a7bd6c1ba81f49a843bed9fc09b47e29db074f616d0959a1a77e7c7",
+  "schema": "run-agent.evaluation.inventory.v1"
+}

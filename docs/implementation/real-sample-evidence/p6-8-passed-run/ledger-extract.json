@@ -1,0 +1,105 @@
+{
+  "purpose": "P6-8: run bench real small sample with SQLite ledger and trace plus full JSON report",
+  "run_directory": ".run/evals/20260910T145243Z",
+  "report_summary": {
+    "efficiency": {
+      "calls_per_passed_trial": 10.0,
+      "cost_per_passed_trial": 0.0030184
+    },
+    "inventory_digest": "95518718fbf162dcdcadc0031c31359663a0c1a25fa6203b0db73a4abb35e8ed",
+    "manifest_digest": "c63afd16e223ae92e68fe09fb690d88a5ab45e9ebc537e3762bcf4c7aaa0788d",
+    "report_digest": "9fbb4638d8db37507c461f322b672a9db6cf945310ba386f9d10668ac42ce996",
+    "schema": "run-agent.evaluation.report.v1",
+    "summary": {
+      "candidate_id": "baseline",
+      "errored": 0,
+      "failed": 0,
+      "p50_duration_ms": 38234.0,
+      "p95_duration_ms": 38234.0,
+      "pass_rate": 1.0,
+      "passed": 1,
+      "priced_trials": 1,
+      "task_ids": [
+        "real-range-total"
+      ],
+      "total_calls": 10,
+      "total_cost": 0.0030184,
+      "trials": 1
+    }
+  },
+  "trial": {
+    "id": "c3996584b9ed4efda0defdfecd8eb677",
+    "task_id": "real-range-total",
+    "status": "passed",
+    "error": null,
+    "verifiers": [
+      {
+        "command": [
+          "E:\\pythonProject\\run-agent\\.venv\\Scripts\\python.exe",
+          "-m",
+          "pytest",
+          "-q",
+          "tests"
+        ],
+        "exit_code": 0,
+        "duration_ms": 250.0,
+        "stdout": "..                                                                       [100%]\r\n2 passed in 0.01s\r\n",
+        "stderr": "",
+        "timed_out": false
+      }
+    ],
+    "duration_ms": 38234.0
+  },
+  "trial_metadata": {
+    "calls": 10,
+    "physical_attempts": 10,
+    "retries": 0,
+    "input_tokens": 10646,
+    "output_tokens": 613,
+    "cost": 0.0030184,
+    "known_cost": 0.0030184,
+    "accounting_complete": true,
+    "provider": "openai",
+    "model": "gpt-5.6-luna",
+    "database": "E:\\pythonProject\\run-agent\\.run\\evals\\20260910T145243Z\\runtime\\state.sqlite3"
+  },
+  "sqlite": {
+    "tables": {
+      "artifact_refs": 0,
+      "artifacts": 0,
+      "branches": 1,
+      "context_snapshots": 10,
+      "entries": 23,
+      "execution_revocations": 0,
+      "executions": 1,
+      "extension_owners": 0,
+      "extension_state": 0,
+      "extension_tasks": 0,
+      "host_metadata": 0,
+      "managed_processes": 5,
+      "observation_health": 1,
+      "observations": 45,
+      "projects": 1,
+      "resource_publications": 0,
+      "resource_versions": 0,
+      "resources": 0,
+      "sessions": 1,
+      "snapshot_blocks": 50,
+      "sqlite_sequence": 1
+    },
+    "observation_streams": [
+      {
+        "stream": "calls:7919d2c3d824467fa264a90ee6c64139",
+        "rows": 30
+      },
+      {
+        "stream": "process.lifecycle",
+        "rows": 15
+      }
+    ],
+    "observations_total": 45,
+    "entries": 23,
+    "executions": 1,
+    "context_snapshots": 10
+  }
+}

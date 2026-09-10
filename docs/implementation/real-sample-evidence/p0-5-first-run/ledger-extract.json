@@ -1,0 +1,90 @@
+{
+  "purpose": "P0-5: real model samples with complete execution budget, failure cost and artifacts",
+  "run_directory": ".run/evals/20260910T145054Z",
+  "report_summary": {
+    "efficiency": {
+      "calls_per_passed_trial": null,
+      "cost_per_passed_trial": null
+    },
+    "inventory_digest": "2b9b967e7a7bd6c1ba81f49a843bed9fc09b47e29db074f616d0959a1a77e7c7",
+    "manifest_digest": "53436b29c8213c92a6f5e1b89478d4d716f2a86e0fc195f6d46ee47b8f627881",
+    "report_digest": "0cc5f530653802f367bf85e68167079e308111107a7c806898d343aecc34c7ea",
+    "schema": "run-agent.evaluation.report.v1",
+    "summary": {
+      "candidate_id": "baseline",
+      "errored": 1,
+      "failed": 0,
+      "p50_duration_ms": 61188.0,
+      "p95_duration_ms": 61188.0,
+      "pass_rate": 0.0,
+      "passed": 0,
+      "priced_trials": 1,
+      "task_ids": [
+        "real-range-total"
+      ],
+      "total_calls": 11,
+      "total_cost": 0.00437388,
+      "trials": 1
+    }
+  },
+  "trial": {
+    "id": "eb72bddc29904424839e5ac551d771fd",
+    "task_id": "real-range-total",
+    "status": "error",
+    "error": "[WinError 2] 系统找不到指定的文件。",
+    "verifiers": [],
+    "duration_ms": 61188.0
+  },
+  "trial_metadata": {
+    "calls": 11,
+    "physical_attempts": 11,
+    "retries": 0,
+    "input_tokens": 16269,
+    "output_tokens": 831,
+    "cost": 0.00437388,
+    "known_cost": 0.00437388,
+    "accounting_complete": true,
+    "provider": "openai",
+    "model": "gpt-5.6-luna",
+    "database": "E:\\pythonProject\\run-agent\\.run\\evals\\20260910T145054Z\\runtime\\state.sqlite3"
+  },
+  "sqlite": {
+    "tables": {
+      "artifact_refs": 0,
+      "artifacts": 0,
+      "branches": 1,
+      "context_snapshots": 11,
+      "entries": 27,
+      "execution_revocations": 0,
+      "executions": 1,
+      "extension_owners": 0,
+      "extension_state": 0,
+      "extension_tasks": 0,
+      "host_metadata": 0,
+      "managed_processes": 6,
+      "observation_health": 1,
+      "observations": 51,
+      "projects": 1,
+      "resource_publications": 0,
+      "resource_versions": 0,
+      "resources": 0,
+      "sessions": 1,
+      "snapshot_blocks": 58,
+      "sqlite_sequence": 1
+    },
+    "observation_streams": [
+      {
+        "stream": "calls:1cdad7f973d941b49e76e1ca33d71728",
+        "rows": 33
+      },
+      {
+        "stream": "process.lifecycle",
+        "rows": 18
+      }
+    ],
+    "observations_total": 51,
+    "entries": 27,
+    "executions": 1,
+    "context_snapshots": 11
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "candidate_id": "baseline",
+  "concurrency": 1,
+  "keep_workspaces": true,
+  "manifest_digest": "53436b29c8213c92a6f5e1b89478d4d716f2a86e0fc195f6d46ee47b8f627881",
+  "metadata": {
+    "model": "gpt-5.6-luna",
+    "provider": "default",
+    "thinking": "max"
+  },
+  "platform": "Windows-11-10.0.26100-SP0",
+  "python": "3.12.4",
+  "repository": {
+    "dirty": true,
+    "revision": "d80e7d319cee100c62a45ac79fe6a4b718a5a1b2",
+    "source_file_count": 183,
+    "source_sha256": "64a166085af56e317baaf4df1bfb88b7965a518f3562a3a7bdf2d27e316225d2",
+    "status_sha256": "04c1da0c33fb03944f314504168e8876b68875eefe507a3771c1e4d1cf43d5a6"
+  },
+  "schema": "run-agent.evaluation.campaign.v1",
+  "seeds": [
+    0
+  ],
+  "tasks": [
+    {
+      "fixture": "E:\\pythonProject\\run-agent\\.run\\verify\\real-sample\\fixtures\\range-total",
+      "fixture_digest": "127e870e80e1882ea9a46e7b682779ac13fabf6d3cd23466b433a1feb2c0a01e",
+      "id": "real-range-total",
+      "prompt_sha256": "95078a3d8e5d54d952361879b04cd168abce17bcf6e3dcc1f4199d9fd00cc84a",
+      "tags": [
+        "single-file",
+        "real-model-smoke"
+      ],
+      "timeout_seconds": 600.0,
+      "verify": [
+        [
+          "{python}",
+          "-m",
+          "pytest",
+          "-q",
+          "tests"
+        ]
+      ]
+    }
+  ]
+}
