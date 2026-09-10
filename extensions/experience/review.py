@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from run_agent_coding.events import AgentSettledEvent
 from run_agent_coding.extensions import ExtensionAPI, ExtensionContext
 from run_agent_coding.host.contracts import StateChange
+from run_agent_coding.host.learning import review_origin
 from run_agent_core.types import JSONValue
 
 from .worker import ReviewWorker
@@ -158,7 +159,10 @@ class ReviewCoordinator:
         if claim is None:
             return {"consumed": None, "reason": "a review is already running"}
         try:
-            return await self._consume_once(run_id)
+            # Anything this fork writes is agent-created, which is the only kind of
+            # asset automatic maintenance may later touch.
+            with review_origin():
+                return await self._consume_once(run_id)
         finally:
             self._worker.release(claim)
 

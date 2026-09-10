@@ -14,7 +14,7 @@ from run_agent_coding.host.contracts import (
     ScopedServices,
     StateChange,
 )
-from run_agent_coding.host.learning import require_writeback
+from run_agent_coding.host.learning import is_agent_created, require_writeback
 from run_agent_core.session.contracts import SessionConflict
 from run_agent_core.types import JSONValue
 
@@ -91,6 +91,7 @@ class ExperienceRepository:
                 "invalidation_conditions": list(proposal.invalidation_conditions),
                 "expires_at": proposal.expires_at,
                 "active": True,
+                "agent_created": is_agent_created(),
             },
         )
         candidate = Candidate(
@@ -105,6 +106,7 @@ class ExperienceRepository:
             source_kind="manual" if command_id else "model",
             source_command=command_id,
             source_snapshot=snapshot_id,
+            agent_created=is_agent_created(),
             source_run=snapshot.run_id if snapshot else None,
             observed_at=time(),
             applies_to=proposal.applies_to,

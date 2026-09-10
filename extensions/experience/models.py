@@ -37,6 +37,9 @@ class Candidate(BaseModel):
     invalidation_conditions: tuple[str, ...] = ()
     status: Literal["proposed", "needs_evidence", "promoted", "rejected", "stale"] = "proposed"
     report_id: str | None = None
+    # True only when the review fork wrote this; a user's request is never eligible
+    # for automatic maintenance.
+    agent_created: bool = False
 
 
 class Proposal(BaseModel):
