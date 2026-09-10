@@ -444,8 +444,16 @@
     {
       "id": "P5-1",
       "requirement": "接收持久完成回执，实施触发筛选、幂等、冷却和辅助任务排除。",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "extensions/experience/review.py",
+        "tests/redesign/test_review_trigger.py::test_a_substantial_successful_run_is_reviewed_with_a_stable_key",
+        "tests/redesign/test_review_trigger.py::test_the_same_run_is_never_reviewed_twice",
+        "tests/redesign/test_review_trigger.py::test_an_auxiliary_task_never_triggers_a_review",
+        "tests/redesign/test_review_trigger.py::test_a_second_review_waits_for_the_cooldown",
+        "tests/redesign/test_experience_review_wiring.py::test_a_failed_completion_leaves_one_durable_review_request",
+        "tests/redesign/test_experience_review_wiring.py::test_a_trivial_successful_completion_leaves_no_review_request"
+      ]
     },
     {
       "id": "P5-2",
