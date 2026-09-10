@@ -53,6 +53,13 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["E501"]
 "src/run_agent_coding/updater.py" = ["E501"]
+# The Linux process-group contract is reached through getattr because the Windows type
+# stubs do not declare killpg, pidfd_open, pidfd_send_signal or SIGKILL, and the
+# temporary pipe is handed to ProcessExecution rather than scoped to a block. Both are
+# properties of these two platform shims, so the policy lives here once instead of as
+# seven comments in the code.
+"src/run_agent_coding/host/processes.py" = ["B009", "SIM115"]
+"src/run_agent_coding/host/process_probe.py" = ["B009"]
 
 [tool.ruff.format]
 quote-style = "double"

@@ -166,8 +166,8 @@ def terminate_orphan(intent: dict[str, Any], native: dict[str, Any] | None) -> d
         # descriptor. A reused numeric PID must never redirect a recovery signal.
         if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
             return {"empty": False, "reason": "Recovery requires Linux pidfd support"}
-        send_signal = getattr(signal, "pidfd_send_signal")  # noqa: B009 - Windows type stubs
-        kill_signal = getattr(signal, "SIGKILL")  # noqa: B009 - Windows type stubs
+        send_signal = getattr(signal, "pidfd_send_signal")
+        kill_signal = getattr(signal, "SIGKILL")
         until = monotonic() + 5
         while monotonic() < until:
             current = process_identity(native["pid"])
@@ -179,7 +179,7 @@ def terminate_orphan(intent: dict[str, Any], native: dict[str, Any] | None) -> d
                     continue
                 pid = int(path.name)
                 try:
-                    descriptor = getattr(os, "pidfd_open")(pid, 0)  # noqa: B009
+                    descriptor = getattr(os, "pidfd_open")(pid, 0)
                 except ProcessLookupError:
                     continue
                 try:

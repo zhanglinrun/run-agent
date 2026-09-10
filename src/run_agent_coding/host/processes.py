@@ -85,16 +85,16 @@ class PosixProcess:
     def active_count(self) -> int:
         self.poll()
         try:
-            getattr(os, "killpg")(self.pid, 0)  # noqa: B009 - Windows type stubs
+            getattr(os, "killpg")(self.pid, 0)
         except ProcessLookupError:
             return 0
         return 1  # Process groups expose presence, not a portable member count.
 
     def terminate(self, *, force: bool) -> None:
         with suppress(ProcessLookupError):
-            getattr(os, "killpg")(  # noqa: B009 - Windows type stubs
+            getattr(os, "killpg")(
                 self.pid,
-                getattr(signal, "SIGKILL") if force else signal.SIGTERM,  # noqa: B009
+                getattr(signal, "SIGKILL") if force else signal.SIGTERM,
             )
 
     def close(self) -> None:
@@ -212,7 +212,7 @@ class ProcessSupervisor:
 
         def spawn() -> ProcessExecution:
             # Ownership transfers to ProcessExecution until its process group is empty.
-            output = cast(BinaryIO, tempfile.TemporaryFile())  # noqa: SIM115
+            output = cast(BinaryIO, tempfile.TemporaryFile())
             try:
                 process: OwnedProcess
                 if os.name == "nt":
