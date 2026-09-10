@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
+import tempfile
 from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -121,11 +123,23 @@ class TaskSuite:
         )
 
     def evaluate_default(self, *, use_reference: bool) -> SuiteReport:
-        """Synchronous convenience: grade each task's reference, or its pristine tree."""
-        return _run(self.evaluate(lambda spec: self._default_candidate(spec, use_reference)))
+        """Synchronous convenience: grade each task's reference, or its pristine tree.
 
-    def _default_candidate(self, spec: TaskSpec, use_reference: bool) -> Path:
-        candidate = spec.root / ".candidate"
+        Working trees are built in a temporary directory and removed afterwards. They
+        must never land inside the task directory: doing so once put candidate and
+        pristine copies of every task into the repository, because evals/ is not
+        gitignored, and they were committed before anyone noticed.
+        """
+        work = Path(tempfile.mkdtemp(prefix="suite-"))
+        try:
+            return _run(
+                self.evaluate(lambda spec: self._default_candidate(spec, use_reference, work))
+            )
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+    def _default_candidate(self, spec: TaskSpec, use_reference: bool, work: Path) -> Path:
+        candidate = work / spec.id
         materialize_environment(spec, candidate)
         if use_reference:
             for source in sorted(spec.reference.iterdir()):

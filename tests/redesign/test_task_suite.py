@@ -72,6 +72,21 @@ def test_the_pristine_environment_never_passes(tmp_path):
     assert report.rate.successes == 0
 
 
+def test_grading_does_not_write_into_the_task_directory(tmp_path):
+    """Working trees belong in temp storage, not next to the task.
+
+    Building them under the task root once put a .candidate and a .pristine copy of
+    every task into the repository, and they were committed, because evals/ is not
+    gitignored. A lower evaluation rate would not have revealed it.
+    """
+    root = one_task_directory(tmp_path)
+    before = sorted(path.name for path in (root / MIGRATION).iterdir())
+
+    TaskSuite(root).evaluate_default(use_reference=True)
+
+    assert sorted(path.name for path in (root / MIGRATION).iterdir()) == before
+
+
 def test_every_ready_task_declares_exactly_the_tests_that_fail_before_the_fix(tmp_path):
     """Targets must be measured, not guessed.
 
