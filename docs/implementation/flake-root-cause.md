@@ -219,3 +219,26 @@ run 5 exit=0 :: 336 passed, 2 skipped ;; All 10 steps passed.
    届时仍应先把根因分清超时还是挂死，再决定是否收敛为共享常量。
 4. **两个诊断探针位于 `.run/verify/`（已 gitignore）**，属于一次性诊断产物，
    方法已完整写入本文件，需要时可据本文件重建。
+
+## 七、第四个间歇用例（T-024 收尾时发现）
+
+`tests/redesign/test_mixed_load.py::test_one_session_replays_the_mixed_foreground_background_control_script`
+
+**签名与 T-001 同类，但根因不同**：失败断言是 `test_gateway_runtime.py:53` 的
+`eventually(check, timeout=5)` 墙钟超时，**不是丢输入**。
+
+实测：
+
+| 条件 | 结果 |
+|---|---|
+| 隔离运行 3 次 | **3/3 通过** |
+| 全量套件直跑（76.6s） | **408 passed 全绿** |
+| 走 verify.py（87.8s，前序步骤占用机器） | **1 次失败** |
+| verify.py 复跑（76.6s） | 退出码 0，10/10 步 |
+
+这与 T-003 审计里记录的判断一致：套件内约 50 处 5 秒墙钟 deadline 在机器满载时是
+**潜在风险**；当时它们不是故障原因，现在其中一个真的触发了。
+
+**尚未处理，不得当作已解决。** 按 T-001 的判别器方法，下一步应先区分**超时**还是**挂死**
+（`eventually` 的 5 秒是否只是不够），再决定是收敛为一个共享的负载容忍常量，还是真因定位。
+**不得直接调大数字。**
