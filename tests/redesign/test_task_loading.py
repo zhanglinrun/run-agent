@@ -14,7 +14,7 @@ import json
 import sys
 from pathlib import Path
 
-from run_agent_evals.models import load_tasks
+from run_agent_evals.task_loading import load_tasks
 
 
 def write_task(tmp_path: Path, verify: list[list[str]]) -> Path:

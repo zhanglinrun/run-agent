@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
@@ -151,55 +150,11 @@ class TrialArtifact:
         )
 
 
-def load_tasks(path: str | Path) -> tuple[FrozenTask, ...]:
-    task_path = Path(path)
-    tasks: list[FrozenTask] = []
-    seen: set[str] = set()
-    for line_number, line in enumerate(task_path.read_text(encoding="utf-8").splitlines(), start=1):
-        if not line.strip():
-            continue
-        try:
-            payload = json.loads(line)
-            task_id = str(payload["id"])
-            fixture = (task_path.parent / str(payload["fixture"])).resolve()
-            prompt = str(payload["prompt"])
-            verify = tuple(
-                tuple(
-                    sys.executable if part == PYTHON_PLACEHOLDER else str(part) for part in command
-                )
-                for command in payload["verify"]
-            )
-            tags = tuple(str(tag) for tag in payload.get("tags", []))
-            timeout_seconds = float(payload.get("timeout_seconds", 120))
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise ValueError(f"invalid evaluation task on line {line_number}: {exc}") from exc
-        if task_id in seen:
-            raise ValueError(f"duplicate task id {task_id!r} on line {line_number}")
-        if not fixture.is_dir():
-            raise ValueError(f"task {task_id!r} fixture does not exist: {fixture}")
-        if not prompt.strip() or not verify or any(not command for command in verify):
-            raise ValueError(f"task {task_id!r} requires a prompt and verifier commands")
-        if timeout_seconds <= 0:
-            raise ValueError(f"task {task_id!r} timeout must be positive")
-        seen.add(task_id)
-        tasks.append(
-            FrozenTask(
-                id=task_id,
-                fixture=fixture,
-                prompt=prompt,
-                verify=verify,
-                tags=tags,
-                timeout_seconds=timeout_seconds,
-            )
-        )
-    return tuple(tasks)
-
-
 __all__ = [
     "ExecutionResult",
     "FrozenTask",
+    "PYTHON_PLACEHOLDER",
     "TrialArtifact",
     "TrialStatus",
     "VerifierResult",
-    "load_tasks",
 ]

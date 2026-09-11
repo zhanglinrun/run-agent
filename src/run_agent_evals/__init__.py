@@ -7,14 +7,6 @@ from run_agent_evals.campaign import (
     rebuild_campaign,
 )
 from run_agent_evals.coding import CodingTaskExecutor
-from run_agent_evals.models import (
-    ExecutionResult,
-    FrozenTask,
-    TrialArtifact,
-    TrialStatus,
-    VerifierResult,
-    load_tasks,
-)
 from run_agent_evals.runner import (
     EvaluationRunner,
     EvaluationSummary,
@@ -29,6 +21,7 @@ from run_agent_evals.runtime_bench import (
     rebuild_runtime_benchmark,
     run_runtime_benchmarks,
 )
+from run_agent_evals.task_loading import load_tasks
 
 __all__ = [
     "CampaignConfig",

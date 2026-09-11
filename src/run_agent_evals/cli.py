@@ -15,13 +15,13 @@ from dotenv import load_dotenv
 from run_agent_coding.thinking import normalize_thinking_level
 from run_agent_evals.campaign import CampaignConfig, EvaluationCampaign, rebuild_campaign
 from run_agent_evals.coding import CodingTaskExecutor
-from run_agent_evals.models import load_tasks
 from run_agent_evals.runtime_bench import (
     RuntimeBenchmarkConfig,
     rebuild_runtime_benchmark,
     run_runtime_benchmarks,
 )
 from run_agent_evals.suite import report_for_directory
+from run_agent_evals.task_loading import load_tasks
 
 
 async def _run(args: argparse.Namespace) -> int:
