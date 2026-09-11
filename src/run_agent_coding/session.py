@@ -60,7 +60,7 @@ from run_agent_coding.host.contracts import HostServicesRegistry, SessionActivat
 from run_agent_coding.host.inputs import CommittedInput, InputBoundary, InputSource
 from run_agent_coding.host.processes import ProcessRecorder, ProcessSupervisor
 from run_agent_coding.host.tool_versions import tool_manifest
-from run_agent_coding.models_dev_store import ModelsDevRefreshResult, refresh_models_dev_catalog
+from run_agent_coding.models_dev_refresh import ModelsDevRefreshResult, refresh_models_dev_catalog
 from run_agent_coding.paths import RunAgentPaths
 from run_agent_coding.project_trust import (
     CanonicalProjectPath,

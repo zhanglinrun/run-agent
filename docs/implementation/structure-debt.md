@@ -66,6 +66,26 @@ functions over 30 LOC: 370  (12.4%)
 3. **本轮新增代码已全部合规**：本次循环新增的 14 个模块全部 ≤200 LOC、
    每函数 ≤30 LOC、嵌套 ≤3 —— 这条是**已验证**的（见下表）。
 
+## 已完成的批次
+
+### 批次 0（第一例）：`models_dev_store.py`
+
+| | 前 | 后 |
+|---|---|---|
+| `models_dev_store.py` | 211 行 | **86 行** |
+| `models_dev_refresh.py` | — | **144 行** |
+| `refresh_models_dev_catalog` | **92 行** | 拆为 `_reusable` / `_fetch_and_store` / `_fetch_nvidia_filter` / `_build_document` / `_store` / `_request_headers`，均 ≤30 行 |
+
+**seam 的依据**：两个模块回答不同问题 —— store 回答"缓存里有什么"，refresh 回答"要不要取、取回什么"。
+两个职责混在一起才产生了那个 92 行的刷新例程。
+
+**导入方只有 2 个**，已同步：`session.py:63` 改为从新模块导入（未留兼容 shim）。
+
+**验证方式值得记录**：这段代码**没有直接测试覆盖**（全仓搜索无命中），
+所以"行为不变"只能靠**全量闸门**证明 —— 417 passed、10/10 步、exit 0。
+若将来要为它补测试，应从 `refresh_models_dev_catalog` 的四个分支入手：
+离线、刷新窗口内、304 not-modified、正常刷新。
+
 ## 建议做法（需单独排期）
 
 按**风险从低到高**分批，每批都要求先有测试锁定行为：
