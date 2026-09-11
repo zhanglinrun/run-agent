@@ -719,5 +719,9 @@
       "cost": 0.0,
       "model": "gpt-5.6-luna"
     }
-  ]
+  ],
+  "operator_reported_cost_usd": 8.23,
+  "cost_source": "Operator-side provider billing. The run's own ledger reports 0.0 because the endpoint returns no price for gpt-5.6-luna, so cost.total is 0.0 on every message - which must be read as unpriced, not as free.",
+  "cost_per_instance_usd": 0.1646,
+  "cost_per_resolved_usd": 0.22861111111111113
 }
