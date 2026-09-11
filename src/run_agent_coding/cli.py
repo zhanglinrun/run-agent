@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from enum import StrEnum
 from pathlib import Path
@@ -105,7 +106,12 @@ def main(
             cwd=cwd,
             paths=paths,
             provider_name=provider,
-            model=model,
+            # `run bench` and `run gateway` both read MODEL, and this host is the one a
+            # person runs by hand. Ignoring it meant a .env naming a model the endpoint
+            # serves still sent DEFAULT_MODEL, and the provider's 503 named the model it
+            # had used - never the one that was configured - so the cause was invisible.
+            # Read after load_dotenv above, so a .env value counts.
+            model=model or os.environ.get("MODEL"),
             resume=resume,
             refresh_resources=refresh_resources,
             extension_paths=tuple(extension or ()),
