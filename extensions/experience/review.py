@@ -18,41 +18,25 @@ from run_agent_coding.host.contracts import StateChange
 from run_agent_coding.host.learning import review_origin
 from run_agent_core.types import JSONValue
 
+from .review_models import (
+    AUXILIARY_ORIGINS,
+    REVIEW_REQUEST_PREFIX,
+    ReviewDecision,
+    ReviewPolicy,
+    ReviewRequest,
+)
 from .worker import ReviewLedger, ReviewWorker
 
-AUXILIARY_ORIGINS = frozenset({"review", "evaluation", "naming"})
-REVIEW_REQUEST_PREFIX = "review-request:"
-
-
-@dataclass(frozen=True, slots=True)
-class ReviewPolicy:
-    """Startup configuration; versioned so a policy change may re-review a run."""
-
-    policy_version: str = "1"
-    cooldown_seconds: float = 900.0
-    min_assistant_turns: int = 2
-
-
-@dataclass(frozen=True, slots=True)
-class ReviewRequest:
-    """The evidence a durable completion carries into the trigger."""
-
-    source_run_id: str
-    session_id: str
-    status: str
-    assistant_turns: int
-    corrections: int
-    failures: int
-    origin_kind: str = "user"
-
-
-@dataclass(frozen=True, slots=True)
-class ReviewDecision:
-    """Whether to review, why not when not, and the idempotency key."""
-
-    admitted: bool
-    reason: str
-    key: str
+__all__ = [
+    "AUXILIARY_ORIGINS",
+    "REVIEW_REQUEST_PREFIX",
+    "ForegroundGate",
+    "ReviewCoordinator",
+    "ReviewDecision",
+    "ReviewPolicy",
+    "ReviewRequest",
+    "ReviewTrigger",
+]
 
 
 class ReviewTrigger:
