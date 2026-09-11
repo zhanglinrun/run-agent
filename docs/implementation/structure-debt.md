@@ -141,6 +141,72 @@ trigger 与 coordinator 是**行为** —— 同一 seam。名字仍可从 `revi
 **之后按真实行数**：`ai/stream.py` 212 → `storage/state.py` 225 → `ai/http.py` 229
 → `experience/repository.py` 238。
 
+## 优先级 1：深嵌套流式解析（进行中）
+
+### 已完成
+
+**A. `ai/anthropic.py:111 _stream_provider_events`（260 行 → 拆为 7 个命名部分）**
+
+原形是：外层 260 行函数的**全部**工作只是 `return iterator()`，真正的 247 行在内部
+生成器里，嵌套 9 层。浓度从 **0.34 → 0.07**。
+
+**B. `ai/openai_codex.py:504 _codex_provider_events`（174 行 → 分派表）**
+
+同样两个结构病：if/elif 链（导致**单一事件类型无法单独测试**）+ 四个工具追踪集合
+在 6 处调用点**重复同一组关键字参数**（导致索引漏更新时静默失败）。
+
+### 已确立的两个可复用修法
+
+1. **分派表替代 if/elif 链**：`_HANDLERS: dict[str, Handler]`，处理器签名为
+   `(state, chunk/event) -> tuple[ProviderEvent, ...]`。返回事件元组而非 yield，
+   使得**单个事件类型可以单独测试**。
+2. **累加器进状态对象**：10 个可变量成为 `@dataclass(slots=True)` 的字段。
+
+### 已验证的收益（两项均全量测试 417 passed）
+
+| 文件 | 最大函数 | 浓度 | 行数 |
+|---|---|---|---|
+| `anthropic.py` | 260 → 64（且 64 属既有） | 0.34 → 0.07 | 771 → 968 |
+| `openai_codex.py` | 174 → 78 | 0.16 → 0.07 | 1081 → 1187 |
+
+**代价是诚实的：两个文件都变大了。** 处理器需要同模块的私有解析助手，
+把处理器移到新模块会造成循环导入。**两个文件仍超 200 行**，需要先抽出共享助手
+才能继续拆文件。
+
+### 下一个目标（已探明形态，无需重新发现）
+
+**`ai/openai_codex.py:158 _stream_provider_events`（155 行）** —— **与 A 完全同型**：
+
+```
+L158 def _stream_provider_events(...)     155 行
+L168     """docstring"""
+L170     async def iterator():             141 行   ← setup + while True 重试循环
+L312     return iterator()                 ← 外壳什么也没做
+```
+
+`iterator` 体内：setup（client / cache_key / payload / url）→ `attempt = 0` → `while True:`。
+
+**关键发现：重试循环与 anthropic 的四段构造逐字重复**（HTTP 错误 / 流错误 / 网络错误
+各自手写 `retry_delay_seconds` + `provider_retry_event`）。
+
+**因此正确的做法是先抽出共享类型**，而不是再复制一份：
+
+- 在两处提供者之外建 `ai/stream_retry.py`，放 `_Retry`（event + delay）、
+  `StreamOutcome`（COMPLETED / ABORTED）、`AttemptResult` 联合类型
+- 两侧各自实现一个 `_retry(reason, attempt, data)` 方法 **一次性**构造延迟与事件
+  （anthropic 已完成此去重，可作范本：4 处重复→ 1 处）
+- 然后把 `_stream_provider_events` 改为真正的异步生成器，拆出
+  `_prepare_codex_request` / `_http_error_outcome` / `_network_error_outcome`
+
+**注意 `iterator` 末尾有一个 `except Exception` 兜底**（把未知异常也转成事件）——
+拆分时**不得改变这个行为**，但值得单独商権：它与
+`run_agent_evals/runner.py` 里“未知异常照常抛出”的做法相反。
+
+### 剩余优先级 1 目标
+
+`core/loop.py:139 run_agent_loop`（205 行，嵌套 5，35 分支）—— 与 A/B 不同型：
+这是**循环控制流**而非事件分派，需要先判别哪些步骤可提取。
+
 ## 建议做法（需单独排期）
 
 按**风险从低到高**分批，每批都要求先有测试锁定行为：
