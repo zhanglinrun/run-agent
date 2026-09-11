@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from json import JSONDecodeError, dumps, loads
 from platform import machine, release, system
 from typing import Any
@@ -506,175 +506,282 @@ async def _codex_provider_events(
     *,
     signal: CancellationToken | None,
 ) -> AsyncIterator[ProviderEvent]:
-    content_parts: list[str] = []
-    thinking_parts: list[str] = []
-    reasoning_items: dict[str, dict[str, JSONValue]] = {}
-    tool_calls: list[ToolCall] = []
-    active_tools: list[_ToolCallBuilder] = []
-    tools_by_item_id: dict[str, _ToolCallBuilder] = {}
-    tools_by_call_id: dict[str, _ToolCallBuilder] = {}
-    tools_by_output_index: dict[int, _ToolCallBuilder] = {}
-    finish_reason: str | None = None
-    usage: Usage | None = None
+    """Stream a Codex response, dispatching each SSE event to its own handler.
 
+    This was 174 lines with ten accumulators, one 140-line loop body and eleven levels of
+    nesting. The event types were an if/elif chain, so no single type could be tested
+    without driving a whole stream past it, and the four tool-tracking collections were
+    threaded through six call sites with identical keyword arguments - the shape where one
+    index stops being updated and nothing fails until a tool call arrives under a key
+    nobody is watching. Both are now structural: a dispatch table and a tracker.
+    """
+    state = _CodexStreamState()
     async for event in _iter_sse_objects(response):
         if signal is not None and signal.is_cancelled():
             return
         event_type = event.get("type")
         if not isinstance(event_type, str):
             continue
-
-        if event_type == "error":
-            yield ProviderErrorEvent(
-                message=_error_message(event, fallback="OpenAI Codex returned an error"),
-                data={"event": event},
-            )
+        for produced in _dispatch_codex(state, event_type, event):
+            yield produced
+        if state.aborted:
             return
-
-        if event_type == "response.failed":
-            yield ProviderErrorEvent(
-                message=_response_error_message(event),
-                data={"event": event},
-            )
-            return
-
-        if event_type == "response.output_item.added":
-            item = event.get("item")
-            if isinstance(item, Mapping) and item.get("type") == "reasoning":
-                item_id = item.get("id")
-                if isinstance(item_id, str):
-                    reasoning_items[item_id] = dict(item)
-            elif isinstance(item, Mapping) and item.get("type") == "function_call":
-                _track_tool_builder(
-                    _tool_builder_from_item(item),
-                    event,
-                    active_tools=active_tools,
-                    by_item_id=tools_by_item_id,
-                    by_call_id=tools_by_call_id,
-                    by_output_index=tools_by_output_index,
-                )
-
-        elif event_type == "response.function_call_arguments.delta":
-            delta = event.get("delta")
-            tool_builder = _tool_builder_for_event(
-                event,
-                active_tools=active_tools,
-                by_item_id=tools_by_item_id,
-                by_call_id=tools_by_call_id,
-                by_output_index=tools_by_output_index,
-            )
-            if tool_builder is not None and isinstance(delta, str):
-                tool_builder.add_delta(delta)
-
-        elif event_type == "response.function_call_arguments.done":
-            arguments = event.get("arguments")
-            tool_builder = _tool_builder_for_event(
-                event,
-                active_tools=active_tools,
-                by_item_id=tools_by_item_id,
-                by_call_id=tools_by_call_id,
-                by_output_index=tools_by_output_index,
-            )
-            if tool_builder is not None and isinstance(arguments, str):
-                tool_builder.set_arguments(arguments)
-
-        elif event_type == "response.output_text.delta":
-            delta = event.get("delta")
-            if isinstance(delta, str) and delta:
-                content_parts.append(delta)
-                yield ProviderTextDeltaEvent(delta=delta)
-
-        elif event_type in {
-            "response.reasoning.delta",
-            "response.reasoning_summary_text.delta",
-            "response.reasoning_text.delta",
-        }:
-            delta = event.get("delta")
-            if isinstance(delta, str) and delta:
-                thinking_parts.append(delta)
-                yield ProviderThinkingDeltaEvent(delta=delta)
-
-        elif event_type == "response.reasoning_summary_part.done":
-            if thinking_parts:
-                separator = "\n\n"
-                thinking_parts.append(separator)
-                yield ProviderThinkingDeltaEvent(delta=separator)
-
-        elif event_type in {
-            "response.output_item.done",
-            "response.output_item.completed",
-        }:
-            item = event.get("item")
-            if isinstance(item, Mapping) and item.get("type") == "reasoning":
-                item_id = item.get("id")
-                if isinstance(item_id, str):
-                    reasoning_items[item_id] = dict(item)
-            elif isinstance(item, Mapping) and item.get("type") == "function_call":
-                tool_builder = _tool_builder_for_event(
-                    event,
-                    active_tools=active_tools,
-                    by_item_id=tools_by_item_id,
-                    by_call_id=tools_by_call_id,
-                    by_output_index=tools_by_output_index,
-                )
-                if tool_builder is None:
-                    tool_builder = _tool_builder_from_item(item)
-                    _track_tool_builder(
-                        tool_builder,
-                        event,
-                        active_tools=active_tools,
-                        by_item_id=tools_by_item_id,
-                        by_call_id=tools_by_call_id,
-                        by_output_index=tools_by_output_index,
-                    )
-                else:
-                    tool_builder.update_from_item(item)
-                arguments = item.get("arguments")
-                if isinstance(arguments, str):
-                    tool_builder.set_arguments(arguments)
-                tool_call = tool_builder.build()
-                tool_calls.append(tool_call)
-                _untrack_tool_builder(
-                    tool_builder,
-                    active_tools=active_tools,
-                    by_item_id=tools_by_item_id,
-                    by_call_id=tools_by_call_id,
-                    by_output_index=tools_by_output_index,
-                )
-                yield ProviderToolCallEvent(tool_call=tool_call)
-            elif isinstance(item, Mapping) and item.get("type") == "message" and not content_parts:
-                text = _text_from_done_message(item)
-                if text:
-                    content_parts.append(text)
-                    yield ProviderTextDeltaEvent(delta=text)
-
-        elif event_type in {
-            "response.done",
-            "response.completed",
-            "response.incomplete",
-        }:
-            finish_reason = _finish_reason_from_response(event)
-            usage = _usage_from_response(event) or usage
+        if state.ended:
             break
+    yield state.finish()
 
-    content = assistant_content("".join(content_parts), tool_calls)
-    if thinking_parts:
-        content.insert(
-            0,
-            ThinkingContent(
-                thinking="".join(thinking_parts),
-                thinking_signature=(
-                    dumps(next(iter(reasoning_items.values()))) if reasoning_items else None
-                ),
-            ),
+
+@dataclass(slots=True)
+class _ToolTracker:
+    """The three indexes a stream may use to name the same tool call."""
+
+    active: list[_ToolCallBuilder] = field(default_factory=list)
+    by_item_id: dict[str, _ToolCallBuilder] = field(default_factory=dict)
+    by_call_id: dict[str, _ToolCallBuilder] = field(default_factory=dict)
+    by_output_index: dict[int, _ToolCallBuilder] = field(default_factory=dict)
+
+    def track(self, builder: _ToolCallBuilder, event: Mapping[str, Any]) -> None:
+        """Register a builder under every key this event offers."""
+        _track_tool_builder(
+            builder,
+            event,
+            active_tools=self.active,
+            by_item_id=self.by_item_id,
+            by_call_id=self.by_call_id,
+            by_output_index=self.by_output_index,
         )
-    yield ProviderResponseEndEvent(
-        message=AssistantMessage(
-            content=content,
-            usage=usage or Usage(),
+
+    def for_event(self, event: Mapping[str, Any]) -> _ToolCallBuilder | None:
+        """The builder this event refers to, whichever of the three keys it uses."""
+        return _tool_builder_for_event(
+            event,
+            active_tools=self.active,
+            by_item_id=self.by_item_id,
+            by_call_id=self.by_call_id,
+            by_output_index=self.by_output_index,
+        )
+
+    def untrack(self, builder: _ToolCallBuilder) -> None:
+        """Drop a builder once its call has been built and emitted."""
+        _untrack_tool_builder(
+            builder,
+            active_tools=self.active,
+            by_item_id=self.by_item_id,
+            by_call_id=self.by_call_id,
+            by_output_index=self.by_output_index,
+        )
+
+
+@dataclass(slots=True)
+class _CodexStreamState:
+    """Everything one Codex stream accumulates between its first and last event."""
+
+    content_parts: list[str] = field(default_factory=list)
+    thinking_parts: list[str] = field(default_factory=list)
+    reasoning_items: dict[str, dict[str, JSONValue]] = field(default_factory=dict)
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    tools: _ToolTracker = field(default_factory=_ToolTracker)
+    finish_reason: str | None = None
+    usage: Usage | None = None
+    ended: bool = False
+    aborted: bool = False
+
+    def remember_reasoning(self, item: Mapping[str, Any]) -> None:
+        """Keep a reasoning item by id, so its signature survives to the end event."""
+        item_id = item.get("id")
+        if isinstance(item_id, str):
+            self.reasoning_items[item_id] = dict(item)
+
+    def finish(self) -> ProviderResponseEndEvent:
+        """The closing event: accumulated text, thinking, tool calls and usage."""
+        content = assistant_content("".join(self.content_parts), self.tool_calls)
+        if self.thinking_parts:
+            content.insert(
+                0,
+                ThinkingContent(
+                    thinking="".join(self.thinking_parts),
+                    thinking_signature=self.reasoning_signature(),
+                ),
+            )
+        return ProviderResponseEndEvent(
+            message=AssistantMessage(content=content, usage=self.usage or Usage()),
+            finish_reason=self.finish_reason,
+        )
+
+    def reasoning_signature(self) -> str | None:
+        """The first reasoning item, serialized, which is what the API expects back."""
+        if not self.reasoning_items:
+            return None
+        return dumps(next(iter(self.reasoning_items.values())))
+
+
+_CodexHandler = Callable[["_CodexStreamState", dict[str, JSONValue]], tuple[ProviderEvent, ...]]
+
+
+def _dispatch_codex(
+    state: _CodexStreamState, event_type: str, event: dict[str, JSONValue]
+) -> tuple[ProviderEvent, ...]:
+    """Route one SSE event to its handler; types we do not recognize are ignored."""
+    handler = _CODEX_HANDLERS.get(event_type)
+    return () if handler is None else handler(state, event)
+
+
+def _event_item(event: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """The ``item`` object on an event, when it carries one."""
+    item = event.get("item")
+    return item if isinstance(item, Mapping) else None
+
+
+def _on_codex_error(
+    state: _CodexStreamState, event: dict[str, JSONValue]
+) -> tuple[ProviderEvent, ...]:
+    state.aborted = True
+    return (
+        ProviderErrorEvent(
+            message=_error_message(event, fallback="OpenAI Codex returned an error"),
+            data={"event": event},
         ),
-        finish_reason=finish_reason,
     )
+
+
+def _on_codex_failed(
+    state: _CodexStreamState, event: dict[str, JSONValue]
+) -> tuple[ProviderEvent, ...]:
+    state.aborted = True
+    return (ProviderErrorEvent(message=_response_error_message(event), data={"event": event}),)
+
+
+def _on_item_added(
+    state: _CodexStreamState, event: dict[str, JSONValue]
+) -> tuple[ProviderEvent, ...]:
+    """A reasoning item is kept for its signature; a function call starts a builder."""
+    item = _event_item(event)
+    if item is None:
+        return ()
+    if item.get("type") == "reasoning":
+        state.remember_reasoning(item)
+    elif item.get("type") == "function_call":
+        state.tools.track(_tool_builder_from_item(item), event)
+    return ()
+
+
+def _on_arguments_delta(
+    state: _CodexStreamState, event: dict[str, JSONValue]
+) -> tuple[ProviderEvent, ...]:
+    builder = state.tools.for_event(event)
+    delta = event.get("delta")
+    if builder is not None and isinstance(delta, str):
+        builder.add_delta(delta)
+    return ()
+
+
+def _on_arguments_done(
+    state: _CodexStreamState, event: dict[str, JSONValue]
+) -> tuple[ProviderEvent, ...]:
+    builder = state.tools.for_event(event)
+    arguments = event.get("arguments")
+    if builder is not None and isinstance(arguments, str):
+        builder.set_arguments(arguments)
+    return ()
+
+
+def _on_output_text(
+    state: _CodexStreamState, event: dict[str, JSONValue]
+) -> tuple[ProviderEvent, ...]:
+    delta = event.get("delta")
+    if not (isinstance(delta, str) and delta):
+        return ()
+    state.content_parts.append(delta)
+    return (ProviderTextDeltaEvent(delta=delta),)
+
+
+def _on_reasoning_text(
+    state: _CodexStreamState, event: dict[str, JSONValue]
+) -> tuple[ProviderEvent, ...]:
+    delta = event.get("delta")
+    if not (isinstance(delta, str) and delta):
+        return ()
+    state.thinking_parts.append(delta)
+    return (ProviderThinkingDeltaEvent(delta=delta),)
+
+
+def _on_reasoning_part_done(
+    state: _CodexStreamState, event: dict[str, JSONValue]
+) -> tuple[ProviderEvent, ...]:
+    """Reasoning arrives in parts that the API concatenates, so separate them here."""
+    if not state.thinking_parts:
+        return ()
+    separator = "\n\n"
+    state.thinking_parts.append(separator)
+    return (ProviderThinkingDeltaEvent(delta=separator),)
+
+
+def _on_item_done(
+    state: _CodexStreamState, event: dict[str, JSONValue]
+) -> tuple[ProviderEvent, ...]:
+    item = _event_item(event)
+    if item is None:
+        return ()
+    kind = item.get("type")
+    if kind == "reasoning":
+        state.remember_reasoning(item)
+        return ()
+    if kind == "function_call":
+        return _complete_tool_call(state, event, item)
+    if kind == "message" and not state.content_parts:
+        text = _text_from_done_message(item)
+        if text:
+            state.content_parts.append(text)
+            return (ProviderTextDeltaEvent(delta=text),)
+    return ()
+
+
+def _complete_tool_call(
+    state: _CodexStreamState, event: dict[str, JSONValue], item: Mapping[str, Any]
+) -> tuple[ProviderEvent, ...]:
+    """Build a finished tool call, tracking it first when it was never announced."""
+    builder = state.tools.for_event(event)
+    if builder is None:
+        builder = _tool_builder_from_item(item)
+        state.tools.track(builder, event)
+    else:
+        builder.update_from_item(item)
+    arguments = item.get("arguments")
+    if isinstance(arguments, str):
+        builder.set_arguments(arguments)
+    tool_call = builder.build()
+    state.tool_calls.append(tool_call)
+    state.tools.untrack(builder)
+    return (ProviderToolCallEvent(tool_call=tool_call),)
+
+
+def _on_response_ended(
+    state: _CodexStreamState, event: dict[str, JSONValue]
+) -> tuple[ProviderEvent, ...]:
+    """The terminal event carries the finish reason and, usually, the usage."""
+    state.finish_reason = _finish_reason_from_response(event)
+    state.usage = _usage_from_response(event) or state.usage
+    state.ended = True
+    return ()
+
+
+_CODEX_HANDLERS: dict[str, _CodexHandler] = {
+    "error": _on_codex_error,
+    "response.failed": _on_codex_failed,
+    "response.output_item.added": _on_item_added,
+    "response.function_call_arguments.delta": _on_arguments_delta,
+    "response.function_call_arguments.done": _on_arguments_done,
+    "response.output_text.delta": _on_output_text,
+    "response.reasoning.delta": _on_reasoning_text,
+    "response.reasoning_summary_text.delta": _on_reasoning_text,
+    "response.reasoning_text.delta": _on_reasoning_text,
+    "response.reasoning_summary_part.done": _on_reasoning_part_done,
+    "response.output_item.done": _on_item_done,
+    "response.output_item.completed": _on_item_done,
+    "response.done": _on_response_ended,
+    "response.completed": _on_response_ended,
+    "response.incomplete": _on_response_ended,
+}
 
 
 async def _iter_sse_objects(response: httpx.Response) -> AsyncIterator[dict[str, JSONValue]]:
