@@ -1,0 +1,16 @@
+{
+  "receipt": {
+    "run_id": "b4e891aaa1054ee1b58c400f368d9712",
+    "session_id": "02d295d0a8fb4f5ab530bc7da5e40e92",
+    "branch_id": "main",
+    "status": "succeeded",
+    "head_id": "aa6c3c9985674ccea0f715dd4b7c67df",
+    "watermark": 47,
+    "snapshot_id": "3714d9cdaa8b426b88966b76b4c9319b",
+    "text": "Implemented and committed the enum migration serialization fix.\n\n### Changes\n- Enum members are now serialized by name:\n  - `Status('Good')` → `Status['GOOD']`\n- This avoids migration failures when enum values use translated strings.\n- Updated migration writer tests for text, binary, and integer enums.\n\n### Validation\n- Python compilation passed.\n- `git diff --check` passed.\n- Full migration writer tests could not run because the environment is missing `asgiref`.\n\nCommit: `368419497e Fixed enum member serialization in migrations`"
+  },
+  "elapsed_s": 123.3,
+  "exit_code": 0,
+  "stdout_tail": "{\"run_id\": \"b4e891aaa1054ee1b58c400f368d9712\", \"session_id\": \"02d295d0a8fb4f5ab530bc7da5e40e92\", \"branch_id\": \"main\", \"status\": \"succeeded\", \"head_id\": \"aa6c3c9985674ccea0f715dd4b7c67df\", \"watermark\": 47, \"snapshot_id\": \"3714d9cdaa8b426b88966b76b4c9319b\", \"text\": \"Implemented and committed the enum migration serialization fix.\\n\\n### Changes\\n- Enum members are now serialized by name:\\n  - `Status('Good')` → `Status['GOOD']`\\n- This avoids migration failures when enum values use translated strings.\\n- Updated migration writer tests for text, binary, and integer enums.\\n\\n### Validation\\n- Python compilation passed.\\n- `git diff --check` passed.\\n- Full migration writer tests could not run because the environment is missing `asgiref`.\\n\\nCommit: `368419497e Fixed enum member serialization in migrations`\"}\n",
+  "stderr_tail": ""
+}

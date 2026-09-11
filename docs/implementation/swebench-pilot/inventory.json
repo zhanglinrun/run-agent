@@ -1,0 +1,46 @@
+{
+  "schema": "run-agent.evaluation.inventory.v1",
+  "note": "SWE-bench Verified Mini pilot. The 400KB+ session SQLite databases are not committed; usage.json is the verified extract and each run's state.sqlite3 path is recorded in its .run.json.",
+  "files": {
+    "patches/django__django-11790.patch": {
+      "bytes": 1785,
+      "sha256": "a38e804df90fc1d6a1542d53855afab40fbb42fb1ec162b66b239b7b257a192f"
+    },
+    "swebench-pilot/django__django-11790.run.json": {
+      "bytes": 1785,
+      "sha256": "f081cb54954bee00ab5ec91e446fdd855276c35500e4af432a260b459ec3afea"
+    },
+    "patches/django__django-11815.patch": {
+      "bytes": 3882,
+      "sha256": "cfbe5d01472d48ea19ad430adb113064df30ff8c9922bbe26c126b147b99d7fe"
+    },
+    "swebench-pilot/django__django-11815.run.json": {
+      "bytes": 1829,
+      "sha256": "16014e2d3bbf8a6090cc7a459c140addd6b9308fa8858f78a2da443477222d66"
+    },
+    "patches/django__django-11848.patch": {
+      "bytes": 1930,
+      "sha256": "4a59812cf1d98e611fd92d090e06e7a9350fff04823d235fd4c5298a10f75278"
+    },
+    "swebench-pilot/django__django-11848.run.json": {
+      "bytes": 1912,
+      "sha256": "26d6b20478158e910081e13fb583123b9968fac150c7cd507b69378918d764f4"
+    },
+    "patches/django__django-11880.patch": {
+      "bytes": 1353,
+      "sha256": "1d2bee652886dec4cfdaf6e4a3f27cba44c6df155ba76e0309185fce8ad405d0"
+    },
+    "swebench-pilot/django__django-11880.run.json": {
+      "bytes": 1774,
+      "sha256": "e2daca69483922337574122cc1c953c4ab98dc3da45054bcc080c61fe1e3b310"
+    },
+    "patches/django__django-11885.patch": {
+      "bytes": 5861,
+      "sha256": "57ec22eef9075cf4676e521030af3534f537980d6371bce8f1966cc00633825e"
+    },
+    "swebench-pilot/django__django-11885.run.json": {
+      "bytes": 1931,
+      "sha256": "8de10a3e60fd56381dab958745f1deffbf76e952d4c461d6ee6128fd2e7afbb0"
+    }
+  }
+}

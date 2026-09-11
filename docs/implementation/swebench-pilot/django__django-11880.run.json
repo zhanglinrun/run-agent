@@ -1,0 +1,16 @@
+{
+  "receipt": {
+    "run_id": "a961d26c9d044d74b0f4df82c3a2d7fe",
+    "session_id": "0457910654e94102b066c89e21b7f3d3",
+    "branch_id": "main",
+    "status": "succeeded",
+    "head_id": "99de65d76175405fac4431319408cc2d",
+    "watermark": 73,
+    "snapshot_id": "e17ec086061a4d8fbe9a296b9261e8e3",
+    "text": "Implemented and committed the fix.\n\nChanges:\n- `django/forms/fields.py`\n  - Deep-copies `error_messages` in `Field.__deepcopy__()`.\n- `tests/forms_tests/tests/test_forms.py`\n  - Added regression coverage ensuring copied fields don’t share error message dictionaries.\n\nValidation:\n- Form tests: **115 passed**\n- Error message tests: **19 passed**\n- Python compilation and diff checks passed.\n- Full suite ran but reported unrelated compatibility/environment failures under Python 3.12.\n\nCommit: `c221fafc59`"
+  },
+  "elapsed_s": 619.7,
+  "exit_code": 0,
+  "stdout_tail": "{\"run_id\": \"a961d26c9d044d74b0f4df82c3a2d7fe\", \"session_id\": \"0457910654e94102b066c89e21b7f3d3\", \"branch_id\": \"main\", \"status\": \"succeeded\", \"head_id\": \"99de65d76175405fac4431319408cc2d\", \"watermark\": 73, \"snapshot_id\": \"e17ec086061a4d8fbe9a296b9261e8e3\", \"text\": \"Implemented and committed the fix.\\n\\nChanges:\\n- `django/forms/fields.py`\\n  - Deep-copies `error_messages` in `Field.__deepcopy__()`.\\n- `tests/forms_tests/tests/test_forms.py`\\n  - Added regression coverage ensuring copied fields don’t share error message dictionaries.\\n\\nValidation:\\n- Form tests: **115 passed**\\n- Error message tests: **19 passed**\\n- Python compilation and diff checks passed.\\n- Full suite ran but reported unrelated compatibility/environment failures under Python 3.12.\\n\\nCommit: `c221fafc59`\"}\n",
+  "stderr_tail": ""
+}
