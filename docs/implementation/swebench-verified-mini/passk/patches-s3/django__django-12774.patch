@@ -1,0 +1,65 @@
+diff --git a/django/db/models/query.py b/django/db/models/query.py
+index d9c9b0db04..060850e0d7 100644
+--- a/django/db/models/query.py
++++ b/django/db/models/query.py
+@@ -689,7 +689,13 @@ class QuerySet:
+         """
+         assert not self.query.is_sliced, \
+             "Cannot use 'limit' or 'offset' with in_bulk"
+-        if field_name != 'pk' and not self.model._meta.get_field(field_name).unique:
++        opts = self.model._meta
++        if field_name != 'pk' and not opts.get_field(field_name).unique and field_name not in {
++            field
++            for constraint in opts.total_unique_constraints
++            if len(constraint.fields) == 1
++            for field in constraint.fields
++        }:
+             raise ValueError("in_bulk()'s field_name must be a unique field but %r isn't." % field_name)
+         if id_list is not None:
+             if not id_list:
+diff --git a/tests/lookup/models.py b/tests/lookup/models.py
+index fbc9fa606f..3c77c75f08 100644
+--- a/tests/lookup/models.py
++++ b/tests/lookup/models.py
+@@ -45,6 +45,15 @@ class Tag(models.Model):
+         ordering = ('name',)
+ 
+ 
++class UniqueConstraintArticle(models.Model):
++    slug = models.CharField(max_length=255)
++
++    class Meta:
++        constraints = [
++            models.UniqueConstraint(fields=['slug'], name='unique_constraint_article_slug'),
++        ]
++
++
+ class NulledTextField(models.TextField):
+     def get_prep_value(self, value):
+         return None if value == '' else value
+diff --git a/tests/lookup/tests.py b/tests/lookup/tests.py
+index baefdf9701..69f2451676 100644
+--- a/tests/lookup/tests.py
++++ b/tests/lookup/tests.py
+@@ -12,6 +12,7 @@ from django.utils.deprecation import RemovedInDjango40Warning
+ 
+ from .models import (
+     Article, Author, Freebie, Game, IsNullWithNoneAsRHS, Player, Season, Tag,
++    UniqueConstraintArticle,
+ )
+ 
+ 
+@@ -189,6 +190,13 @@ class LookupTests(TestCase):
+             }
+         )
+ 
++    def test_in_bulk_with_unique_constraint(self):
++        article = UniqueConstraintArticle.objects.create(slug='article')
++        self.assertEqual(
++            UniqueConstraintArticle.objects.in_bulk([article.slug], field_name='slug'),
++            {article.slug: article},
++        )
++
+     def test_in_bulk_non_unique_field(self):
+         msg = "in_bulk()'s field_name must be a unique field but 'author' isn't."
+         with self.assertRaisesMessage(ValueError, msg):

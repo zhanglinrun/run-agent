@@ -1,0 +1,34 @@
+diff --git a/django/contrib/auth/forms.py b/django/contrib/auth/forms.py
+index a0cfed0995..e323f26ec7 100644
+--- a/django/contrib/auth/forms.py
++++ b/django/contrib/auth/forms.py
+@@ -192,6 +192,7 @@ class AuthenticationForm(forms.Form):
+         # Set the max length and label for the "username" field.
+         self.username_field = UserModel._meta.get_field(UserModel.USERNAME_FIELD)
+         self.fields['username'].max_length = self.username_field.max_length or 254
++        self.fields['username'].widget.attrs['maxlength'] = str(self.fields['username'].max_length)
+         if self.fields['username'].label is None:
+             self.fields['username'].label = capfirst(self.username_field.verbose_name)
+ 
+diff --git a/tests/auth_tests/test_forms.py b/tests/auth_tests/test_forms.py
+index 7085dcfa11..3edc3abb78 100644
+--- a/tests/auth_tests/test_forms.py
++++ b/tests/auth_tests/test_forms.py
+@@ -423,6 +423,8 @@ class AuthenticationFormTest(TestDataMixin, TestCase):
+         CustomEmailField.objects.create_user(**data)
+         form = AuthenticationForm(None, data)
+         self.assertEqual(form.fields['username'].max_length, 255)
++        self.assertEqual(form.fields['username'].widget.attrs['maxlength'], '255')
++        self.assertIn('maxlength="255"', form['username'].as_widget())
+         self.assertEqual(form.errors, {})
+ 
+     @override_settings(AUTH_USER_MODEL='auth_tests.IntegerUsernameUser')
+@@ -435,6 +437,8 @@ class AuthenticationFormTest(TestDataMixin, TestCase):
+         IntegerUsernameUser.objects.create_user(**data)
+         form = AuthenticationForm(None, data)
+         self.assertEqual(form.fields['username'].max_length, 254)
++        self.assertEqual(form.fields['username'].widget.attrs['maxlength'], '254')
++        self.assertIn('maxlength="254"', form['username'].as_widget())
+         self.assertEqual(form.errors, {})
+ 
+     def test_username_field_label(self):

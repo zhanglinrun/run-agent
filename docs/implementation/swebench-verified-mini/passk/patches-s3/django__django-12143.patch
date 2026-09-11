@@ -1,0 +1,37 @@
+diff --git a/django/contrib/admin/options.py b/django/contrib/admin/options.py
+index 137e6faa0f..a100f1c499 100644
+--- a/django/contrib/admin/options.py
++++ b/django/contrib/admin/options.py
+@@ -1631,7 +1631,7 @@ class ModelAdmin(BaseModelAdmin):
+ 
+     def _get_edited_object_pks(self, request, prefix):
+         """Return POST data values of list_editable primary keys."""
+-        pk_pattern = re.compile(r'{}-\d+-{}$'.format(prefix, self.model._meta.pk.name))
++        pk_pattern = re.compile(r'{}-\d+-{}$'.format(re.escape(prefix), self.model._meta.pk.name))
+         return [value for key, value in request.POST.items() if pk_pattern.match(key)]
+ 
+     def _get_list_editable_queryset(self, request, prefix):
+diff --git a/tests/admin_changelist/tests.py b/tests/admin_changelist/tests.py
+index 05490b061a..8c382a5726 100644
+--- a/tests/admin_changelist/tests.py
++++ b/tests/admin_changelist/tests.py
+@@ -819,6 +819,19 @@ class ChangeListTests(TestCase):
+         pks = m._get_edited_object_pks(request, prefix='form')
+         self.assertEqual(sorted(pks), sorted([str(a.pk), str(b.pk), str(c.pk)]))
+ 
++    def test_get_edited_object_ids_with_special_characters_in_prefix(self):
++        swallow = Swallow.objects.create(origin='Swallow', load=4, speed=1)
++        superuser = self._create_superuser('superuser')
++        self.client.force_login(superuser)
++        changelist_url = reverse('admin:admin_changelist_swallow_changelist')
++        m = SwallowAdmin(Swallow, custom_site)
++        data = {
++            'form[0]-0-uuid': str(swallow.pk),
++        }
++        request = self.factory.post(changelist_url, data=data)
++        pks = m._get_edited_object_pks(request, prefix='form[0]')
++        self.assertEqual(pks, [str(swallow.pk)])
++
+     def test_get_list_editable_queryset(self):
+         a = Swallow.objects.create(origin='Swallow A', load=4, speed=1)
+         Swallow.objects.create(origin='Swallow B', load=2, speed=2)

@@ -1,0 +1,49 @@
+diff --git a/sphinx/builders/gettext.py b/sphinx/builders/gettext.py
+index e8bc547b7..b93eaf519 100644
+--- a/sphinx/builders/gettext.py
++++ b/sphinx/builders/gettext.py
+@@ -32,7 +32,10 @@ class Message:
+     """An entry of translatable message."""
+     def __init__(self, text: str, locations: List[Tuple[str, int]], uuids: List[str]):
+         self.text = text
+-        self.locations = locations
++        # A message may be extracted more than once from the same location.
++        # Keep the first occurrence so that generated catalogs do not contain
++        # duplicate references, while preserving their source order.
++        self.locations = list(OrderedDict.fromkeys(locations))
+         self.uuids = uuids
+ 
+ 
+diff --git a/tests/test_build_gettext.py b/tests/test_build_gettext.py
+index 3c4617e84..f66e39d9e 100644
+--- a/tests/test_build_gettext.py
++++ b/tests/test_build_gettext.py
+@@ -8,9 +8,28 @@ from subprocess import PIPE, CalledProcessError
+ 
+ import pytest
+ 
++from sphinx.builders.gettext import Message
+ from sphinx.util.osutil import cd
+ 
+ 
++def test_message_deduplicates_locations():
++    locations = [
++        ('first.rst', 1),
++        ('duplicate.rst', 2),
++        ('duplicate.rst', 2),
++        ('first.rst', 1),
++        ('last.rst', 3),
++    ]
++
++    message = Message('message', locations, [])
++
++    assert message.locations == [
++        ('first.rst', 1),
++        ('duplicate.rst', 2),
++        ('last.rst', 3),
++    ]
++
++
+ @pytest.mark.sphinx('gettext', srcdir='root-gettext')
+ def test_build_gettext(app):
+     # Generic build; should fail only when the builder is horribly broken.

@@ -1,0 +1,44 @@
+diff --git a/django/db/models/enums.py b/django/db/models/enums.py
+index f48143ddaf..a756ebcf6f 100644
+--- a/django/db/models/enums.py
++++ b/django/db/models/enums.py
+@@ -26,6 +26,7 @@ class ChoicesMeta(enum.EnumMeta):
+             # assignment in enum's classdict.
+             dict.__setitem__(classdict, key, value)
+         cls = super().__new__(metacls, classname, bases, classdict)
++        cls.do_not_call_in_templates = True
+         cls._value2label_map_ = dict(zip(cls._value2member_map_, labels))
+         # Add a label property to instances of enum which uses the enum member
+         # that is passed in as "self" as the value to use when looking up the
+diff --git a/tests/template_tests/test_callables.py b/tests/template_tests/test_callables.py
+index b72b122deb..1f262f84b4 100644
+--- a/tests/template_tests/test_callables.py
++++ b/tests/template_tests/test_callables.py
+@@ -1,5 +1,6 @@
+ from unittest import TestCase
+ 
++from django.db import models
+ from django.template import Context, Engine
+ 
+ 
+@@ -10,6 +11,20 @@ class CallableVariablesTests(TestCase):
+         cls.engine = Engine()
+         super().setUpClass()
+ 
++    def test_choices_enum(self):
++        class YearInSchool(models.TextChoices):
++            FRESHMAN = 'FR'
++            SOPHOMORE = 'SO'
++
++        c = Context({
++            'student': {'year_in_school': YearInSchool.FRESHMAN},
++            'YearInSchool': YearInSchool,
++        })
++        t = self.engine.from_string(
++            '{% if student.year_in_school == YearInSchool.FRESHMAN %}yes{% endif %}'
++        )
++        self.assertEqual(t.render(c), 'yes')
++
+     def test_callable(self):
+ 
+         class Doodad:

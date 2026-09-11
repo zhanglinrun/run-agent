@@ -1,0 +1,88 @@
+diff --git a/django/db/backends/base/schema.py b/django/db/backends/base/schema.py
+index 61f88401ab..1f521cfc5c 100644
+--- a/django/db/backends/base/schema.py
++++ b/django/db/backends/base/schema.py
+@@ -393,7 +393,7 @@ class BaseDatabaseSchemaEditor:
+         news = {tuple(fields) for fields in new_index_together}
+         # Deleted indexes
+         for fields in olds.difference(news):
+-            self._delete_composed_index(model, fields, {'index': True}, self.sql_delete_index)
++            self._delete_composed_index(model, fields, {'index': True, 'unique': False}, self.sql_delete_index)
+         # Created indexes
+         for field_names in news.difference(olds):
+             fields = [model._meta.get_field(field) for field in field_names]
+diff --git a/tests/schema/models.py b/tests/schema/models.py
+index 6d4465807a..cf1670df11 100644
+--- a/tests/schema/models.py
++++ b/tests/schema/models.py
+@@ -80,6 +80,16 @@ class AuthorWithUniqueNameAndBirthday(models.Model):
+         unique_together = [['name', 'birthday']]
+ 
+ 
++class AuthorWithUniqueAndIndexedNameAndBirthday(models.Model):
++    name = models.CharField(max_length=255)
++    birthday = models.DateField()
++
++    class Meta:
++        apps = new_apps
++        index_together = [['name', 'birthday']]
++        unique_together = [['name', 'birthday']]
++
++
+ class Book(models.Model):
+     author = models.ForeignKey(Author, models.CASCADE)
+     title = models.CharField(max_length=100, db_index=True)
+diff --git a/tests/schema/tests.py b/tests/schema/tests.py
+index 9aa1e239ac..f909fd51e1 100644
+--- a/tests/schema/tests.py
++++ b/tests/schema/tests.py
+@@ -29,7 +29,8 @@ from .models import (
+     Author, AuthorCharFieldWithIndex, AuthorTextFieldWithIndex,
+     AuthorWithDefaultHeight, AuthorWithEvenLongerName, AuthorWithIndexedName,
+     AuthorWithIndexedNameAndBirthday, AuthorWithUniqueName,
+-    AuthorWithUniqueNameAndBirthday, Book, BookForeignObj, BookWeak,
++    AuthorWithUniqueNameAndBirthday, AuthorWithUniqueAndIndexedNameAndBirthday,
++    Book, BookForeignObj, BookWeak,
+     BookWithLongName, BookWithO2O, BookWithoutAuthor, BookWithSlug, IntegerPK,
+     Node, Note, NoteRename, Tag, TagIndexed, TagM2MTest, TagUniqueRename,
+     Thing, UniqueTest, new_apps,
+@@ -49,7 +50,8 @@ class SchemaTests(TransactionTestCase):
+ 
+     models = [
+         Author, AuthorCharFieldWithIndex, AuthorTextFieldWithIndex,
+-        AuthorWithDefaultHeight, AuthorWithEvenLongerName, Book, BookWeak,
++        AuthorWithDefaultHeight, AuthorWithEvenLongerName,
++        AuthorWithUniqueAndIndexedNameAndBirthday, Book, BookWeak,
+         BookWithLongName, BookWithO2O, BookWithSlug, IntegerPK, Node, Note,
+         Tag, TagIndexed, TagM2MTest, TagUniqueRename, Thing, UniqueTest,
+     ]
+@@ -2166,6 +2168,29 @@ class SchemaTests(TransactionTestCase):
+             False,
+         )
+ 
++    @skipUnlessDBFeature('allows_multiple_constraints_on_same_fields')
++    def test_index_together_with_unique_together(self):
++        with connection.schema_editor() as editor:
++            editor.create_model(AuthorWithUniqueAndIndexedNameAndBirthday)
++        # Remove index_together without removing unique_together.
++        with connection.schema_editor() as editor:
++            editor.alter_index_together(
++                AuthorWithUniqueAndIndexedNameAndBirthday,
++                [['name', 'birthday']],
++                [],
++            )
++        constraints = self.get_constraints(
++            AuthorWithUniqueAndIndexedNameAndBirthday._meta.db_table,
++        )
++        self.assertTrue(any(
++            constraint['columns'] == ['name', 'birthday'] and constraint['unique']
++            for constraint in constraints.values()
++        ))
++        self.assertFalse(any(
++            constraint['columns'] == ['name', 'birthday'] and constraint['index'] and not constraint['unique']
++            for constraint in constraints.values()
++        ))
++
+     def test_index_together_with_fk(self):
+         """
+         Tests removing and adding index_together constraints that include

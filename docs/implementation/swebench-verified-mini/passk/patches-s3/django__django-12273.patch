@@ -1,0 +1,84 @@
+diff --git a/django/db/models/base.py b/django/db/models/base.py
+index 844c01e95e..9083601313 100644
+--- a/django/db/models/base.py
++++ b/django/db/models/base.py
+@@ -569,6 +569,9 @@ class Model(metaclass=ModelBase):
+         return getattr(self, meta.pk.attname)
+ 
+     def _set_pk_val(self, value):
++        for parent_link in self._meta.parents.values():
++            if parent_link and parent_link != self._meta.pk:
++                setattr(self, parent_link.target_field.attname, value)
+         return setattr(self, self._meta.pk.attname, value)
+ 
+     pk = property(_get_pk_val, _set_pk_val)
+@@ -804,9 +807,11 @@ class Model(metaclass=ModelBase):
+         inserted = False
+         for parent, field in meta.parents.items():
+             # Make sure the link fields are synced between parent and self.
+-            if (field and getattr(self, parent._meta.pk.attname) is None and
+-                    getattr(self, field.attname) is not None):
+-                setattr(self, parent._meta.pk.attname, getattr(self, field.attname))
++            if field and getattr(self, parent._meta.pk.attname) is None:
++                if self._state.adding:
++                    setattr(self, parent._meta.pk.attname, getattr(self, field.attname))
++                else:
++                    setattr(self, field.attname, None)
+             parent_inserted = self._save_parents(cls=parent, using=using, update_fields=update_fields)
+             updated = self._save_table(
+                 cls=parent, using=using, update_fields=update_fields,
+diff --git a/tests/model_inheritance_regress/models.py b/tests/model_inheritance_regress/models.py
+index 5e4c928dc9..5a40317742 100644
+--- a/tests/model_inheritance_regress/models.py
++++ b/tests/model_inheritance_regress/models.py
+@@ -139,6 +139,15 @@ class DerivedM(BaseM):
+             self.customPK, self.base_name, self.derived_name)
+ 
+ 
++class PrimaryKeyResetParent(models.Model):
++    uid = models.AutoField(primary_key=True, editable=False)
++    f = models.BooleanField(default=False)
++
++
++class PrimaryKeyResetChild(PrimaryKeyResetParent):
++    pass
++
++
+ class AuditBase(models.Model):
+     planned_date = models.DateField()
+ 
+diff --git a/tests/model_inheritance_regress/tests.py b/tests/model_inheritance_regress/tests.py
+index b0156ff9ac..a5f5338240 100644
+--- a/tests/model_inheritance_regress/tests.py
++++ b/tests/model_inheritance_regress/tests.py
+@@ -12,7 +12,8 @@ from .models import (
+     ArticleWithAuthor, BachelorParty, BirthdayParty, BusStation, Child,
+     DerivedM, InternalCertificationAudit, ItalianRestaurant, M2MChild,
+     MessyBachelorParty, ParkingLot, ParkingLot3, ParkingLot4A, ParkingLot4B,
+-    Person, Place, Profile, QualityControl, Restaurant, SelfRefChild,
++    Person, Place, PrimaryKeyResetChild, Profile, QualityControl, Restaurant,
++    SelfRefChild,
+     SelfRefParent, Senator, Supplier, TrainStation, User, Wholesaler,
+ )
+ 
+@@ -256,6 +257,20 @@ class ModelInheritanceTest(TestCase):
+         pos = fragment.find('pub_date')
+         self.assertEqual(fragment.find('pub_date', pos + 1), -1)
+ 
++    def test_reset_primary_key_on_child_model(self):
++        """
++        Resetting the primary key on a child model must create a new parent row.
++        """
++        child = PrimaryKeyResetChild.objects.create(f=True)
++        original_pk = child.pk
++        child = PrimaryKeyResetChild.objects.get(pk=original_pk)
++        child.uid = None
++        child.f = False
++        child.save()
++
++        self.assertTrue(PrimaryKeyResetChild.objects.get(pk=original_pk).f)
++        self.assertEqual(PrimaryKeyResetChild.objects.count(), 2)
++
+     def test_queryset_update_on_parent_model(self):
+         """
+         Regression test for #10362

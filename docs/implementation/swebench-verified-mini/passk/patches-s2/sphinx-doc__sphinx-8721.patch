@@ -1,0 +1,34 @@
+diff --git a/sphinx/ext/viewcode.py b/sphinx/ext/viewcode.py
+index a7d52a91c..863fc3d6d 100644
+--- a/sphinx/ext/viewcode.py
++++ b/sphinx/ext/viewcode.py
+@@ -180,6 +180,8 @@ def should_generate_module_page(app: Sphinx, modname: str) -> bool:
+ 
+ def collect_pages(app: Sphinx) -> Generator[Tuple[str, Dict[str, Any], str], None, None]:
+     env = app.builder.env
++    if app.builder.name.startswith("epub") and not env.config.viewcode_enable_epub:
++        return
+     if not hasattr(env, '_viewcode_modules'):
+         return
+     highlighter = app.builder.highlighter  # type: ignore
+diff --git a/tests/test_ext_viewcode.py b/tests/test_ext_viewcode.py
+index 79864095b..2de415d33 100644
+--- a/tests/test_ext_viewcode.py
++++ b/tests/test_ext_viewcode.py
+@@ -49,6 +49,16 @@ def test_viewcode(app, status, warning):
+             '<span>    &quot;&quot;&quot;</span></div>\n') in result
+ 
+ 
++@pytest.mark.sphinx(testroot='ext-viewcode')
++def test_viewcode_epub_disabled(app, make_app):
++    app.builder.build_all()
++
++    epub_app = make_app('epub', srcdir=app.srcdir)
++    epub_app.builder.build_all()
++
++    assert not (epub_app.outdir / '_modules').exists()
++
++
+ @pytest.mark.sphinx(testroot='ext-viewcode', tags=['test_linkcode'])
+ def test_linkcode(app, status, warning):
+     app.builder.build(['objects'])

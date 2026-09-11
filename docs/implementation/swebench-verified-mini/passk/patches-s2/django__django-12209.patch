@@ -1,0 +1,74 @@
+diff --git a/django/db/models/base.py b/django/db/models/base.py
+index e3b14a41a0..894ccb5be4 100644
+--- a/django/db/models/base.py
++++ b/django/db/models/base.py
+@@ -398,6 +398,7 @@ class ModelState:
+     # explicit (non-auto) PKs. This impacts validation only; it has no effect
+     # on the actual save.
+     adding = True
++    pk_set = False
+     fields_cache = ModelStateFieldsCacheDescriptor()
+ 
+ 
+@@ -414,6 +415,15 @@ class Model(metaclass=ModelBase):
+ 
+         # Set up the storage for instance state
+         self._state = ModelState()
++        if args:
++            for val, field in zip(args, opts.concrete_fields):
++                if field.primary_key and val is not _DEFERRED and val is not None:
++                    self._state.pk_set = True
++        elif kwargs:
++            pk_field = opts.pk
++            self._state.pk_set = kwargs.get(
++                pk_field.attname, kwargs.get(pk_field.name)
++            ) is not None
+ 
+         # There is a rather weird disparity here; if kwargs, it's set, then args
+         # overrides it. It should be one or the other; don't duplicate the work
+@@ -569,6 +579,7 @@ class Model(metaclass=ModelBase):
+         return getattr(self, meta.pk.attname)
+ 
+     def _set_pk_val(self, value):
++        self._state.pk_set = value is not None
+         return setattr(self, self._meta.pk.attname, value)
+ 
+     pk = property(_get_pk_val, _set_pk_val)
+@@ -840,10 +851,11 @@ class Model(metaclass=ModelBase):
+                        if f.name in update_fields or f.attname in update_fields]
+ 
+         pk_val = self._get_pk_val(meta)
+-        if pk_val is None:
++        pk_set = pk_val is not None
++        if not pk_set:
+             pk_val = meta.pk.get_pk_value_on_save(self)
+             setattr(self, meta.pk.attname, pk_val)
+-        pk_set = pk_val is not None
++            pk_set = pk_val is not None
+         if not pk_set and (force_update or update_fields):
+             raise ValueError("Cannot force an update in save() with no primary key.")
+         updated = False
+@@ -851,6 +863,7 @@ class Model(metaclass=ModelBase):
+         if (
+             not force_insert and
+             self._state.adding and
++            not self._state.pk_set and
+             self._meta.pk.default and
+             self._meta.pk.default is not NOT_PROVIDED
+         ):
+diff --git a/tests/model_fields/test_uuid.py b/tests/model_fields/test_uuid.py
+index c53df2c7af..b8b01db0f8 100644
+--- a/tests/model_fields/test_uuid.py
++++ b/tests/model_fields/test_uuid.py
+@@ -41,6 +41,11 @@ class TestSaveLoad(TestCase):
+         loaded = NullableUUIDModel.objects.get()
+         self.assertIsNone(loaded.field)
+ 
++    def test_explicit_pk_with_default(self):
++        instance = PrimaryKeyUUIDModel.objects.create()
++        PrimaryKeyUUIDModel(pk=instance.pk).save()
++        self.assertEqual(PrimaryKeyUUIDModel.objects.count(), 1)
++
+     def test_pk_validated(self):
+         with self.assertRaisesMessage(exceptions.ValidationError, 'is not a valid UUID'):
+             PrimaryKeyUUIDModel.objects.get(pk={})

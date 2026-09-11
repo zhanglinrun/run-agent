@@ -1,0 +1,45 @@
+diff --git a/django/db/models/fields/related.py b/django/db/models/fields/related.py
+index f269d9e17f..b0b23230f1 100644
+--- a/django/db/models/fields/related.py
++++ b/django/db/models/fields/related.py
+@@ -975,6 +975,13 @@ class ForeignKey(ForeignObject):
+             raise ValueError("Cannot create form field for %r yet, because "
+                              "its related model %r has not been loaded yet" %
+                              (self.name, self.remote_field.model))
++        widget = kwargs.get('widget')
++        if (
++            not self.blank and 'empty_label' not in kwargs and
++            (isinstance(widget, forms.RadioSelect) or
++             (isinstance(widget, type) and issubclass(widget, forms.RadioSelect)))
++        ):
++            kwargs['empty_label'] = None
+         return super().formfield(**{
+             'form_class': forms.ModelChoiceField,
+             'queryset': self.remote_field.model._default_manager.using(using),
+diff --git a/tests/model_forms/tests.py b/tests/model_forms/tests.py
+index 8259b3b8bd..ff1b78a074 100644
+--- a/tests/model_forms/tests.py
++++ b/tests/model_forms/tests.py
+@@ -236,6 +236,22 @@ class ModelFormBaseTest(TestCase):
+         obj = f2.save()
+         self.assertEqual(obj.character, char)
+ 
++    def test_radioselect_blank_false_with_null_true_foreign_key_field(self):
++        class AwardForm(forms.ModelForm):
++            class Meta:
++                model = Award
++                fields = ['character']
++                widgets = {'character': forms.RadioSelect()}
++
++        character = Character.objects.create(
++            username='user', last_action=datetime.datetime.today(),
++        )
++        form = AwardForm()
++        rendered = form['character'].as_widget()
++        self.assertNotIn('value=""', rendered)
++        self.assertNotIn('checked', rendered)
++        self.assertIn('value="%s"' % character.pk, rendered)
++
+     def test_blank_false_with_null_true_foreign_key_field(self):
+         """
+         A ModelForm with a model having ForeignKey(blank=False, null=True)

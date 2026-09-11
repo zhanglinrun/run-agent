@@ -1,0 +1,40 @@
+diff --git a/sphinx/domains/python.py b/sphinx/domains/python.py
+index 79d7e4f46..768942966 100644
+--- a/sphinx/domains/python.py
++++ b/sphinx/domains/python.py
+@@ -1216,6 +1216,10 @@ class PythonDomain(Domain):
+         self.modules[name] = ModuleEntry(self.env.docname, node_id,
+                                          synopsis, platform, deprecated)
+ 
++    def process_field_xref(self, pnode: pending_xref) -> None:
++        pnode['py:module'] = self.env.ref_context.get('py:module')
++        pnode['py:class'] = self.env.ref_context.get('py:class')
++
+     def clear_doc(self, docname: str) -> None:
+         for fullname, obj in list(self.objects.items()):
+             if obj.docname == docname:
+diff --git a/tests/test_domain_py.py b/tests/test_domain_py.py
+index 2dc97bed9..6ea925ee8 100644
+--- a/tests/test_domain_py.py
++++ b/tests/test_domain_py.py
+@@ -744,6 +744,20 @@ def test_pyattribute(app):
+     assert domain.objects['Class.attr'] == ('index', 'Class.attr', 'attribute')
+ 
+ 
++def test_pyfield_xref_context(app):
++    text = (".. py:currentmodule:: mod.submod\n"
++            ".. py:function:: f()\n"
++            "\n"
++            "   :param A a: description\n"
++            "   :rtype: A\n")
++    doctree = restructuredtext.parse(app, text)
++    refnodes = list(doctree.traverse(pending_xref))
++    assert len(refnodes) == 2
++    for refnode in refnodes:
++        assert refnode['py:module'] == 'mod.submod'
++        assert refnode['refspecific'] is True
++
++
+ def test_pydecorator_signature(app):
+     text = ".. py:decorator:: deco"
+     domain = app.env.get_domain('py')

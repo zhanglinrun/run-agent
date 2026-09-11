@@ -1,0 +1,32 @@
+diff --git a/django/core/paginator.py b/django/core/paginator.py
+index 1f92da5d4f..896535d89a 100644
+--- a/django/core/paginator.py
++++ b/django/core/paginator.py
+@@ -106,6 +106,10 @@ class Paginator:
+         """
+         return range(1, self.num_pages + 1)
+ 
++    def __iter__(self):
++        for page_num in self.page_range:
++            yield self.page(page_num)
++
+     def _check_object_list_is_ordered(self):
+         """
+         Warn if self.object_list is unordered (typically a QuerySet).
+diff --git a/tests/pagination/tests.py b/tests/pagination/tests.py
+index ef6e355e8d..79e95b2ea2 100644
+--- a/tests/pagination/tests.py
++++ b/tests/pagination/tests.py
+@@ -265,6 +265,12 @@ class PaginationTests(SimpleTestCase):
+         """
+         self.assertIsInstance(Paginator([1, 2, 3], 2).page_range, type(range(0)))
+ 
++    def test_paginator_iterator(self):
++        paginator = Paginator([1, 2, 3], 2)
++        pages = list(paginator)
++        self.assertEqual([page.number for page in pages], [1, 2])
++        self.assertEqual([page.object_list for page in pages], [[1, 2], [3]])
++
+     def test_get_page(self):
+         """
+         Paginator.get_page() returns a valid page even with invalid page
