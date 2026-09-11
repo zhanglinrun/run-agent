@@ -86,6 +86,24 @@ functions over 30 LOC: 370  (12.4%)
 若将来要为它补测试，应从 `refresh_models_dev_catalog` 的四个分支入手：
 离线、刷新窗口内、304 not-modified、正常刷新。
 
+### 批次 0（第二例）：`extensions/experience/review.py`
+
+**下一个超限文件是本轮自己造成的** —— T-023 的前台守卫与用量归因把它推到 219 行。
+拆分才是诚实的修法，而不是给自己开例外。
+
+| | 前 | 后 |
+|---|---|---|
+| `review.py` | 219 行 | **174 行** |
+| `review_models.py` | — | **34 行** |
+
+`ReviewPolicy` / `ReviewRequest` / `ReviewDecision` 与两个命名空间常量是**数据**，
+trigger 与 coordinator 是**行为** —— 同一 seam。名字仍可从 `review` 导入，调用方不受影响。
+
+### seam 的共同规律
+
+两例的 seam 完全一致：**把数据与行为分开，把“回答什么”与“怎么做”分开**。
+函数级超限往往是这两个职责混住后的症状，而非独立问题。
+
 ## 建议做法（需单独排期）
 
 按**风险从低到高**分批，每批都要求先有测试锁定行为：
