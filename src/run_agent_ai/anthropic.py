@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
+from dataclasses import dataclass, field
+from enum import Enum
 from json import loads
 from typing import Any, cast
 
@@ -108,7 +110,7 @@ class AnthropicProvider:
             raw, api="anthropic-messages", provider="anthropic", model=model
         )
 
-    def _stream_provider_events(
+    async def _stream_provider_events(
         self,
         *,
         model: str,
@@ -117,257 +119,227 @@ class AnthropicProvider:
         tools: list[AgentTool],
         signal: CancellationToken | None = None,
     ) -> AsyncIterator[ProviderEvent]:
-        """Stream one Anthropic response as provider-neutral events."""
+        """Stream one Anthropic response as provider-neutral events.
 
-        async def iterator() -> AsyncIterator[ProviderEvent]:
-            client = self._get_client()
-            api_key = self._config.api_key
-            base_url = self._config.base_url
-            auth_headers: dict[str, str] = {}
-            if self._config.credential_resolver is not None:
-                auth = await self._config.credential_resolver()
-                api_key = auth.api_key
-                if auth.base_url is not None:
-                    base_url = auth.base_url.rstrip("/")
-                    if not base_url.endswith("/v1"):
-                        base_url = f"{base_url}/v1"
-                auth_headers.update(auth.headers or {})
-            payload = _build_messages_payload(
-                model=model,
-                system=system,
-                oauth_system_prompt=self._config.oauth_system_prompt,
-                messages=messages,
-                tools=tools,
-                max_tokens=self._config.max_tokens,
-                thinking_budget_tokens=self._config.thinking_budget_tokens,
-                thinking_effort=self._config.thinking_effort,
-                thinking_mode=self._config.thinking_mode,
-                supports_images=self._config.supports_images,
-                cache_retention=self._config.cache_retention,
-                cache_control_on_tools=self._config.cache_control_on_tools,
-            )
-            headers = {
-                "anthropic-version": ANTHROPIC_VERSION,
-                "content-type": "application/json",
-                **(dict(self._config.headers or {})),
-                **auth_headers,
-            }
-            if (
-                self._config.provider_name == "github-copilot"
-                and self._config.supports_images
-                and messages_have_images(messages)
-            ):
-                headers["Copilot-Vision-Request"] = "true"
-            if self._config.bearer_auth:
-                headers.setdefault("Authorization", f"Bearer {api_key}")
-            else:
-                headers["x-api-key"] = api_key
-            url = f"{base_url.rstrip('/')}/messages"
+        This used to be a 260-line outer function whose entire body was an inner
+        ``iterator()`` and a ``return iterator()``: it existed only to say "here is a
+        generator", while the request setup, the retry loop and the SSE dispatch sat nine
+        levels deep inside it. Those are three separate concerns and each now has a name.
+        """
+        request = await self._prepare_request(
+            model=model, system=system, messages=messages, tools=tools
+        )
+        async for event in self._stream_attempts(request, model, signal):
+            yield event
 
-            attempt = 0
-            while True:
-                emitted_content = False
-                try:
-                    async with client.stream(
-                        "POST", url, json=payload, headers=headers
-                    ) as response:
-                        if response.status_code >= 400:
-                            body = await response.aread()
-                            body_text = body.decode(errors="replace")
-                            if self._should_retry(attempt, status_code=response.status_code):
-                                delay = retry_delay_seconds(
-                                    attempt,
-                                    max_delay_seconds=self._config.max_retry_delay_seconds,
-                                )
-                                yield provider_retry_event(
-                                    attempt=attempt,
-                                    max_retries=self._config.max_retries,
-                                    delay_seconds=delay,
-                                    reason=f"HTTP {response.status_code}",
-                                    data={
-                                        "status_code": response.status_code,
-                                        "body": body_text,
-                                    },
-                                )
-                                attempt += 1
-                                if not await wait_for_retry(delay, signal=signal):
-                                    return
-                                continue
-                            yield ProviderErrorEvent(
-                                message=provider_http_error_message(
-                                    provider_name=self._config.provider_name,
-                                    status_code=response.status_code,
-                                    body=body_text,
-                                    model=model,
-                                ),
-                                data={
-                                    "status_code": response.status_code,
-                                    "body": body_text,
-                                    "attempts": attempt + 1,
-                                },
-                            )
-                            return
+    async def _prepare_request(
+        self,
+        *,
+        model: str,
+        system: str,
+        messages: list[AgentMessage],
+        tools: list[AgentTool],
+    ) -> _PreparedRequest:
+        """Resolve credentials and build the request every attempt will send."""
+        api_key, base_url, auth_headers = await self._resolve_credentials()
+        payload = _build_messages_payload(
+            model=model,
+            system=system,
+            oauth_system_prompt=self._config.oauth_system_prompt,
+            messages=messages,
+            tools=tools,
+            max_tokens=self._config.max_tokens,
+            thinking_budget_tokens=self._config.thinking_budget_tokens,
+            thinking_effort=self._config.thinking_effort,
+            thinking_mode=self._config.thinking_mode,
+            supports_images=self._config.supports_images,
+            cache_retention=self._config.cache_retention,
+            cache_control_on_tools=self._config.cache_control_on_tools,
+        )
+        return _PreparedRequest(
+            client=self._get_client(),
+            url=f"{base_url.rstrip('/')}/messages",
+            headers=self._request_headers(api_key, auth_headers, messages),
+            payload=payload,
+        )
 
-                        yield ProviderResponseStartEvent(model=model)
-                        stream_error: dict[str, JSONValue] | None = None
-                        content_parts: list[str] = []
-                        thinking_parts: list[str] = []
-                        thinking_signature: str | None = None
-                        tool_builders: dict[int, _AnthropicToolBuilder] = {}
-                        finish_reason: str | None = None
-                        usage: Usage | None = None
+    async def _resolve_credentials(self) -> tuple[str, str, dict[str, str]]:
+        """The api key, base url and extra headers, after any credential resolver."""
+        api_key = self._config.api_key
+        base_url = self._config.base_url
+        extra: dict[str, str] = {}
+        if self._config.credential_resolver is None:
+            return api_key, base_url, extra
+        auth = await self._config.credential_resolver()
+        api_key = auth.api_key
+        if auth.base_url is not None:
+            base_url = auth.base_url.rstrip("/")
+            if not base_url.endswith("/v1"):
+                base_url = f"{base_url}/v1"
+        extra.update(auth.headers or {})
+        return api_key, base_url, extra
 
-                        async for line in response.aiter_lines():
-                            if signal is not None and signal.is_cancelled():
-                                return
+    def _request_headers(
+        self, api_key: str, auth_headers: dict[str, str], messages: list[AgentMessage]
+    ) -> dict[str, str]:
+        """Version header, then configured headers, then auth last so it wins."""
+        headers = {
+            "anthropic-version": ANTHROPIC_VERSION,
+            "content-type": "application/json",
+            **(dict(self._config.headers or {})),
+            **auth_headers,
+        }
+        vision = (
+            self._config.provider_name == "github-copilot"
+            and self._config.supports_images
+            and messages_have_images(messages)
+        )
+        if vision:
+            headers["Copilot-Vision-Request"] = "true"
+        if self._config.bearer_auth:
+            headers.setdefault("Authorization", f"Bearer {api_key}")
+        else:
+            headers["x-api-key"] = api_key
+        return headers
 
-                            event = _parse_sse_line(line)
-                            if event is None:
-                                continue
-                            chunk = _loads_object(event)
-                            if chunk is None:
-                                yield ProviderErrorEvent(
-                                    message="Provider returned invalid JSON chunk"
-                                )
-                                return
-
-                            event_type = chunk.get("type")
-                            if event_type == "message_start":
-                                message = chunk.get("message")
-                                if isinstance(message, Mapping):
-                                    usage = _usage_from_message_start(message.get("usage"))
-                            elif event_type == "content_block_start":
-                                block = chunk.get("content_block")
-                                if isinstance(block, Mapping) and block.get("type") == "tool_use":
-                                    index = int(chunk.get("index", 0))
-                                    builder = tool_builders.setdefault(
-                                        index, _AnthropicToolBuilder()
-                                    )
-                                    builder.id = _string_or_empty(block.get("id"))
-                                    builder.name = _string_or_empty(block.get("name"))
-                                    emitted_content = True
-                            elif event_type == "content_block_delta":
-                                delta = chunk.get("delta")
-                                if not isinstance(delta, Mapping):
-                                    continue
-                                delta_type = delta.get("type")
-                                if delta_type == "text_delta":
-                                    text = _string_or_empty(delta.get("text"))
-                                    if text:
-                                        emitted_content = True
-                                        content_parts.append(text)
-                                        yield ProviderTextDeltaEvent(delta=text)
-                                elif delta_type == "thinking_delta":
-                                    thinking = _string_or_empty(delta.get("thinking"))
-                                    if thinking:
-                                        emitted_content = True
-                                        thinking_parts.append(thinking)
-                                        yield ProviderThinkingDeltaEvent(delta=thinking)
-                                elif delta_type == "signature_delta":
-                                    signature = _string_or_empty(delta.get("signature"))
-                                    if signature:
-                                        thinking_signature = (
-                                            f"{thinking_signature or ''}{signature}"
-                                        )
-                                elif delta_type == "input_json_delta":
-                                    index = int(chunk.get("index", 0))
-                                    builder = tool_builders.setdefault(
-                                        index, _AnthropicToolBuilder()
-                                    )
-                                    builder.arguments_parts.append(
-                                        _string_or_empty(delta.get("partial_json"))
-                                    )
-                                    emitted_content = True
-                            elif event_type == "message_delta":
-                                delta = chunk.get("delta")
-                                if isinstance(delta, Mapping):
-                                    finish_reason = (
-                                        _string_or_empty(delta.get("stop_reason")) or finish_reason
-                                    )
-                                usage = _apply_message_delta_usage(usage, chunk.get("usage"))
-                            elif event_type == "error":
-                                error_type, message = _anthropic_stream_error_details(chunk)
-                                if (
-                                    not emitted_content
-                                    and self._should_retry(attempt)
-                                    and _retryable_anthropic_stream_error(error_type)
-                                ):
-                                    stream_error = chunk
-                                    break
-                                yield ProviderErrorEvent(
-                                    message=message,
-                                    data={"event": chunk, "attempts": attempt + 1},
-                                )
-                                return
-
-                        if stream_error is not None:
-                            error_type, _message = _anthropic_stream_error_details(stream_error)
-                            delay = retry_delay_seconds(
-                                attempt,
-                                max_delay_seconds=self._config.max_retry_delay_seconds,
-                            )
-                            yield provider_retry_event(
-                                attempt=attempt,
-                                max_retries=self._config.max_retries,
-                                delay_seconds=delay,
-                                reason=f"stream error ({error_type or 'unknown'})",
-                                data={"event": stream_error},
-                            )
-                            attempt += 1
-                            if not await wait_for_retry(delay, signal=signal):
-                                return
-                            continue
-
-                        tool_calls = [
-                            builder.build(index) for index, builder in sorted(tool_builders.items())
-                        ]
-                        for tool_call in tool_calls:
-                            yield ProviderToolCallEvent(tool_call=tool_call)
-
-                        content = assistant_content("".join(content_parts), tool_calls)
-                        if thinking_parts:
-                            content.insert(
-                                0,
-                                ThinkingContent(
-                                    thinking="".join(thinking_parts),
-                                    thinking_signature=thinking_signature,
-                                ),
-                            )
-                        yield ProviderResponseEndEvent(
-                            message=AssistantMessage(
-                                content=content,
-                                usage=usage or Usage(),
-                            ),
-                            finish_reason=finish_reason,
-                        )
-                        return
-                except httpx.HTTPError as exc:
-                    if not emitted_content and self._should_retry(attempt):
-                        delay = retry_delay_seconds(
-                            attempt,
-                            max_delay_seconds=self._config.max_retry_delay_seconds,
-                        )
-                        yield provider_retry_event(
-                            attempt=attempt,
-                            max_retries=self._config.max_retries,
-                            delay_seconds=delay,
-                            reason="network error",
-                            data={
-                                "error": str(exc),
-                                "error_type": type(exc).__name__,
-                            },
-                        )
-                        attempt += 1
-                        if not await wait_for_retry(delay, signal=signal):
-                            return
-                        continue
-                    yield ProviderErrorEvent(
-                        message=str(exc),
-                        data={"attempts": attempt + 1},
-                    )
+    async def _stream_attempts(
+        self,
+        request: _PreparedRequest,
+        model: str,
+        signal: CancellationToken | None,
+    ) -> AsyncIterator[ProviderEvent]:
+        """Retry one prepared request until it completes, fails, or is cancelled."""
+        attempt = 0
+        while True:
+            state = _StreamState(attempt=attempt)
+            async for event in self._attempt(request, state, model, signal):
+                yield event
+            outcome = state.result
+            if isinstance(outcome, _Retry):
+                yield outcome.event
+                attempt += 1
+                if not await wait_for_retry(outcome.delay, signal=signal):
                     return
+                continue
+            if outcome is _StreamOutcome.ABORTED:
+                return
+            if outcome is _StreamOutcome.COMPLETED:
+                for event in state.finish():
+                    yield event
+                return
+            yield outcome
+            return
 
-        return iterator()
+    async def _attempt(
+        self,
+        request: _PreparedRequest,
+        state: _StreamState,
+        model: str,
+        signal: CancellationToken | None,
+    ) -> AsyncIterator[ProviderEvent]:
+        """One HTTP attempt: emit whatever it streams, then record why it stopped."""
+        try:
+            async with request.client.stream(
+                "POST", request.url, json=request.payload, headers=request.headers
+            ) as response:
+                if response.status_code >= 400:
+                    state.result = await self._http_error_outcome(response, model, state.attempt)
+                    return
+                async for event in self._iter_stream(response, state, model, signal):
+                    yield event
+                state.result = self._attempt_outcome(state)
+        except httpx.HTTPError as exc:
+            state.result = self._network_error_outcome(exc, state.emitted, state.attempt)
+
+    async def _iter_stream(
+        self,
+        response: httpx.Response,
+        state: _StreamState,
+        model: str,
+        signal: CancellationToken | None,
+    ) -> AsyncIterator[ProviderEvent]:
+        """Read the SSE body, mutating ``state`` and yielding what each chunk produces."""
+        yield ProviderResponseStartEvent(model=model)
+        async for line in response.aiter_lines():
+            if signal is not None and signal.is_cancelled():
+                state.result = _StreamOutcome.ABORTED
+                return
+            event = _parse_sse_line(line)
+            if event is None:
+                continue
+            chunk = _loads_object(event)
+            if chunk is None:
+                yield ProviderErrorEvent(message="Provider returned invalid JSON chunk")
+                state.result = _StreamOutcome.ABORTED
+                return
+            for produced in _dispatch(self, chunk, state):
+                yield produced
+            if state.stream_error is not None:
+                return
+
+    def _attempt_outcome(self, state: _StreamState) -> _AttemptResult:
+        """Why a completed read stopped: cancelled, retryable, or genuinely finished."""
+        if state.aborted:
+            return _StreamOutcome.ABORTED
+        if state.stream_error is None:
+            return _StreamOutcome.COMPLETED
+        error_type, _ = _anthropic_stream_error_details(state.stream_error)
+        return self._retry(
+            f"stream error ({error_type or 'unknown'})",
+            state.attempt,
+            {"event": state.stream_error},
+        )
+
+    async def _http_error_outcome(
+        self, response: httpx.Response, model: str, attempt: int
+    ) -> _AttemptResult:
+        """Decide what an erroring response means: back off, or report it and stop."""
+        body_text = (await response.aread()).decode(errors="replace")
+        if self._should_retry(attempt, status_code=response.status_code):
+            return self._retry(
+                f"HTTP {response.status_code}",
+                attempt,
+                {"status_code": response.status_code, "body": body_text},
+            )
+        return ProviderErrorEvent(
+            message=provider_http_error_message(
+                provider_name=self._config.provider_name,
+                status_code=response.status_code,
+                body=body_text,
+                model=model,
+            ),
+            data={
+                "status_code": response.status_code,
+                "body": body_text,
+                "attempts": attempt + 1,
+            },
+        )
+
+    def _network_error_outcome(
+        self, exc: httpx.HTTPError, emitted: bool, attempt: int
+    ) -> _AttemptResult:
+        """A transport failure is retryable only before any content has been emitted."""
+        if not emitted and self._should_retry(attempt):
+            return self._retry(
+                "network error",
+                attempt,
+                {"error": str(exc), "error_type": type(exc).__name__},
+            )
+        return ProviderErrorEvent(message=str(exc), data={"attempts": attempt + 1})
+
+    def _retry(self, reason: str, attempt: int, data: dict[str, JSONValue]) -> _Retry:
+        """Build the back-off notice and the delay it asks the caller to wait."""
+        delay = retry_delay_seconds(attempt, max_delay_seconds=self._config.max_retry_delay_seconds)
+        return _Retry(
+            event=provider_retry_event(
+                attempt=attempt,
+                max_retries=self._config.max_retries,
+                delay_seconds=delay,
+                reason=reason,
+                data=data,
+            ),
+            delay=delay,
+        )
 
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -769,3 +741,228 @@ def _apply_message_delta_usage(usage: Usage | None, raw: object) -> Usage | None
             usage.reasoning = thinking
     usage.total_tokens = usage.input + usage.output + usage.cache_read + usage.cache_write
     return usage
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedRequest:
+    """Everything one HTTP attempt needs, resolved once per call."""
+
+    client: httpx.AsyncClient
+    url: str
+    headers: dict[str, str]
+    payload: dict[str, Any]
+
+
+class _StreamOutcome(Enum):
+    """Why an attempt stopped, when it did not fail."""
+
+    COMPLETED = "completed"
+    ABORTED = "aborted"
+
+
+@dataclass(frozen=True, slots=True)
+class _Retry:
+    """A failed attempt worth repeating: the notice to emit and how long to wait."""
+
+    event: ProviderEvent
+    delay: float
+
+
+_AttemptResult = ProviderEvent | _Retry | _StreamOutcome
+
+
+@dataclass(slots=True)
+class _StreamState:
+    """Everything one attempt accumulates while reading the stream.
+
+    The accumulators used to be nine locals in a 140-line loop body, which is why no
+    single event type could be tested without driving a whole stream past it. They are
+    fields now, so a handler can be exercised on its own.
+    """
+
+    attempt: int = 0
+    content_parts: list[str] = field(default_factory=list)
+    thinking_parts: list[str] = field(default_factory=list)
+    thinking_signature: str | None = None
+    tool_builders: dict[int, _AnthropicToolBuilder] = field(default_factory=dict)
+    finish_reason: str | None = None
+    usage: Usage | None = None
+    stream_error: dict[str, JSONValue] | None = None
+    emitted: bool = False
+    aborted: bool = False
+    # Defaults to ABORTED so a path that forgets to set it stops rather than reports
+    # success; every branch in _attempt assigns it.
+    result: _AttemptResult = _StreamOutcome.ABORTED
+
+    def tool_builder(self, index: int) -> _AnthropicToolBuilder:
+        """The builder for one content-block index, created on first sight."""
+        return self.tool_builders.setdefault(index, _AnthropicToolBuilder())
+
+    def finish(self) -> tuple[ProviderEvent, ...]:
+        """The events that close an attempt: its tool calls, then the response."""
+        tool_calls = [builder.build(index) for index, builder in sorted(self.tool_builders.items())]
+        content = assistant_content("".join(self.content_parts), tool_calls)
+        if self.thinking_parts:
+            content.insert(
+                0,
+                ThinkingContent(
+                    thinking="".join(self.thinking_parts),
+                    thinking_signature=self.thinking_signature,
+                ),
+            )
+        return (
+            *(ProviderToolCallEvent(tool_call=call) for call in tool_calls),
+            ProviderResponseEndEvent(
+                message=AssistantMessage(content=content, usage=self.usage or Usage()),
+                finish_reason=self.finish_reason,
+            ),
+        )
+
+
+_ChunkHandler = Callable[
+    ["AnthropicProvider", dict[str, Any], _StreamState], tuple[ProviderEvent, ...]
+]
+_DeltaHandler = Callable[
+    ["AnthropicProvider", dict[str, Any], Mapping[str, Any], _StreamState],
+    tuple[ProviderEvent, ...],
+]
+
+
+def _dispatch(
+    provider: AnthropicProvider, chunk: dict[str, Any], state: _StreamState
+) -> tuple[ProviderEvent, ...]:
+    """Route one SSE chunk to the handler for its type; unknown types are ignored.
+
+    A table rather than an if/elif chain. The chain was why no single event type could be
+    tested on its own, and why recognising a new one meant editing a hundred-line body.
+    """
+    handler = _HANDLERS.get(chunk.get("type"))
+    return () if handler is None else handler(provider, chunk, state)
+
+
+def _on_message_start(
+    provider: AnthropicProvider, chunk: dict[str, Any], state: _StreamState
+) -> tuple[ProviderEvent, ...]:
+    message = chunk.get("message")
+    if isinstance(message, Mapping):
+        state.usage = _usage_from_message_start(message.get("usage"))
+    return ()
+
+
+def _on_content_block_start(
+    provider: AnthropicProvider, chunk: dict[str, Any], state: _StreamState
+) -> tuple[ProviderEvent, ...]:
+    block = chunk.get("content_block")
+    if not (isinstance(block, Mapping) and block.get("type") == "tool_use"):
+        return ()
+    builder = state.tool_builder(int(chunk.get("index", 0)))
+    builder.id = _string_or_empty(block.get("id"))
+    builder.name = _string_or_empty(block.get("name"))
+    state.emitted = True
+    return ()
+
+
+def _on_content_block_delta(
+    provider: AnthropicProvider, chunk: dict[str, Any], state: _StreamState
+) -> tuple[ProviderEvent, ...]:
+    delta = chunk.get("delta")
+    if not isinstance(delta, Mapping):
+        return ()
+    handler = _DELTA_HANDLERS.get(delta.get("type"))
+    return () if handler is None else handler(provider, chunk, delta, state)
+
+
+def _on_text_delta(
+    provider: AnthropicProvider,
+    chunk: dict[str, Any],
+    delta: Mapping[str, Any],
+    state: _StreamState,
+) -> tuple[ProviderEvent, ...]:
+    text = _string_or_empty(delta.get("text"))
+    if not text:
+        return ()
+    state.emitted = True
+    state.content_parts.append(text)
+    return (ProviderTextDeltaEvent(delta=text),)
+
+
+def _on_thinking_delta(
+    provider: AnthropicProvider,
+    chunk: dict[str, Any],
+    delta: Mapping[str, Any],
+    state: _StreamState,
+) -> tuple[ProviderEvent, ...]:
+    thinking = _string_or_empty(delta.get("thinking"))
+    if not thinking:
+        return ()
+    state.emitted = True
+    state.thinking_parts.append(thinking)
+    return (ProviderThinkingDeltaEvent(delta=thinking),)
+
+
+def _on_signature_delta(
+    provider: AnthropicProvider,
+    chunk: dict[str, Any],
+    delta: Mapping[str, Any],
+    state: _StreamState,
+) -> tuple[ProviderEvent, ...]:
+    signature = _string_or_empty(delta.get("signature"))
+    if signature:
+        state.thinking_signature = f"{state.thinking_signature or ''}{signature}"
+    return ()
+
+
+def _on_input_json_delta(
+    provider: AnthropicProvider,
+    chunk: dict[str, Any],
+    delta: Mapping[str, Any],
+    state: _StreamState,
+) -> tuple[ProviderEvent, ...]:
+    builder = state.tool_builder(int(chunk.get("index", 0)))
+    builder.arguments_parts.append(_string_or_empty(delta.get("partial_json")))
+    state.emitted = True
+    return ()
+
+
+def _on_message_delta(
+    provider: AnthropicProvider, chunk: dict[str, Any], state: _StreamState
+) -> tuple[ProviderEvent, ...]:
+    delta = chunk.get("delta")
+    if isinstance(delta, Mapping):
+        state.finish_reason = _string_or_empty(delta.get("stop_reason")) or state.finish_reason
+    state.usage = _apply_message_delta_usage(state.usage, chunk.get("usage"))
+    return ()
+
+
+def _on_error(
+    provider: AnthropicProvider, chunk: dict[str, Any], state: _StreamState
+) -> tuple[ProviderEvent, ...]:
+    """A stream error is retryable only before any content has been emitted."""
+    error_type, message = _anthropic_stream_error_details(chunk)
+    if (
+        not state.emitted
+        and provider._should_retry(state.attempt)
+        and _retryable_anthropic_stream_error(error_type)
+    ):
+        state.stream_error = chunk
+        return ()
+    state.aborted = True
+    return (
+        ProviderErrorEvent(message=message, data={"event": chunk, "attempts": state.attempt + 1}),
+    )
+
+
+_HANDLERS: dict[Any, _ChunkHandler] = {
+    "message_start": _on_message_start,
+    "content_block_start": _on_content_block_start,
+    "content_block_delta": _on_content_block_delta,
+    "message_delta": _on_message_delta,
+    "error": _on_error,
+}
+
+_DELTA_HANDLERS: dict[Any, _DeltaHandler] = {
+    "text_delta": _on_text_delta,
+    "thinking_delta": _on_thinking_delta,
+    "signature_delta": _on_signature_delta,
+    "input_json_delta": _on_input_json_delta,
+}
