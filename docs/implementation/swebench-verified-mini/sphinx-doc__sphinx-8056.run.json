@@ -1,0 +1,16 @@
+{
+  "receipt": {
+    "run_id": "674cc31563984c9ab583da55bbe3e717",
+    "session_id": "2c1ad7717974438fbffd5cbde358acd5",
+    "branch_id": "main",
+    "status": "succeeded",
+    "head_id": "bdf6262e0a2741648c4820d274ac8aab",
+    "watermark": 136,
+    "snapshot_id": "198588634015478091eb03290285ac7a",
+    "text": "Implemented the fix in `sphinx/domains/python.py`.\n\n### Change\nPython parameter fields without an explicit role no longer split comma-separated names into separate cross-reference nodes. This preserves combined parameters such as:\n\n```python\nx1, x2 : array_like, optional\n```\n\nThey now render as a single entry while retaining the type and `optional` annotation.\n\n### Validation\n- Modified modules compile successfully.\n- Smoke-tested combined parameter xref generation.\n- `git diff --check` passes.\n- Full domain tests could not run because the installed `sphinxcontrib.serializinghtml` requires Sphinx ≥5, while this checkout targets Sphinx 3.x."
+  },
+  "elapsed_s": 496.2,
+  "exit_code": 0,
+  "patch_bytes": 692,
+  "stderr_tail": ""
+}

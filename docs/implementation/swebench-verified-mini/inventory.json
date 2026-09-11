@@ -1,0 +1,418 @@
+{
+  "schema": "run-agent.evaluation.inventory.v1",
+  "note": "SWE-bench Verified Mini, 50 instances, gpt-5.6-luna at thinking=max, graded by the official swebench 5.0.2 harness in per-task containers. The session SQLite databases are not committed - each run's path is in its .run.json, and full-metrics.json is the verified extract.",
+  "files": {
+    "swebench-verified-mini/full-metrics.json": {
+      "bytes": 17965,
+      "sha256": "dfe5f3ca5b9ef6a1e2c56272bb0396500021bd185b771189ef9f1f4c7aac86ca"
+    },
+    "swebench-verified-mini/gpt-5.6-luna.full-gpt-5.6-luna-max.json": {
+      "bytes": 9478,
+      "sha256": "7c9755096c0f9d4ca5e6f85bcfb97eb16a7cb4d7634c389024b0578218c56627"
+    },
+    "swebench-verified-mini/all50.json": {
+      "bytes": 472243,
+      "sha256": "f98500b5a3b477116e796d46347f09cacbbdc322b2811865771ded96ccde7c06"
+    },
+    "patches/django__django-11790.patch": {
+      "bytes": 1785,
+      "sha256": "a38e804df90fc1d6a1542d53855afab40fbb42fb1ec162b66b239b7b257a192f"
+    },
+    "swebench-verified-mini/django__django-11790.run.json": {
+      "bytes": 954,
+      "sha256": "ae35b5582023b18b839e210ba593335a1060d356f57d1683514fa1c09f85984b"
+    },
+    "patches/django__django-11815.patch": {
+      "bytes": 4399,
+      "sha256": "7b753d2a929599e430425f0a7b102621cadb49c2144dac91a05d3b0160fbb7e8"
+    },
+    "swebench-verified-mini/django__django-11815.run.json": {
+      "bytes": 1147,
+      "sha256": "23b9abfdbd0cb4b5a115c442ea291a8639db7294c4c0eca1d8e2daf5dcbfe06c"
+    },
+    "patches/django__django-11848.patch": {
+      "bytes": 1930,
+      "sha256": "4a59812cf1d98e611fd92d090e06e7a9350fff04823d235fd4c5298a10f75278"
+    },
+    "swebench-verified-mini/django__django-11848.run.json": {
+      "bytes": 953,
+      "sha256": "b8dd90873dbf0400d8d431694a98b120944ad9ecaef4173a868a12f51ff3df74"
+    },
+    "patches/django__django-11880.patch": {
+      "bytes": 1706,
+      "sha256": "d92a8ca2bda51efaf0666d9a212ccb36cf620dcaf204176a274ed9e365ce2815"
+    },
+    "swebench-verified-mini/django__django-11880.run.json": {
+      "bytes": 1017,
+      "sha256": "f2684515811dd2e3226f694f59af5b09459c4ee03b4f60528d8dca62cecd98fd"
+    },
+    "patches/django__django-11885.patch": {
+      "bytes": 5440,
+      "sha256": "f973e7bb5d13a2a11c81233b34c03f63c3837f396d4bf94d1cf5b7611c7e224d"
+    },
+    "swebench-verified-mini/django__django-11885.run.json": {
+      "bytes": 925,
+      "sha256": "392accb1c5bd275533164b9c77efbd511b7b0ab474a62edeeb74bc0cf50f8da6"
+    },
+    "patches/django__django-11951.patch": {
+      "bytes": 1938,
+      "sha256": "665295e6a84659269dd618af5f9d9f7a93ab9dfd3a1741fe85f505d0139b7b5d"
+    },
+    "swebench-verified-mini/django__django-11951.run.json": {
+      "bytes": 1044,
+      "sha256": "444fce85a0f3df9b0100e748777ad21a4daf6b36f1345a2fc8631eaf180dcd14"
+    },
+    "patches/django__django-11964.patch": {
+      "bytes": 1747,
+      "sha256": "6843f79dcab2b016d2a9b6eca1bb6807ea7fb45bc7e9982254484049f63e2f6c"
+    },
+    "swebench-verified-mini/django__django-11964.run.json": {
+      "bytes": 1043,
+      "sha256": "9fcd0057a701f1f4e867b2123f46815a9947e99f3bb9f2700847007a6d54537f"
+    },
+    "patches/django__django-11999.patch": {
+      "bytes": 2473,
+      "sha256": "70a74e64c65e23be53d4ad35d3aeef0fae985970f5fb2e495afa85e76cba1e2b"
+    },
+    "swebench-verified-mini/django__django-11999.run.json": {
+      "bytes": 996,
+      "sha256": "e5108a56ac735524ae83919cef6165e8c955ef5f11b31b2a673a71ee399b0b4e"
+    },
+    "patches/django__django-12039.patch": {
+      "bytes": 2852,
+      "sha256": "6fdd60254919a18ff2130b0bdd237543351a10cf1d45a65c3e580e3b43de6f8e"
+    },
+    "swebench-verified-mini/django__django-12039.run.json": {
+      "bytes": 1186,
+      "sha256": "f812137296a2bbae43530b36c5a8701ac35a5b472dfe09456800f06a96690919"
+    },
+    "patches/django__django-12050.patch": {
+      "bytes": 2109,
+      "sha256": "4b05ba138576667ca4434681bef23f8f34538bfe8f5e5f73d4d93d58ae4eebc1"
+    },
+    "swebench-verified-mini/django__django-12050.run.json": {
+      "bytes": 953,
+      "sha256": "5ac00948f98959dd3bccebcc694061484eea5d041d441b4caf0fe5aef723fd57"
+    },
+    "patches/django__django-12143.patch": {
+      "bytes": 1741,
+      "sha256": "88dc1c8896ae98a57267ce10db89f217d43cdc458b350ca67fdb8f4f4aee0d64"
+    },
+    "swebench-verified-mini/django__django-12143.run.json": {
+      "bytes": 852,
+      "sha256": "6d05638205e234526829af5492f59a77e36ac5c7e4a0e337477befae3e4752dd"
+    },
+    "patches/django__django-12155.patch": {
+      "bytes": 1619,
+      "sha256": "c22cb563f8d2f692f7ac8402825bf353b713c427a344d78b4db77819e8585fa1"
+    },
+    "swebench-verified-mini/django__django-12155.run.json": {
+      "bytes": 875,
+      "sha256": "d1d31f20c1e270a3e1f9b1b8516020e3e88a0da7957d617f952cd4a623f4e017"
+    },
+    "patches/django__django-12193.patch": {
+      "bytes": 1627,
+      "sha256": "c5c6495385e348a82848cc372f668af876d7bb478717c1015f68c98e2f9f3ffa"
+    },
+    "swebench-verified-mini/django__django-12193.run.json": {
+      "bytes": 1093,
+      "sha256": "025e00ba355bf21bbf01a8fd65400600719e45ca67eeaa83d37dd518ae219f29"
+    },
+    "patches/django__django-12209.patch": {
+      "bytes": 3339,
+      "sha256": "c014a44573a5401123401f50c5bbf2b610f7ecdeb0f781005494e514ae32a08d"
+    },
+    "swebench-verified-mini/django__django-12209.run.json": {
+      "bytes": 1131,
+      "sha256": "6a425109fd7a7f8a829ed189e3eb3aa5f0054427e6172fb1c21d8f5da6f3af67"
+    },
+    "patches/django__django-12262.patch": {
+      "bytes": 4605,
+      "sha256": "e76fbe05c1678ce0fdacaad1a31e6902bda419730282dff6aead9541fe2fb321"
+    },
+    "swebench-verified-mini/django__django-12262.run.json": {
+      "bytes": 956,
+      "sha256": "f400bfc559c057a986a4665dfe168b95eb22a1f5840abb2e6261e8d003d23d3a"
+    },
+    "patches/django__django-12273.patch": {
+      "bytes": 3274,
+      "sha256": "200acd89b4cbc38e39bf7d6b7b561d37ca3378103354dabd534ffb7bf75e412e"
+    },
+    "swebench-verified-mini/django__django-12273.run.json": {
+      "bytes": 1091,
+      "sha256": "530d0dbb838ffa25d163464045014044bb2350d216af985c08d2939184f70e94"
+    },
+    "patches/django__django-12276.patch": {
+      "bytes": 1987,
+      "sha256": "e4c36c31647be09c0764281517306b9f3fefe440046f4ad9e8eb7be75ceea4d9"
+    },
+    "swebench-verified-mini/django__django-12276.run.json": {
+      "bytes": 1030,
+      "sha256": "71b1dc50dfb8e3b6b667866f3a43bffed18f55fba53e05b35a30ba421b337f51"
+    },
+    "patches/django__django-12304.patch": {
+      "bytes": 1649,
+      "sha256": "1b5c377502b4f8ccf7eed65d13a73a7df589e8b1eae7dba64a95b82d41445902"
+    },
+    "swebench-verified-mini/django__django-12304.run.json": {
+      "bytes": 1032,
+      "sha256": "c0ec1350c540f83a4e363537bda1f266868585307e57f0a1d472e272895891e0"
+    },
+    "patches/django__django-12308.patch": {
+      "bytes": 1762,
+      "sha256": "370501f255fe8166fdfe99fe7db91c47ceefca29455979ac92e16cf033d2ae32"
+    },
+    "swebench-verified-mini/django__django-12308.run.json": {
+      "bytes": 938,
+      "sha256": "4578918b4efa35da28cbc9b4e5fd58b3aa25ae8d520a2d0c5c31b78486b1a064"
+    },
+    "patches/django__django-12325.patch": {
+      "bytes": 2251,
+      "sha256": "7b5cbe47036e1e21d92c348971011906ad85c317e2dbf88248ccbb588365bb4d"
+    },
+    "swebench-verified-mini/django__django-12325.run.json": {
+      "bytes": 1182,
+      "sha256": "8f893e6349f8bd8fe1f676414400e30eec5ed8004b5a6dedd988b47f5037d7b1"
+    },
+    "patches/django__django-12406.patch": {
+      "bytes": 2107,
+      "sha256": "f112ccd7386323e5d5a05880548570012d741eac451ade9588f80b257186cf0d"
+    },
+    "swebench-verified-mini/django__django-12406.run.json": {
+      "bytes": 924,
+      "sha256": "7eafca51f5acf924744a8e197f6eeba6d0c6c8740fe484640a52e14057eed45e"
+    },
+    "patches/django__django-12708.patch": {
+      "bytes": 4374,
+      "sha256": "c7a5977882956a07d943f3709a904ce8f2f8133027a63dd3f6cf77397c403186"
+    },
+    "swebench-verified-mini/django__django-12708.run.json": {
+      "bytes": 957,
+      "sha256": "a56170df95044325ec60c58e40a20d4c1a8bd1dac1444d91e4b60950e490bab8"
+    },
+    "patches/django__django-12713.patch": {
+      "bytes": 2977,
+      "sha256": "69de764cb4dad7e41476f2826a3e6fda3ef3f582aec9b79da25c72ed437c72c0"
+    },
+    "swebench-verified-mini/django__django-12713.run.json": {
+      "bytes": 927,
+      "sha256": "1f2370f7ef2b5647a5997fbef36b58f6337617fe14a19d8030fe1f42d12a4de9"
+    },
+    "patches/django__django-12774.patch": {
+      "bytes": 1576,
+      "sha256": "f10dc67397ba5183368e007d7885743bf45e2390bf9386778cf4f341ad295618"
+    },
+    "swebench-verified-mini/django__django-12774.run.json": {
+      "bytes": 1056,
+      "sha256": "0cc27ef359df15042dcb33c22f9a3df85b350b1bb5d95f79de4a10da16443b6a"
+    },
+    "patches/django__django-9296.patch": {
+      "bytes": 1137,
+      "sha256": "90d23212697c6ef102101d01aae80fb3d100b95362ee01b470918b4d32b5d955"
+    },
+    "swebench-verified-mini/django__django-9296.run.json": {
+      "bytes": 984,
+      "sha256": "60fb916e5ea9a580a460b678633823dbebb435b9cc0a1e53ac6b1c95e958c94c"
+    },
+    "patches/sphinx-doc__sphinx-10323.patch": {
+      "bytes": 2145,
+      "sha256": "2987f3a4d5c44e2161c8c7ef9b77f5e03b7f7870b628e6f42fd888696c71cc39"
+    },
+    "swebench-verified-mini/sphinx-doc__sphinx-10323.run.json": {
+      "bytes": 944,
+      "sha256": "c2195b3105cf161ebc1ed4a6e4e7eb92be95feb22bbae9ac555c74205987cbc0"
+    },
+    "patches/sphinx-doc__sphinx-10435.patch": {
+      "bytes": 2206,
+      "sha256": "4c62a21a2505bddef46c56949dbc4c8b0d1aadad23564eb4d786583b7448d0d5"
+    },
+    "swebench-verified-mini/sphinx-doc__sphinx-10435.run.json": {
+      "bytes": 1112,
+      "sha256": "8b2e7b39db1039ae3290027773c65605ccf05e5bc3888f258f3e24836aa593ef"
+    },
+    "patches/sphinx-doc__sphinx-10466.patch": {
+      "bytes": 1666,
+      "sha256": "adfecd13600e1b0999aa1f880babb2b8b65c6aac82f356fcda9644c43de831e4"
+    },
+    "swebench-verified-mini/sphinx-doc__sphinx-10466.run.json": {
+      "bytes": 986,
+      "sha256": "dce39c6bbe19331ffc562134100840ba4424f6580e5b451b6c59b253fffac847"
+    },
+    "patches/sphinx-doc__sphinx-10673.patch": {
+      "bytes": 8022,
+      "sha256": "7e2c3c91ececc85ab8a28aa7c95ae96f53c479f74d62be02331252b9b3a49ebe"
+    },
+    "swebench-verified-mini/sphinx-doc__sphinx-10673.run.json": {
+      "bytes": 1232,
+      "sha256": "c0ced633ca1800be6fbb53a5b74f39d11ec61f3c35d5edcfa2161bb4b1a00708"
+    },
+    "patches/sphinx-doc__sphinx-11510.patch": {
+      "bytes": 6429,
+      "sha256": "3eb8c6e96548af3d535be12a87fff4142f395bc3a0223cc1560d6a927514e491"
+    },
+    "swebench-verified-mini/sphinx-doc__sphinx-11510.run.json": {
+      "bytes": 1056,
+      "sha256": "99eb62aa3b34fdcb1329d95600c9730fab0d1919b7212d61460b960071ae379b"
+    },
+    "patches/sphinx-doc__sphinx-7590.patch": {
+      "bytes": 14494,
+      "sha256": "0173fadc01b3c5626311ec2366129d3c4bbf925d503658fb0be2f2abf235aeac"
+    },
+    "swebench-verified-mini/sphinx-doc__sphinx-7590.run.json": {
+      "bytes": 1242,
+      "sha256": "118ceced624356475c5aec13f84adf02b26f4f7c79423bab2ef18113f3e9c7fb"
+    },
+    "patches/sphinx-doc__sphinx-7748.patch": {
+      "bytes": 9042,
+      "sha256": "ca174bf6f66ce7f50df5d28fbc16bdce3bf5721f8e3742b9ba491003a15b0ddb"
+    },
+    "swebench-verified-mini/sphinx-doc__sphinx-7748.run.json": {
+      "bytes": 1366,
+      "sha256": "267324ff5e76b12f8e0895856527ed6e330c885a1c8f041a4455a86976886ea0"
+    },
+    "patches/sphinx-doc__sphinx-7757.patch": {
+      "bytes": 2284,
+      "sha256": "7901f325e38e122982dc72549f0ebbf620d69e5e2bfb778d11f161da43afc486"
+    },
+    "swebench-verified-mini/sphinx-doc__sphinx-7757.run.json": {
+      "bytes": 1009,
+      "sha256": "f14c011e4712a794ac353ca1229a7815e5c609cf6ed2492efb777f7c878fa2b4"
+    },
+    "patches/sphinx-doc__sphinx-7985.patch": {
+      "bytes": 5492,
+      "sha256": "c84c34664152f5c6ffc9742f13b9c1f0662621ab9ebd80378dc13b53d53f5b26"
+    },
+    "swebench-verified-mini/sphinx-doc__sphinx-7985.run.json": {
+      "bytes": 1037,
+      "sha256": "4a4199a87bf70016db00fd0c24c524ece9c5c1f4ad7a5ba2ccc30588b06f0be1"
+    },
+    "patches/sphinx-doc__sphinx-8035.patch": {
+      "bytes": 8385,
+      "sha256": "90ff3996d1c9953af501e47640cc47135c1d07dea7bf36fcbeabfca5c3bfded0"
+    },
+    "swebench-verified-mini/sphinx-doc__sphinx-8035.run.json": {
+      "bytes": 1367,
+      "sha256": "d755af985aae59d1143749ddd8da1d1426ac19fe2879c45e5fc5b739ab814a62"
+    },
+    "patches/sphinx-doc__sphinx-8056.patch": {
+      "bytes": 706,
+      "sha256": "d3ce45aa84fba152a04f067935c6063139a095953ce468cf7ab9d64a533aa9c3"
+    },
+    "swebench-verified-mini/sphinx-doc__sphinx-8056.run.json": {
+      "bytes": 1083,
+      "sha256": "fff5040eff1c3d0cb292de6a90c2c8fb3486c62e87454bcc26e1935793813272"
+    },
+    "patches/sphinx-doc__sphinx-8265.patch": {
+      "bytes": 2800,
+      "sha256": "ce2e6c3dde76b733a399d51182e9d2caa67baae986477b1f51a2c1d9961e3846"
+    },
+    "swebench-verified-mini/sphinx-doc__sphinx-8265.run.json": {
+      "bytes": 1121,
+      "sha256": "e8645a7da16e13a02a230eca80b02f43cd5a11de1d7ea2d4b4ab86326c9d3a00"
+    },
+    "patches/sphinx-doc__sphinx-8269.patch": {
+      "bytes": 1062,
+      "sha256": "80ead9c72fe4527627116e3d7e4e4352b6e0d2130c0aef75e2de46a0ec6e6b8d"
+    },
+    "swebench-verified-mini/sphinx-doc__sphinx-8269.run.json": {
+      "bytes": 1019,
+      "sha256": "a552a3e1c8f64408fa886aeb73ccc5e26a3d3e6c952767d69db6c7b262b97543"
+    },
+    "patches/sphinx-doc__sphinx-8475.patch": {
+      "bytes": 2835,
+      "sha256": "6ed30a6ea7e6bc4043a82d715c7443911c11b9918aa4102f163bd88fdc200374"
+    },
+    "swebench-verified-mini/sphinx-doc__sphinx-8475.run.json": {
+      "bytes": 1053,
+      "sha256": "126e58401002e8280fa7f4c74997495f3713d6a46adac401fe39b755bdd20de0"
+    },
+    "patches/sphinx-doc__sphinx-8548.patch": {
+      "bytes": 7226,
+      "sha256": "6aef69627ca2754e7e3e0db8bb59f35dcd0d15f28f74a21befdfb2781a5a08b0"
+    },
+    "swebench-verified-mini/sphinx-doc__sphinx-8548.run.json": {
+      "bytes": 1072,
+      "sha256": "4e56c85600d5e75748d9136f27dc70b431518654d3612ebb42a30089d7513c02"
+    },
+    "patches/sphinx-doc__sphinx-8551.patch": {
+      "bytes": 2033,
+      "sha256": "1272637b3b469cf4b56be0aac098a86f3d950820255fb9f1cd4b46143bbc77f2"
+    },
+    "swebench-verified-mini/sphinx-doc__sphinx-8551.run.json": {
+      "bytes": 927,
+      "sha256": "ff01b92bea41c14025b23d1f14f46e5343c52a036b5f5c06154aab9130e1571f"
+    },
+    "patches/sphinx-doc__sphinx-8638.patch": {
+      "bytes": 1537,
+      "sha256": "46e8f19711a2e39040956c75a2f1b38064bba0430fbb3e9e2fe9886850ffd778"
+    },
+    "swebench-verified-mini/sphinx-doc__sphinx-8638.run.json": {
+      "bytes": 977,
+      "sha256": "341139a9ed2b089575ec38adabf15bb23ad479a6c24db97caa4b6ad0a22d8954"
+    },
+    "patches/sphinx-doc__sphinx-8721.patch": {
+      "bytes": 2107,
+      "sha256": "6055789f8439f37b3b1599d7b292e6add21ff5edb712a7ab35a81f16db62e351"
+    },
+    "swebench-verified-mini/sphinx-doc__sphinx-8721.run.json": {
+      "bytes": 1057,
+      "sha256": "cbd8e69e5c4ba9c3d089127fd97f931bafa83259f497f11662e3c6cde453fc9d"
+    },
+    "patches/sphinx-doc__sphinx-9229.patch": {
+      "bytes": 1211,
+      "sha256": "6f6a952c5ba252dc9cb53cde7d0f2db71544bc8ffa62aa3937081f7563f7763a"
+    },
+    "swebench-verified-mini/sphinx-doc__sphinx-9229.run.json": {
+      "bytes": 1001,
+      "sha256": "8c1c51169f2824cd020bbc03f3b33c5c2bb433ea70d0f047878ae1f66c3da90a"
+    },
+    "patches/sphinx-doc__sphinx-9230.patch": {
+      "bytes": 2754,
+      "sha256": "4d445531e9b650b8edec49174ac1059566f36f897948ec4c267cc8a687ab014b"
+    },
+    "swebench-verified-mini/sphinx-doc__sphinx-9230.run.json": {
+      "bytes": 1098,
+      "sha256": "7c1c8d844ceb10783601909e2053521b302e09ba9d8d101fb85c14085373a0cb"
+    },
+    "patches/sphinx-doc__sphinx-9281.patch": {
+      "bytes": 1858,
+      "sha256": "52846a55dd2b85ef40ff2b6ba36c6d79339d78b2053a036e8fab2b26c0c700c3"
+    },
+    "swebench-verified-mini/sphinx-doc__sphinx-9281.run.json": {
+      "bytes": 949,
+      "sha256": "5671b7dc66a619a07735338e94819794cb877f32d7d22d977859ac533987b595"
+    },
+    "patches/sphinx-doc__sphinx-9320.patch": {
+      "bytes": 1228,
+      "sha256": "5e119e9d96f898a124d9e6bc42f87ea25ff283c54ca8b3bcbe920a1e570020c9"
+    },
+    "swebench-verified-mini/sphinx-doc__sphinx-9320.run.json": {
+      "bytes": 1029,
+      "sha256": "3832abbed3c15c4b6fdd5c837c206f34a0f27bb1bb0900e6aec750259c1af43f"
+    },
+    "patches/sphinx-doc__sphinx-9367.patch": {
+      "bytes": 1178,
+      "sha256": "9599fd7b9be1718a9a1bdbeeb036fdd6e16cc7de5747e2e380a7cbe817c85899"
+    },
+    "swebench-verified-mini/sphinx-doc__sphinx-9367.run.json": {
+      "bytes": 919,
+      "sha256": "2fe7cf21492687ba2e0184290306f884365a78666a04b20de3ff9f1bccf1ad91"
+    },
+    "patches/sphinx-doc__sphinx-9461.patch": {
+      "bytes": 3776,
+      "sha256": "158c38ade6397820bc05067c0cf2150c2b21965fe0ee1fbc7e1cdc1792605cd1"
+    },
+    "swebench-verified-mini/sphinx-doc__sphinx-9461.run.json": {
+      "bytes": 1201,
+      "sha256": "be33aa9a22ba235ed974488e981b16c7a487e5fd5ef9935f60465c6bcb6a806d"
+    },
+    "patches/sphinx-doc__sphinx-9698.patch": {
+      "bytes": 1802,
+      "sha256": "bbdd88536f28f7cdcb3dfbb058328531619eadc709725b4c3e6d71da56a9a477"
+    },
+    "swebench-verified-mini/sphinx-doc__sphinx-9698.run.json": {
+      "bytes": 970,
+      "sha256": "279bb4c0dada6bf21db8941988ac3bdae78931dd069a81482978bae0477e7c1a"
+    }
+  }
+}

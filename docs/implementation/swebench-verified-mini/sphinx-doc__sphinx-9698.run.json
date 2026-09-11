@@ -1,0 +1,16 @@
+{
+  "receipt": {
+    "run_id": "7da5879606f74812bcab82c7b6b7ad12",
+    "session_id": "eea9490276d34e318f995fa5b7b76dd2",
+    "branch_id": "main",
+    "status": "succeeded",
+    "head_id": "690e75be5697496caad28c1d47b67b3f",
+    "watermark": 49,
+    "snapshot_id": "5cbc648aaa594f2f979435150bc77382",
+    "text": "Implemented and committed the fix.\n\n### Changes\n- Updated `PyMethod.get_index_text()` so methods using `:property:` generate index entries without parentheses.\n- Updated the corresponding Python domain test.\n- Added a bug-fix entry to `CHANGES`.\n\n### Validation\n- Python files compile successfully.\n- `git diff --check` passed.\n- The targeted test suite could not run because the installed `sphinxcontrib.serializinghtml` requires Sphinx 5.0, while this checkout is Sphinx 4.x.\n\nCommit: `a031ab495 Fix Python property method index entries`"
+  },
+  "elapsed_s": 127.9,
+  "exit_code": 0,
+  "patch_bytes": 1763,
+  "stderr_tail": ""
+}

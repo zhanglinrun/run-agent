@@ -1,0 +1,16 @@
+{
+  "receipt": {
+    "run_id": "44a99c4e8e154609a19a9a43c43b6b78",
+    "session_id": "42d29d823a54471d85104dc97188d3ea",
+    "branch_id": "main",
+    "status": "succeeded",
+    "head_id": "1aa53bfd6304495c93456b04780c713f",
+    "watermark": 66,
+    "snapshot_id": "2915bce7fbbc409c97d0fb16653457ea",
+    "text": "Implemented the fix for Python domain field cross-references.\n\n### Changes\n- Added `PythonDomain.process_field_xref()` to attach the current `py:module` and `py:class` context to implicit field references.\n- Added a regression test covering field xref context propagation.\n- Added a `CHANGES` entry for #8551.\n\n### Validation\n- `compileall` passed.\n- `git diff --check` passed.\n- Pytest could not start because the environment has an incompatible Jinja2 version: `environmentfilter` is unavailable."
+  },
+  "elapsed_s": 237.3,
+  "exit_code": 0,
+  "patch_bytes": 1983,
+  "stderr_tail": ""
+}

@@ -1,0 +1,16 @@
+{
+  "receipt": {
+    "run_id": "a1b7df2be87d414884643dafa4efa0a8",
+    "session_id": "71a837253a3b4178a2346bc6c726f23d",
+    "branch_id": "main",
+    "status": "succeeded",
+    "head_id": "f9c24aa811e446fdb06321282def917b",
+    "watermark": 61,
+    "snapshot_id": "1233816458684b9f9f51493b488e4ba8",
+    "text": "Implemented and committed the fix.\n\n### Changes\n- Updated `sphinx/util/inspect.py` to associate defaults with positional-only arguments correctly.\n- Added regression coverage for:\n  ```python\n  (a, b=0, /, c=1)\n  ```\n- Verified directive output is now:\n  ```text\n  (a, b=0, /, c=1)\n  ```\n\n### Validation\n- Targeted regression test passes.\n- Direct rendering assertion passes.\n- Full test module was attempted but is blocked by the environment’s incompatible `sphinxcontrib.serializinghtml` dependency; one unrelated Python 3.12 assertion also fails.\n\nCommit: `1596b7ebf`"
+  },
+  "elapsed_s": 173.3,
+  "exit_code": 0,
+  "patch_bytes": 2233,
+  "stderr_tail": ""
+}

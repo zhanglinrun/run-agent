@@ -1,0 +1,16 @@
+{
+  "receipt": {
+    "run_id": "e3250b89b6e44dbfbb7afd8a3ba51c2a",
+    "session_id": "24b26f6e34904d45b3b3cd027899fceb",
+    "branch_id": "main",
+    "status": "succeeded",
+    "head_id": "fe440a6d143c42c6a29a3e189955dbaa",
+    "watermark": 72,
+    "snapshot_id": "1518dc9d9b4144118c00651897f31bdf",
+    "text": "Implemented C++ user-defined literal support.\n\n### Changes\n- Added parsing for user-defined integer, floating-point, string, and character literals.\n- Added AST representation and ID mangling for user-defined literals.\n- Added support for UDL suffixes such as `_udl`, `q_J`, and `q_s`.\n- Updated C/C++ literal suffix parsing.\n- Added regression tests, including the reported expression.\n- Updated `CHANGES`.\n\nExample now parses successfully:\n\n```cpp\n6.62607015e-34q_J * 1q_s\n```\n\n### Validation\n- Focused C++ expression tests: **passed**\n- Module compilation: **passed**\n- Full `test_domain_cpp.py`: 16 tests passed; remaining integration tests were blocked by the installed `sphinxcontrib.serializinghtml` requiring Sphinx 5.\n\nCommitted as:\n\n```text\n963852800 C++: parse user-defined literals\n```"
+  },
+  "elapsed_s": 173.3,
+  "exit_code": 0,
+  "patch_bytes": 14171,
+  "stderr_tail": ""
+}

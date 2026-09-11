@@ -1,0 +1,16 @@
+{
+  "receipt": {
+    "run_id": "7ffe43ac87764c97a456ab4cf8f83d6f",
+    "session_id": "14abd8e90bee4586b61a6350afeadd8f",
+    "branch_id": "main",
+    "status": "succeeded",
+    "head_id": "1a4d0a5e65af46f1bd4039971410a89d",
+    "watermark": 92,
+    "snapshot_id": "05d5c66204bc4ea592af82c698de0a24",
+    "text": "Implemented the fix for resetting a child model’s primary key.\n\n### Changes\n- Updated `Model.pk` assignment to synchronize all parent-link fields when setting a primary key, including `pk = None`.\n- Added regression tests covering:\n  - Single parent inheritance.\n  - Multiple inheritance.\n  - Creating a copied child instance by resetting its primary key.\n\n### Validation\n- Targeted inheritance tests: **30 passed, 1 expected failure**\n- Python compilation: **passed**\n- `git diff --check`: **passed**\n- Full test suite was started but exceeded the 300-second timeout.\n\nCommitted as:\n\n```text\n8469b4728b Fixed resetting primary key on child models\n```"
+  },
+  "elapsed_s": 663.3,
+  "exit_code": 0,
+  "patch_bytes": 3205,
+  "stderr_tail": ""
+}

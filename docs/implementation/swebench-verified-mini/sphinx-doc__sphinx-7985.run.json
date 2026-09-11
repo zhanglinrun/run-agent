@@ -1,0 +1,16 @@
+{
+  "receipt": {
+    "run_id": "c123e0c7c06643ca874aa4a8ab5f5a88",
+    "session_id": "f54d1491331e4e3389eaaabed67ff782",
+    "branch_id": "main",
+    "status": "succeeded",
+    "head_id": "13a8153421aa4b038c207f0c92f9785d",
+    "watermark": 58,
+    "snapshot_id": "986c211c8b174bf7b00738d5aa98ec77",
+    "text": "Implemented support for checking local links in the `linkcheck` builder.\n\n### Changes\n- Local file links are now checked relative to the source document.\n- Existing local files are reported as working.\n- Missing local files are reported as broken.\n- Unsupported URI schemes remain unchecked.\n- Added regression tests for valid and invalid local links.\n- Updated `CHANGES`.\n\n### Validation\n- `python -m compileall` passed.\n- `git diff --check` passed.\n- The linkcheck pytest suite could not run because the installed `sphinxcontrib.serializinghtml` requires Sphinx 5.0, while this checkout is Sphinx 3.2.0."
+  },
+  "elapsed_s": 134.7,
+  "exit_code": 0,
+  "patch_bytes": 5372,
+  "stderr_tail": ""
+}

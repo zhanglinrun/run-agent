@@ -1,0 +1,16 @@
+{
+  "receipt": {
+    "run_id": "6e49df29bb2a43059b45f2ee4d6d64d0",
+    "session_id": "f2b98d28c7294c82b9b3c26f6eacc97e",
+    "branch_id": "main",
+    "status": "succeeded",
+    "head_id": "4cfa5101cd8f4d4c9a5c592c5a39024d",
+    "watermark": 82,
+    "snapshot_id": "d3210881635147898c8945c4c36ad4b2",
+    "text": "Implemented and committed the fix.\n\n### Changes\n- Required `ForeignKey` fields using `RadioSelect` no longer include the blank `---------` choice.\n- Explicit `empty_label` overrides remain respected.\n- Added a regression test covering a `ForeignKey(blank=False, null=True)` rendered with `RadioSelect`.\n\n### Validation\n- `model_forms` and `forms_tests`: **819 tests passed** (1 skipped)\n- `git diff --check`: passed\n\nCommit: `e38168abc8 Fixed RadioSelect blank choice for required foreign keys`"
+  },
+  "elapsed_s": 268.1,
+  "exit_code": 0,
+  "patch_bytes": 2062,
+  "stderr_tail": ""
+}

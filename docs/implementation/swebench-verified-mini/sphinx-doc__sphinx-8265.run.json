@@ -1,0 +1,16 @@
+{
+  "receipt": {
+    "run_id": "b0678873b9574891b4a37a0ef9a8f063",
+    "session_id": "0a95fc79035847c2a21b13e5f99eb1ec",
+    "branch_id": "main",
+    "status": "succeeded",
+    "head_id": "e99139e13c6a4609bb506b5160fc2854",
+    "watermark": 83,
+    "snapshot_id": "3276c83e09ca413dbcf5629a828a96bc",
+    "text": "Implemented and committed the fix for tuple default arguments in autodoc signatures.\n\n### Changes\n- Updated `sphinx/pycode/ast.py` to preserve tuple parentheses when unparsing defaults.\n- Added handling for tuple subscripts without introducing unwanted parentheses in annotations.\n- Updated the AST unparser test expectation.\n- Added a CHANGES entry.\n\n### Verification\n- `tests/test_pycode_ast.py`: **39 passed**\n- Confirmed rendering now produces:\n  ```text\n  (lines, color=(1, 1, 1), width=5, label=None, name=None)\n  ```\n\nThe broader utility test run encountered unrelated environment incompatibilities with installed `sphinxcontrib` packages requiring Sphinx 5+. Commit: `fc4a691d9`."
+  },
+  "elapsed_s": 239.1,
+  "exit_code": 0,
+  "patch_bytes": 2740,
+  "stderr_tail": ""
+}

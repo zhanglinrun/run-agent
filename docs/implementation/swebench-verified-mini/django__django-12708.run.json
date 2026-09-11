@@ -1,0 +1,16 @@
+{
+  "receipt": {
+    "run_id": "966d2c6c04f74b43a59c340ee880d14a",
+    "session_id": "c55813d4f19640f9b87c91e71459bb77",
+    "branch_id": "main",
+    "status": "succeeded",
+    "head_id": "f52da966297e44cb8453a97460a109d9",
+    "watermark": 63,
+    "snapshot_id": "842fc040ef224874b9be96cb7c839500",
+    "text": "Implemented and committed the fix.\n\n### Changes\n- Updated `alter_index_together()` to match only non-unique indexes when deleting an `index_together`.\n- Added regression coverage for removing `index_together` while retaining an identical `unique_together`.\n- Updated migration test helpers to distinguish unique constraints from ordinary indexes.\n\n### Validation\n- Focused regression test: passed\n- `OperationTests`: 90 tests passed\n- Full migrations suite: 534 tests passed\n- `git diff --check`: passed\n\nCommit: `48224ecebb`"
+  },
+  "elapsed_s": 153.4,
+  "exit_code": 0,
+  "patch_bytes": 4290,
+  "stderr_tail": ""
+}

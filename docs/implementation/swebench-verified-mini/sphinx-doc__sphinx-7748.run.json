@@ -1,0 +1,16 @@
+{
+  "receipt": {
+    "run_id": "75631c8191a24a8489ad01d84d4ddec4",
+    "session_id": "dfda622aeeca44c39a69a3d9c28cc833",
+    "branch_id": "main",
+    "status": "succeeded",
+    "head_id": "6753d488a186473b960d022711e9fef4",
+    "watermark": 104,
+    "snapshot_id": "4d5421576676419786bfdfd309ad3189",
+    "text": "Implemented support for overloaded method signatures in `autodoc_docstring_signature`.\n\n### Changes\n- Recognizes multiple signatures when the first signature line ends with `\\`.\n- Renders each overload as a separate signature line in the generated directive.\n- Removes all extracted signature lines from the docstring content.\n- Added regression coverage and documentation updates.\n\nExample:\n\n```python\ndef method(self):\n    \"\"\"method(int value) -> None \\\n    method(str value) -> None\"\"\"\n```\n\nNow renders both signatures in the autodoc output.\n\n### Validation\n- Signature extraction smoke test passed.\n- `compileall` passed.\n- `git diff --check` passed.\n- Existing pytest tests could not initialize because the installed `sphinxcontrib.serializinghtml` requires Sphinx 5.0, while this checkout is Sphinx 3.1.\n\nCommitted as:\n\n```text\n938815115 Close #2106: autodoc: Support multiple signatures on docstring\n```"
+  },
+  "elapsed_s": 359.1,
+  "exit_code": 0,
+  "patch_bytes": 8826,
+  "stderr_tail": ""
+}

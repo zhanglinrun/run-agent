@@ -1,0 +1,25 @@
+diff --git a/CHANGES b/CHANGES
+index 22876d43b..59fbd4772 100644
+--- a/CHANGES
++++ b/CHANGES
+@@ -26,6 +26,8 @@ Features added
+ Bugs fixed
+ ----------
+ 
++* linkcheck: Report HTTP errors instead of missing anchors when checking links
++  with anchors.
+ * #8085: i18n: Add support for having single text domain
+ * #8143: autodoc: AttributeError is raised when False value is passed to
+   autodoc_default_options
+diff --git a/sphinx/builders/linkcheck.py b/sphinx/builders/linkcheck.py
+index 9b54afc7c..1083e82ec 100644
+--- a/sphinx/builders/linkcheck.py
++++ b/sphinx/builders/linkcheck.py
+@@ -166,6 +166,7 @@ class CheckExternalLinksBuilder(Builder):
+                     # Read the whole document and see if #anchor exists
+                     response = requests.get(req_url, stream=True, config=self.app.config,
+                                             auth=auth_info, **kwargs)
++                    response.raise_for_status()
+                     found = check_anchor(response, unquote(anchor))
+ 
+                     if not found:

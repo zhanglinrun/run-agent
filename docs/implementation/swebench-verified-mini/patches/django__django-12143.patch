@@ -1,0 +1,35 @@
+diff --git a/django/contrib/admin/options.py b/django/contrib/admin/options.py
+index 137e6faa0f..a100f1c499 100644
+--- a/django/contrib/admin/options.py
++++ b/django/contrib/admin/options.py
+@@ -1631,7 +1631,7 @@ class ModelAdmin(BaseModelAdmin):
+ 
+     def _get_edited_object_pks(self, request, prefix):
+         """Return POST data values of list_editable primary keys."""
+-        pk_pattern = re.compile(r'{}-\d+-{}$'.format(prefix, self.model._meta.pk.name))
++        pk_pattern = re.compile(r'{}-\d+-{}$'.format(re.escape(prefix), self.model._meta.pk.name))
+         return [value for key, value in request.POST.items() if pk_pattern.match(key)]
+ 
+     def _get_list_editable_queryset(self, request, prefix):
+diff --git a/tests/admin_views/tests.py b/tests/admin_views/tests.py
+index c9ca64097f..43518c6969 100644
+--- a/tests/admin_views/tests.py
++++ b/tests/admin_views/tests.py
+@@ -3036,6 +3036,17 @@ class AdminViewListEditable(TestCase):
+         response = self.client.get(reverse('admin:admin_views_language_changelist'))
+         self.assertEqual(response.status_code, 200)
+ 
++    def test_list_editable_formset_prefix_with_regex_special_characters(self):
++        request = mock.Mock(POST={
++            'form[0]-0-id': str(self.per1.pk),
++            'form[0]-1-id': str(self.per2.pk),
++        })
++        admin = site._registry[Person]
++        self.assertEqual(
++            admin._get_edited_object_pks(request, 'form[0]'),
++            [str(self.per1.pk), str(self.per2.pk)],
++        )
++
+     def test_changelist_input_html(self):
+         response = self.client.get(reverse('admin:admin_views_person_changelist'))
+         # 2 inputs per object(the field and the hidden id field) = 6

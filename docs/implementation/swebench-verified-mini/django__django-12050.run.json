@@ -1,0 +1,16 @@
+{
+  "receipt": {
+    "run_id": "17445c8c7ac54f9f87ecd3099cad713a",
+    "session_id": "9fde2c404d1a412eb212d780af76eb31",
+    "branch_id": "main",
+    "status": "succeeded",
+    "head_id": "8d1a3ea5676443f882d6afb015e02654",
+    "watermark": 50,
+    "snapshot_id": "3a85fa3304cc49389aaab8dec7b027dd",
+    "text": "Implemented and committed the fix.\n\n### Changes\n- `Query.resolve_lookup_value()` now reconstructs iterables using their original type, preserving `list` vs. `tuple`.\n- Added regression coverage in `tests/queries/test_query.py`.\n\n### Validation\n- Focused query test: **11 passed**\n- Queries suite: **377 passed**, 14 skipped, 2 expected failures\n- Full suite: completed but has **15 failures and 12 errors** caused by existing Python 3.12/Windows environment incompatibilities unrelated to this change.\n\nCommit: `ac22a9d281`"
+  },
+  "elapsed_s": 526.7,
+  "exit_code": 0,
+  "patch_bytes": 2064,
+  "stderr_tail": ""
+}

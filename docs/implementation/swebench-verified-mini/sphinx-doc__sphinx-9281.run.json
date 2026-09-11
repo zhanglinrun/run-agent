@@ -1,0 +1,16 @@
+{
+  "receipt": {
+    "run_id": "bc910cb16b4f463aa329cd03a372c06b",
+    "session_id": "c64fc557413d4def9a783dacc377096b",
+    "branch_id": "main",
+    "status": "succeeded",
+    "head_id": "4ea49d3b24b9455cb4797902199cf271",
+    "watermark": 69,
+    "snapshot_id": "3996226a3e1d45ccbdabba77a5fce71e",
+    "text": "Implemented and committed the fix.\n\n### Changes\n- Enum members are now rendered as `MyEnum.ValueA` instead of `<MyEnum.ValueA: 10>` in autodoc signatures.\n- Added regression coverage for enum defaults in `tests/test_util_inspect.py`.\n- Documented the fix in `CHANGES`.\n\n### Validation\n- Python compilation passed.\n- `git diff --check` passed.\n- Pytest could not start because the environment’s Python 3.12 installation is incompatible with this older Sphinx version (`types.Union` import error).\n\nCommit: `d7f6a37c7`"
+  },
+  "elapsed_s": 253.2,
+  "exit_code": 0,
+  "patch_bytes": 1801,
+  "stderr_tail": ""
+}

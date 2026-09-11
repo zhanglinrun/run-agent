@@ -1,0 +1,16 @@
+{
+  "receipt": {
+    "run_id": "e1eb74cb2a79481cb756f739f76b3ae7",
+    "session_id": "95493c3ee5714ecf9529631a0373d888",
+    "branch_id": "main",
+    "status": "succeeded",
+    "head_id": "2f0987b452a14595b495b6a52c2b092a",
+    "watermark": 54,
+    "snapshot_id": "2bf48afaad2949df983b7b088f81fff4",
+    "text": "Implemented and committed the fix.\n\nChanges:\n- Escaped the list-editable formset prefix with `re.escape()` in `django/contrib/admin/options.py`.\n- Added a regression test covering prefixes containing regex characters such as `[` and `]`.\n\nValidation:\n- Targeted regression test passed.\n- Full `AdminViewListEditable` test class passed: 17 tests.\n- `git diff --check` passed.\n- Working tree is clean.\n\nCommit: `ce89e23fa5`"
+  },
+  "elapsed_s": 172.0,
+  "exit_code": 0,
+  "patch_bytes": 1706,
+  "stderr_tail": ""
+}

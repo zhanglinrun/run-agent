@@ -1,0 +1,16 @@
+{
+  "receipt": {
+    "run_id": "c4b8da3d915f4a65a12727cfea6e2516",
+    "session_id": "7919922754db49118647224cdc5b8067",
+    "branch_id": "main",
+    "status": "succeeded",
+    "head_id": "30fd0142c59f4e7a9205550999549937",
+    "watermark": 59,
+    "snapshot_id": "0811adf0c3794344a04c54a83b143772",
+    "text": "Implemented and committed the fix for issue #741.\n\n### Changes\n- Updated `get_class_members()` to inspect all classes in the MRO.\n- Loaded cached attribute documentation for each base class via `ModuleAnalyzer`.\n- Preserved subclass documentation precedence when attributes are overridden.\n- Added regression coverage for inherited instance attributes.\n- Updated `CHANGES`.\n\nCommit: `1e6386b1b`\n\n### Validation\n- Python compilation passed for changed files.\n- Focused pytest runs could not start because the environment has an incompatible Jinja2 version; Sphinx expects `jinja2.environmentfilter`, which is absent in the installed version."
+  },
+  "elapsed_s": 144.0,
+  "exit_code": 0,
+  "patch_bytes": 7045,
+  "stderr_tail": ""
+}

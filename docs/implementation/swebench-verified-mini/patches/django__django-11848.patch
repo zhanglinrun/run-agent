@@ -1,0 +1,45 @@
+diff --git a/django/utils/http.py b/django/utils/http.py
+index 572cfb4347..570b2400b8 100644
+--- a/django/utils/http.py
++++ b/django/utils/http.py
+@@ -176,10 +176,12 @@ def parse_http_date(date):
+     try:
+         year = int(m.group('year'))
+         if year < 100:
+-            if year < 70:
+-                year += 2000
++            current_year = datetime.datetime.now().year
++            current_century = current_year - current_year % 100
++            if year - current_year % 100 > 50:
++                year += current_century - 100
+             else:
+-                year += 1900
++                year += current_century
+         month = MONTHS.index(m.group('mon').lower()) + 1
+         day = int(m.group('day'))
+         hour = int(m.group('hour'))
+diff --git a/tests/utils_tests/test_http.py b/tests/utils_tests/test_http.py
+index bc8bcfe977..25d9d5fbcf 100644
+--- a/tests/utils_tests/test_http.py
++++ b/tests/utils_tests/test_http.py
+@@ -1,5 +1,6 @@
+ import unittest
+ from datetime import datetime
++from unittest import mock
+ 
+ from django.test import SimpleTestCase, ignore_warnings
+ from django.utils.datastructures import MultiValueDict
+@@ -328,6 +329,13 @@ class HttpDateProcessingTests(unittest.TestCase):
+         parsed = parse_http_date('Sun Nov  6 08:49:37 0037')
+         self.assertEqual(datetime.utcfromtimestamp(parsed), datetime(2037, 11, 6, 8, 49, 37))
+ 
++    @mock.patch('django.utils.http.datetime.datetime')
++    def test_parsing_rfc850_two_digit_year_more_than_50_years_in_future(self, datetime_mock):
++        datetime_mock.side_effect = datetime
++        datetime_mock.now.return_value = datetime(2026, 1, 1)
++        parsed = parse_http_date('Sunday, 06-Nov-77 08:49:37 GMT')
++        self.assertEqual(datetime.utcfromtimestamp(parsed), datetime(1977, 11, 6, 8, 49, 37))
++
+ 
+ class EscapeLeadingSlashesTests(unittest.TestCase):
+     def test(self):

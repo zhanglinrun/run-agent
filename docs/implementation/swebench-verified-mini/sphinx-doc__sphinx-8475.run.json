@@ -1,0 +1,16 @@
+{
+  "receipt": {
+    "run_id": "995ab57465cb4d3191033a3147a19d51",
+    "session_id": "b28231015a4b492d91d083a12abf05ed",
+    "branch_id": "main",
+    "status": "succeeded",
+    "head_id": "822b9ad32e394ccfbab69a850597bf36",
+    "watermark": 59,
+    "snapshot_id": "165799267bd140c4aaab079f481848ab",
+    "text": "Implemented and committed the linkcheck fix.\n\n### Changes\n- `sphinx/builders/linkcheck.py`\n  - Added `TooManyRedirects` to the HEAD-request fallback exceptions.\n  - Such failures now retry using GET requests.\n\n- `tests/test_build_linkcheck.py`\n  - Added coverage for HEAD redirect loops falling back to GET.\n\n### Validation\n- Python compilation passed.\n- `git diff --check` passed.\n- Targeted pytest could not run because the environment has `sphinxcontrib.serializinghtml`, which requires Sphinx 5 while this repository is an older Sphinx version.\n\nCommit: `62cec92ff linkcheck: fall back to GET on too many redirects`"
+  },
+  "elapsed_s": 136.2,
+  "exit_code": 0,
+  "patch_bytes": 2766,
+  "stderr_tail": ""
+}

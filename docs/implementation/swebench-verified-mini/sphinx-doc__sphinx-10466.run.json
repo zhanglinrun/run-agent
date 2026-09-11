@@ -1,0 +1,16 @@
+{
+  "receipt": {
+    "run_id": "bf446d50d27c4c649d474b497c255243",
+    "session_id": "5733ff48a5eb4c8bbc9600c7e4447728",
+    "branch_id": "main",
+    "status": "succeeded",
+    "head_id": "ed396559447d421c9f890a8f3ab25369",
+    "watermark": 66,
+    "snapshot_id": "bfd5cbfd57674ae38c5174d063abba85",
+    "text": "Implemented and committed the gettext location deduplication fix.\n\n### Changes\n- Deduplicate duplicate `(source, line)` references in `sphinx/builders/gettext.py`.\n- Preserve the original location order.\n- Added regression coverage in `tests/test_build_gettext.py`.\n\n### Validation\n- `python -m pytest tests/test_build_gettext.py` — **7 passed, 1 skipped**\n- `git diff --check` — passed\n- Full test suite — blocked during collection because `html5lib` is not installed; 5 collection errors.\n\nCommit: `7355b61d5 Deduplicate gettext message locations`"
+  },
+  "elapsed_s": 150.8,
+  "exit_code": 0,
+  "patch_bytes": 1617,
+  "stderr_tail": ""
+}

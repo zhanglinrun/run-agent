@@ -1,0 +1,36 @@
+diff --git a/django/contrib/admin/utils.py b/django/contrib/admin/utils.py
+index e4ddc8f017..69a9a8880f 100644
+--- a/django/contrib/admin/utils.py
++++ b/django/contrib/admin/utils.py
+@@ -396,6 +396,8 @@ def display_for_field(value, field, empty_value_display):
+         return formats.number_format(value, field.decimal_places)
+     elif isinstance(field, (models.IntegerField, models.FloatField)):
+         return formats.number_format(value)
++    elif isinstance(field, models.JSONField):
++        return field.formfield().prepare_value(value)
+     elif isinstance(field, models.FileField) and value:
+         return format_html('<a href="{}">{}</a>', value.url, value)
+     else:
+diff --git a/tests/admin_utils/tests.py b/tests/admin_utils/tests.py
+index 463ba9556d..e83fa193a2 100644
+--- a/tests/admin_utils/tests.py
++++ b/tests/admin_utils/tests.py
+@@ -186,6 +186,18 @@ class UtilsTests(SimpleTestCase):
+         display_value = display_for_field(12345, models.IntegerField(), self.empty_value)
+         self.assertEqual(display_value, '12345')
+ 
++    def test_jsonfield_display_for_field(self):
++        field = models.JSONField()
++        self.assertEqual(
++            display_for_field({'foo': 'bar'}, field, self.empty_value),
++            '{"foo": "bar"}',
++        )
++        invalid_input = field.formfield().bound_data('{"foo"}', None)
++        self.assertEqual(
++            display_for_field(invalid_input, field, self.empty_value),
++            '{"foo"}',
++        )
++
+     @override_settings(USE_L10N=True, USE_THOUSAND_SEPARATOR=True)
+     def test_number_formats_with_thousand_separator_display_for_field(self):
+         display_value = display_for_field(12345.6789, models.FloatField(), self.empty_value)

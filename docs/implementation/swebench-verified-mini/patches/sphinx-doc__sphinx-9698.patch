@@ -1,0 +1,39 @@
+diff --git a/CHANGES b/CHANGES
+index d2d8b0985..198992eb0 100644
+--- a/CHANGES
++++ b/CHANGES
+@@ -59,6 +59,8 @@ Bugs fixed
+ * #9649: HTML search: when objects have the same name but in different domains,
+   return all of them as result instead of just one.
+ * #9678: linkcheck: file extension was shown twice in warnings
++* py domain: An index entry for a method with the ``:property:`` option
++  included parentheses.
+ 
+ Testing
+ --------
+diff --git a/sphinx/domains/python.py b/sphinx/domains/python.py
+index cd02eaad5..1a3bd60c7 100644
+--- a/sphinx/domains/python.py
++++ b/sphinx/domains/python.py
+@@ -796,7 +796,7 @@ class PyMethod(PyObject):
+         if 'classmethod' in self.options:
+             return _('%s() (%s class method)') % (methname, clsname)
+         elif 'property' in self.options:
+-            return _('%s() (%s property)') % (methname, clsname)
++            return _('%s (%s property)') % (methname, clsname)
+         elif 'staticmethod' in self.options:
+             return _('%s() (%s static method)') % (methname, clsname)
+         else:
+diff --git a/tests/test_domain_py.py b/tests/test_domain_py.py
+index 682ea76e1..5ba63d0e3 100644
+--- a/tests/test_domain_py.py
++++ b/tests/test_domain_py.py
+@@ -756,7 +756,7 @@ def test_pymethod_options(app):
+ 
+     # :property:
+     assert_node(doctree[1][1][8], addnodes.index,
+-                entries=[('single', 'meth5() (Class property)', 'Class.meth5', '', None)])
++                entries=[('single', 'meth5 (Class property)', 'Class.meth5', '', None)])
+     assert_node(doctree[1][1][9], ([desc_signature, ([desc_annotation, ("property", desc_sig_space)],
+                                                      [desc_name, "meth5"])],
+                                    [desc_content, ()]))

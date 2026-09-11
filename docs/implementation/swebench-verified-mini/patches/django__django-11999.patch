@@ -1,0 +1,55 @@
+diff --git a/django/db/models/fields/__init__.py b/django/db/models/fields/__init__.py
+index ee45bb941e..8ebcb494c1 100644
+--- a/django/db/models/fields/__init__.py
++++ b/django/db/models/fields/__init__.py
+@@ -763,8 +763,13 @@ class Field(RegisterLookupMixin):
+             if not getattr(cls, self.attname, None):
+                 setattr(cls, self.attname, self.descriptor_class(self))
+         if self.choices is not None:
+-            setattr(cls, 'get_%s_display' % self.name,
+-                    partialmethod(cls._get_FIELD_display, field=self))
++            # Don't override a get_FOO_display() method defined explicitly on
++            # this class, but don't check methods derived from inheritance, to
++            # allow overriding inherited choices. For more complex inheritance
++            # structures users should override contribute_to_class().
++            if 'get_%s_display' % self.name not in cls.__dict__:
++                setattr(cls, 'get_%s_display' % self.name,
++                        partialmethod(cls._get_FIELD_display, field=self))
+ 
+     def get_filter_kwargs_for_object(self, obj):
+         """
+diff --git a/tests/model_fields/tests.py b/tests/model_fields/tests.py
+index 0d6e930b06..fe623eeff8 100644
+--- a/tests/model_fields/tests.py
++++ b/tests/model_fields/tests.py
+@@ -168,6 +168,30 @@ class GetFieldDisplayTests(SimpleTestCase):
+         self.assertIsInstance(val, str)
+         self.assertEqual(val, 'translated')
+ 
++    def test_overriding_FIELD_display(self):
++        class FooBar(models.Model):
++            foo_bar = models.IntegerField(choices=[(1, 'foo'), (2, 'bar')])
++
++            def get_foo_bar_display(self):
++                return 'something'
++
++        self.assertEqual(FooBar(foo_bar=1).get_foo_bar_display(), 'something')
++
++    def test_overriding_inherited_FIELD_display(self):
++        class Base(models.Model):
++            foo = models.CharField(max_length=254, choices=[('A', 'Base A')])
++
++            class Meta:
++                abstract = True
++
++        class Child(Base):
++            foo = models.CharField(
++                max_length=254, choices=[('A', 'Child A'), ('B', 'Child B')]
++            )
++
++        self.assertEqual(Child(foo='A').get_foo_display(), 'Child A')
++        self.assertEqual(Child(foo='B').get_foo_display(), 'Child B')
++
+     def test_iterator_choices(self):
+         """
+         get_choices() works with Iterators.

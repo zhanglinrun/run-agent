@@ -1,0 +1,16 @@
+{
+  "receipt": {
+    "run_id": "8b4fbc7dc5a14f12a691f1c897f488f9",
+    "session_id": "ded52e6fe8344726bbdcb5b8e2cd3a21",
+    "branch_id": "main",
+    "status": "succeeded",
+    "head_id": "1770057300474630b0e46e9fe3cdaad9",
+    "watermark": 67,
+    "snapshot_id": "053ad5b18da748c6a436b55930db0aad",
+    "text": "Implemented and committed the fix.\n\n### Changes\n- Added `response.raise_for_status()` before anchor parsing in `sphinx/builders/linkcheck.py`.\n- HTTP errors now take precedence over “Anchor not found” errors.\n- Added a changelog entry in `CHANGES`.\n\n### Validation\n- Python compilation: passed\n- Whitespace checks: passed\n- Linkcheck tests: blocked by an incompatible installed `sphinxcontrib.serializinghtml` requiring Sphinx 5.0\n- Flake8: existing `typing.List` unused-import error\n- Mypy: blocked by environment incompatibilities and missing `docutils` stubs\n\nCommit: `29bb8bd93`"
+  },
+  "elapsed_s": 182.5,
+  "exit_code": 0,
+  "patch_bytes": 1037,
+  "stderr_tail": ""
+}

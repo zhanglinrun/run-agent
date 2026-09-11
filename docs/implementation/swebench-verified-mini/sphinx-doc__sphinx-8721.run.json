@@ -1,0 +1,16 @@
+{
+  "receipt": {
+    "run_id": "59fa081113704cb99e54d0f6211a5bf4",
+    "session_id": "30ce00dd40e741098661fea866b591d5",
+    "branch_id": "main",
+    "status": "succeeded",
+    "head_id": "26bea3d6e83c47beb6154689bde604b5",
+    "watermark": 73,
+    "snapshot_id": "0ed52365829e45cb9b76616bb6ff7733",
+    "text": "Implemented and committed the fix.\n\n### Changes\n- Prevented `sphinx.ext.viewcode` from generating module pages for EPUB builds when `viewcode_enable_epub=False`.\n- Also guarded `singlehtml` builds consistently.\n- Added regression tests for:\n  - EPUB builds with the default setting.\n  - EPUB builds with `viewcode_enable_epub=True`.\n- Updated `CHANGES`.\n\n### Validation\n- Python syntax check passed.\n- Diff whitespace check passed.\n- Full viewcode tests could not run because the environment has an incompatible Jinja2 version (`environmentfilter` is unavailable).\n\nCommit: `81d93e429 Fix viewcode pages generated for EPUB`"
+  },
+  "elapsed_s": 163.1,
+  "exit_code": 0,
+  "patch_bytes": 2054,
+  "stderr_tail": ""
+}

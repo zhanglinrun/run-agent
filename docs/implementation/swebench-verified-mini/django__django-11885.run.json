@@ -1,0 +1,16 @@
+{
+  "receipt": {
+    "run_id": "9b669516caef43049fa1c3eb499457a0",
+    "session_id": "468e75524a7044ddb2c0b6f6f8a04352",
+    "branch_id": "main",
+    "status": "succeeded",
+    "head_id": "0f8fa88a2bf44e8fa113ecc1fa6e43df",
+    "watermark": 72,
+    "snapshot_id": "f63cb5e6255e4b95a1ec8f7e351546c7",
+    "text": "Implemented and committed as `786aed77ca`.\n\n### Changes\n- Combined fast-delete querysets for the same model using `OR`.\n- Reduced cascade deletion roundtrips for:\n  - Multiple foreign keys targeting the same model.\n  - Self-referential many-to-many intermediary tables.\n- Added regression tests and updated large-delete query expectations.\n\n### Validation\n- `delete` test suite: **45 passed, 1 skipped**\n- Python compilation checks passed.\n- `git diff --check` passed.\n- Working tree is clean."
+  },
+  "elapsed_s": 281.0,
+  "exit_code": 0,
+  "patch_bytes": 5310,
+  "stderr_tail": ""
+}

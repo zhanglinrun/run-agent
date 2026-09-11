@@ -1,0 +1,73 @@
+diff --git a/sphinx/util/docfields.py b/sphinx/util/docfields.py
+index 3a3367ebe..764d9acb5 100644
+--- a/sphinx/util/docfields.py
++++ b/sphinx/util/docfields.py
+@@ -211,6 +211,26 @@ class DocFieldTransformer:
+     """
+     typemap: Dict[str, Tuple[Field, bool]]
+ 
++    @staticmethod
++    def _parse_fieldarg(fieldarg: str) -> Tuple[str, str]:
++        """Split a typed field argument into its type and name.
++
++        Types may contain whitespace, for example ``dict(str, str)``.  Split
++        only on whitespace outside of brackets so that the type remains
++        intact.
++        """
++        depth = 0
++        opening = '([{'
++        closing = ')]}'
++        for index, char in enumerate(fieldarg):
++            if char in opening:
++                depth += 1
++            elif char in closing:
++                depth = max(depth - 1, 0)
++            elif char.isspace() and depth == 0:
++                return fieldarg[:index], fieldarg[index:].lstrip()
++        return '', ''
++
+     def __init__(self, directive: "ObjectDescription") -> None:
+         self.directive = directive
+ 
+@@ -297,11 +317,8 @@ class DocFieldTransformer:
+ 
+             # also support syntax like ``:param type name:``
+             if typedesc.is_typed:
+-                try:
+-                    argtype, argname = fieldarg.split(None, 1)
+-                except ValueError:
+-                    pass
+-                else:
++                argtype, argname = self._parse_fieldarg(fieldarg)
++                if argtype and argname:
+                     types.setdefault(typename, {})[argname] = \
+                         [nodes.Text(argtype)]
+                     fieldarg = argname
+diff --git a/tests/test_domain_py.py b/tests/test_domain_py.py
+index 569390c40..9cff7fb69 100644
+--- a/tests/test_domain_py.py
++++ b/tests/test_domain_py.py
+@@ -984,6 +984,23 @@ def test_info_field_list(app):
+                 **{"py:module": "example", "py:class": "Class"})
+ 
+ 
++def test_info_field_list_nested_type(app):
++    text = (".. py:class:: Class\n"
++            "\n"
++            "   :param dict(str, str) opc_meta: (optional)\n")
++    doctree = restructuredtext.parse(app, text)
++
++    assert_node(doctree[1][1][0][0], ([nodes.field_name, "Parameters"],
++                                      [nodes.field_body, nodes.paragraph]))
++    assert_node(doctree[1][1][0][0][1][0],
++                ([addnodes.literal_strong, "opc_meta"],
++                 " (",
++                 [addnodes.literal_emphasis, "dict(str, str)"],
++                 ")",
++                 " -- ",
++                 "(optional)"))
++
++
+ def test_info_field_list_var(app):
+     text = (".. py:class:: Class\n"
+             "\n"

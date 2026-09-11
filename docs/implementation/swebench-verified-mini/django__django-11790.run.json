@@ -1,0 +1,16 @@
+{
+  "receipt": {
+    "run_id": "88022223ab1d4f16bc286da711341274",
+    "session_id": "7c3a8755360a47898899889dcf70318d",
+    "branch_id": "main",
+    "status": "succeeded",
+    "head_id": "df6aee4d5ea04050a84ba5af7f7c6ee7",
+    "watermark": 64,
+    "snapshot_id": "b6a678c8240f49aba18779edf5ad9c52",
+    "text": "Implemented and committed the fix.\n\nChanges:\n- Updated `AuthenticationForm` to synchronize the username widget’s `maxlength` HTML attribute with the model’s username field length.\n- Added regression assertions for both explicit and default username max lengths.\n\nValidation:\n- `auth_tests`: **530 tests passed**, 1 skipped.\n- Python compilation and `git diff --check` passed.\n- Full test suite was attempted but exceeded the 300-second timeout.\n\nCommit: `37f63cfa32 Fixed AuthenticationForm username maxlength attribute`"
+  },
+  "elapsed_s": 602.0,
+  "exit_code": 0,
+  "patch_bytes": 1753,
+  "stderr_tail": ""
+}

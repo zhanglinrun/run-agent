@@ -1,0 +1,16 @@
+{
+  "receipt": {
+    "run_id": "adc30cc5dadd4603bff4f254c82842bf",
+    "session_id": "9ccf749f96f44fb9871acdb85c93f5d3",
+    "branch_id": "main",
+    "status": "succeeded",
+    "head_id": "fd5d787f904e44baa82c8450777a7c7f",
+    "watermark": 62,
+    "snapshot_id": "7b22cc2325de4564bace140326b417bb",
+    "text": "Implemented and committed the JSONField admin readonly display fix.\n\n### Changes\n- Updated `django/contrib/admin/utils.py` to use the JSONField form field’s `prepare_value()`, preserving valid JSON formatting and handling `InvalidJSONInput`.\n- Added regression coverage in `tests/admin_utils/tests.py`.\n\n### Verification\n- `admin_utils.UtilsTests`: passed — 15 tests.\n- Full `admin_utils` suite: passed — 35 tests.\n- Full Django suite: started but exceeded the 300-second timeout.\n\nCommit: `cdcc3ae06f`"
+  },
+  "elapsed_s": 474.0,
+  "exit_code": 0,
+  "patch_bytes": 1726,
+  "stderr_tail": ""
+}

@@ -1,0 +1,16 @@
+{
+  "receipt": {
+    "run_id": "49539381eb2e48ec90503717370ee550",
+    "session_id": "ebb57a12512c40d2bd83a8d2a0d808c3",
+    "branch_id": "main",
+    "status": "succeeded",
+    "head_id": "90dcff34141d425e8fb1f2ba1ebbcc1c",
+    "watermark": 51,
+    "snapshot_id": "8c9ceb191e6a4fbe89f6efb43c277e22",
+    "text": "Implemented `Paginator.__iter__()` in `django/core/paginator.py`:\n\n```python\ndef __iter__(self):\n    for page_number in self.page_range:\n        yield self.page(page_number)\n```\n\nAdded test coverage in `tests/pagination/tests.py`.\n\nChecks:\n- Pagination tests: passed — 21 tests.\n- Syntax and whitespace checks: passed.\n- Full test suite: completed with 15 failures and 11 errors unrelated to this change, primarily due to Python 3.12/Windows compatibility issues.\n\nCommitted as:\n\n```text\n1623f51ccd Fixed #22541 -- Added Paginator iteration\n```"
+  },
+  "elapsed_s": 501.1,
+  "exit_code": 0,
+  "patch_bytes": 1107,
+  "stderr_tail": ""
+}

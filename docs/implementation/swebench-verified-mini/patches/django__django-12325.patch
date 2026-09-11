@@ -1,0 +1,46 @@
+diff --git a/django/db/models/base.py b/django/db/models/base.py
+index 8ea6c05ef9..6d03c1b60e 100644
+--- a/django/db/models/base.py
++++ b/django/db/models/base.py
+@@ -204,7 +204,10 @@ class ModelBase(type):
+             for field in base._meta.local_fields:
+                 if isinstance(field, OneToOneField):
+                     related = resolve_relation(new_class, field.remote_field.model)
+-                    parent_links[make_model_tuple(related)] = field
++                    parent_key = make_model_tuple(related)
++                    if (parent_key not in parent_links or
++                            field.remote_field.parent_link):
++                        parent_links[parent_key] = field
+ 
+         # Track fields inherited from base models.
+         inherited_attributes = set()
+diff --git a/tests/invalid_models_tests/test_models.py b/tests/invalid_models_tests/test_models.py
+index 60b89b6f2e..4c325e3ce5 100644
+--- a/tests/invalid_models_tests/test_models.py
++++ b/tests/invalid_models_tests/test_models.py
+@@ -1015,6 +1015,25 @@ class OtherModelTests(SimpleTestCase):
+             class ParkingLot(Place):
+                 parent = models.OneToOneField(Place, models.CASCADE)
+ 
++    def test_parent_link_with_multiple_one_to_one_fields(self):
++        class Place(models.Model):
++            pass
++
++        class ParkingLot(Place):
++            origin = models.OneToOneField(Place, models.PROTECT, related_name='parking_lot_origin')
++            place_ptr = models.OneToOneField(
++                Place, models.CASCADE, parent_link=True, related_name='+',
++            )
++
++        class Building(Place):
++            place_ptr = models.OneToOneField(
++                Place, models.CASCADE, parent_link=True, related_name='+',
++            )
++            origin = models.OneToOneField(Place, models.PROTECT, related_name='building_origin')
++
++        self.assertIs(ParkingLot._meta.parents[Place], ParkingLot._meta.get_field('place_ptr'))
++        self.assertIs(Building._meta.parents[Place], Building._meta.get_field('place_ptr'))
++
+     def test_m2m_table_name_clash(self):
+         class Foo(models.Model):
+             bar = models.ManyToManyField('Bar', db_table='myapp_bar')

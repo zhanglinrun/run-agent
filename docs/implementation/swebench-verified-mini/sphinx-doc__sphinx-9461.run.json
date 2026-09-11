@@ -1,0 +1,16 @@
+{
+  "receipt": {
+    "run_id": "2e94f093e38c477cb24f387db5b76fee",
+    "session_id": "d2d8554915fb4ddeb98dba0377cf87fd",
+    "branch_id": "main",
+    "status": "succeeded",
+    "head_id": "8dc06b7329134d4c94393fbb9ed0fe9d",
+    "watermark": 101,
+    "snapshot_id": "888261f4061d4d4987d82d55d76dc31e",
+    "text": "Implemented support for documenting `@classmethod` + `@property` descriptors.\n\n### Changes\n- Preserved the underlying `property` descriptor when inspecting class members.\n- Updated autodoc attribute lookup to avoid evaluating class properties prematurely.\n- Added regression coverage for class property documentation.\n\n### Files changed\n- `sphinx/ext/autodoc/__init__.py`\n- `sphinx/ext/autodoc/importer.py`\n- `tests/roots/test-ext-autodoc/target/properties.py`\n- `tests/test_ext_autodoc_autoproperty.py`\n\n### Validation\n- Python compilation passed.\n- AST parsing passed.\n- `git diff --check` passed.\n- The pytest test could not run because this environment’s Python 3.12 installation is incompatible with this older Sphinx version (`types.Union` import failure)."
+  },
+  "elapsed_s": 430.4,
+  "exit_code": 0,
+  "patch_bytes": 3683,
+  "stderr_tail": ""
+}

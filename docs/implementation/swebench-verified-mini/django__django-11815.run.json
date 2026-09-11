@@ -1,0 +1,16 @@
+{
+  "receipt": {
+    "run_id": "e4fa07fb56504e04817cb374c8ed32d4",
+    "session_id": "f0af7ac519e24bbb93791709167b5745",
+    "branch_id": "main",
+    "status": "succeeded",
+    "head_id": "a058a405f4094de89035e0ee99897d4c",
+    "watermark": 54,
+    "snapshot_id": "3ba087fa59ee460bb04b756abfc907df",
+    "text": "Implemented and committed the migration enum serialization fix.\n\n### Changes\n- `django/db/migrations/serializer.py`\n  - Enum members are now serialized by name:\n    ```python\n    Status['GOOD']\n    ```\n  - This avoids relying on potentially translated enum values.\n\n- `tests/migrations/test_writer.py`\n  - Updated enum serialization expectations, including regex flags.\n\n### Validation\n- Migration writer tests: **46 passed**\n- Full migrations suite: **518 passed**\n- Flake8 on changed files: **passed**\n- Full test suite: existing environment/Python 3.12 compatibility failures unrelated to this change; migration tests remained successful.\n\nCommit: `fc9ff5539d Fixed migration serialization of enum members`"
+  },
+  "elapsed_s": 565.2,
+  "exit_code": 0,
+  "patch_bytes": 4314,
+  "stderr_tail": ""
+}
