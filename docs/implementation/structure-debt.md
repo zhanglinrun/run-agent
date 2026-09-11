@@ -104,6 +104,43 @@ trigger 与 coordinator 是**行为** —— 同一 seam。名字仍可从 `revi
 两例的 seam 完全一致：**把数据与行为分开，把“回答什么”与“怎么做”分开**。
 函数级超限往往是这两个职责混住后的症状，而非独立问题。
 
+### 批次 1（进行中）
+
+已完成：`branch_summary.py` 229→79 + `branch_summary_format.py` 135；
+`process_probe.py` 205→154 + `process_probe_windows.py` 60；
+`extension_installer.py` 201→110 + `extension_git_source.py` 75；
+`models.py` 206→135 + `task_loading.py` 71；`review.py` →181 + `review_models.py` 69。
+
+### ⚠️ 行数测量的陷阱（已踩过）
+
+**`Get-Content | Measure-Object -Line` 不把空行计入**。用它核对文件大小会**系统性低估**，
+并且会产出“自信的错数字”—— 我曾据此错误地声称 `review.py` 已修好（实际 202，仍超限）。
+
+**正确做法**：`len(path.read_text(encoding="utf-8").splitlines())`。本轮后续全部改用此法。
+
+### 下一个目标：`storage/handle.py`（真实 209 行）
+
+单个类 `SqliteSessionHandle`，职责混住：
+
+| 组 | 成员 | 行 |
+|---|---|---|
+| 租约 | `_renew` / `_check` / `closed` | 50–68 |
+| 读取 | `read_entries` / `get_head` | 69–76 |
+| 条目 | `append_entries` / `fork` | 77–129 |
+| **run 生命周期** | `begin_run` / `run_is_revoked` / `complete_run` | **130–169** |
+| 上下文 | `record_context` | 170–186 |
+| 关闭 | `aclose` / `_close` | 187–209 |
+
+**关键陷阱：这两件事必须同时做。**
+
+`fork`（85–129）是 **45 行**，违反函数级限制。但**仅就地拆分它会把文件从 209 推到约 219** ——
+修好函数指标、弄坏文件指标。抽离 run 生命周期组（~40 行）才能让两者同时达标。
+
+**预期**：文件 209 → ~180；函数违规 −2（`fork` 45 行，及新拆片均 ≤30）。
+
+**之后按真实行数**：`ai/stream.py` 212 → `storage/state.py` 225 → `ai/http.py` 229
+→ `experience/repository.py` 238。
+
 ## 建议做法（需单独排期）
 
 按**风险从低到高**分批，每批都要求先有测试锁定行为：
