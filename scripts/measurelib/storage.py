@@ -1,9 +1,8 @@
-"""Measure SQLite session storage against the plan's 11.2 checklist.
+"""Measure SQLite session storage.
 
-Pairs with ``docs/implementation/baseline-storage.json``, which measured the
-JSONL storage this replaced. Covers batch populate, individual appends, warm
-paginated reads, branch forks, a brand-new connection's first read, and
-event-loop lag observed while a large write is in flight.
+Covers batch populate, individual appends, warm paginated reads, branch forks,
+a brand-new connection's first read, and event-loop lag observed while a large
+write is in flight.
 """
 
 from __future__ import annotations

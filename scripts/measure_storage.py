@@ -19,7 +19,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from measurelib.storage import DEFAULT_SIZES, measure_all  # noqa: E402
 
-DEFAULT_OUTPUT = ROOT / "docs" / "implementation" / "storage-measurements.json"
+DEFAULT_OUTPUT = ROOT / ".run" / "verify" / "storage-measurements.json"
 
 
 def report_line(sample: dict) -> str:
