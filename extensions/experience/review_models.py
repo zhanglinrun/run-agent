@@ -8,6 +8,7 @@ time either half gained a field.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 # A review must never be triggered by another review, by the evaluating path, or by the
@@ -45,3 +46,24 @@ class ReviewDecision:
     admitted: bool
     reason: str
     key: str
+
+
+@dataclass(frozen=True, slots=True)
+class ForegroundGate:
+    """Whether a foreground run is in flight, so a review can yield to it.
+
+    The gate belongs at the point where a review would start, not where one is queued: a
+    completion event arrives while its own session is still running, so checking the
+    foreground while queueing would defer every review forever.
+
+    It is fed the application's ``is_running``, measured rather than assumed: a probe
+    around a real foreground run reports false before start, after start, and after the
+    prompt returns, for a succeeding provider and a failing one alike. So the signal means
+    "a run is in flight", which is exactly what the gate needs.
+    """
+
+    busy: Callable[[], bool]
+
+    def deferral(self) -> str | None:
+        """The reason to hold the review back, or ``None`` to proceed."""
+        return "foreground busy" if self.busy() else None

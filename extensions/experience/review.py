@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
 
 from run_agent_coding.events import AgentSettledEvent
 from run_agent_coding.extensions import ExtensionAPI, ExtensionContext
@@ -21,6 +20,7 @@ from run_agent_core.types import JSONValue
 from .review_models import (
     AUXILIARY_ORIGINS,
     REVIEW_REQUEST_PREFIX,
+    ForegroundGate,
     ReviewDecision,
     ReviewPolicy,
     ReviewRequest,
@@ -86,27 +86,6 @@ class ReviewTrigger:
         if self._last_admitted_at is None:
             return False
         return self._clock() - self._last_admitted_at < self._policy.cooldown_seconds
-
-
-@dataclass(frozen=True, slots=True)
-class ForegroundGate:
-    """Whether a foreground run is in flight, so a review can yield to it.
-
-    The gate belongs at the point where a review would start, not where one is
-    queued: a completion event arrives while its own session is still running, so
-    checking the foreground while queueing would defer every review forever.
-
-    It is fed the application's ``is_running``, measured rather than assumed: a probe
-    around a foreground run reports false before start, after start, and after the
-    prompt returns, for a succeeding provider and a failing one alike. So the signal
-    means "a run is in flight", which is exactly what the gate needs.
-    """
-
-    busy: Callable[[], bool]
-
-    def deferral(self) -> str | None:
-        """The reason to hold the review back, or ``None`` to proceed."""
-        return "foreground busy" if self.busy() else None
 
 
 class ReviewCoordinator:
