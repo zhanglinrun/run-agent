@@ -401,8 +401,9 @@ class CodingSessionConfig:
     trust_default: TrustDefault = "ask"
     trust_interactive: bool = False
     trust_prompt: TrustPrompt | None = None
-    # Shared preparation keeps transcript/trust/index writes staged until
-    # PreparedCodingSession.adopt() reaches its durable commit point.
+    # Keeps transcript/trust/index writes staged until the caller reaches its
+    # durable commit point, so an abandoned or replaced session leaves no
+    # half-published state behind.
     defer_authoritative_writes: bool = False
     input_source: InputSource | None = None
     pinned_resources: bool = False

@@ -1,9 +1,8 @@
 """Normalizing and cloning Git extension sources.
 
-Split out of ``extension_installer``, which now only stages and publishes what has already
-been fetched. The two halves share nothing but the error type and the source shape, and
-keeping them in one module meant the installer's own flow - stage, validate, publish - sat
-below sixty lines of URL parsing and git invocation.
+Turns a ``git+https://host/owner/repo@ref`` style source into a validated name and
+clone arguments, and checks the cloned tree against the same discovery rules the
+user extension directory obeys.
 """
 
 from __future__ import annotations
