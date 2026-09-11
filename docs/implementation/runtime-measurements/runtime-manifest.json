@@ -1,0 +1,26 @@
+{
+  "config": {
+    "tool_calls": 8,
+    "tool_delay_ms": 30.0,
+    "tool_repeats": 25,
+    "trace_repeats": 10
+  },
+  "cpu_count": 12,
+  "created_at": "2026-09-11T13:08:30.627778+00:00",
+  "manifest_digest": "59ca733c79d1a4004abf616ac7cfcfd0fca9430e9a5136855cada7a69f3e3448",
+  "methodology": {
+    "tools": "production agent loop with a synthetic fixed-delay async read tool",
+    "trace": "SQLite TraceRecorder including durable flush, paired with an untraced loop"
+  },
+  "platform": "Windows-11-10.0.26100-SP0",
+  "processor": "AMD64 Family 26 Model 68 Stepping 0, AuthenticAMD",
+  "python": "3.12.4",
+  "repository": {
+    "dirty": true,
+    "revision": "bd237dff193b5ca092bc8df4b54949878d29da2c",
+    "source_file_count": 189,
+    "source_sha256": "3838ab6e37f77521dfb3f110e13b963c900915f9099cb2b6da673ff65088f703",
+    "status_sha256": "e12960d98c4d4d017543573e83aa622bd23081b80acb6f2a6614ee17748e003d"
+  },
+  "schema": "run-agent.runtime-benchmark.manifest.v2"
+}

@@ -1,0 +1,49 @@
+{
+  "gateway_scheduling": {
+    "sessions": 200,
+    "per_session": 50,
+    "total": 10000,
+    "submitted": 10000,
+    "admitted": 10000,
+    "completed": 10000,
+    "lost": 0,
+    "duplicate_receipts": 0,
+    "distinct_tasks": 10000,
+    "unfinished_tasks": 0,
+    "backpressure_refusals": 600,
+    "refusal_reasons": {
+      "Session or principal waiting limit reached": 16
+    },
+    "delivery_acks": 20000,
+    "other_failures": 0,
+    "sessions_used": 200,
+    "ordering_violations_within_session": 0,
+    "seconds": 211.73,
+    "requests_per_second": 47
+  },
+  "runtime": {
+    "tools": {
+      "calls_per_batch": 8,
+      "kind": "synthetic_async_read",
+      "median_latency_reduction": 0.8752465668796269,
+      "order_violations": 0,
+      "parallel_max_active": 8,
+      "parallel_p50_ms": 31.17989999736892,
+      "parallel_p95_ms": 45.867699998780154,
+      "repeats": 25,
+      "sequential_max_active": 1,
+      "sequential_p50_ms": 249.93220000033034,
+      "sequential_p95_ms": 276.29540000634734
+    },
+    "trace": {
+      "database_bytes": 262144,
+      "durable_flush_included": true,
+      "mean_payload_bytes_per_request": 3631.5,
+      "mean_spans_per_request": 13.0,
+      "overhead_p50_ms": 8.14169999648584,
+      "overhead_p95_ms": 26.811499999894295,
+      "requests": 10,
+      "storage": "sqlite_wal_full"
+    }
+  }
+}

@@ -1,0 +1,21 @@
+<div class="sec-title"><svg class="section-icon"><use href="#icon-code"></use></svg>项目经历</div>
+<div class="proj-item">
+    <div class="proj-head">
+        <div class="text-base font-bold proj-name">Run Agent：面向多轮复杂任务的 Agent Harness</div>
+        <a class="proj-link" href="https://github.com/zhanglinrun/run-agent">
+            <svg class="github-icon"><use href="#icon-github"></use></svg>github.com/zhanglinrun/run-agent
+        </a>
+        <div class="text-sm font-bold proj-date">2026.05 – 至今</div>
+    </div>
+    <div class="text-sm proj-desc">
+        <div class="tech-line"><span class="font-bold">核心技术：</span>Python、asyncio、Agent Harness、Tool Calling、Skill、SQLite、Tracing / Eval</div>
+        <span class="font-bold">项目描述：</span>面向多轮复杂编码任务构建本地优先 Agent Harness，按 Provider、Core、Coding、Gateway 四层统一模型、工具与会话语义；通过扩展装配 MCP、计划、权限和经验学习，以 run 命令提供交互式 CLI、多会话网关及评测入口，结合 SQLite 事务恢复和独立环境评测支持持续迭代。<br>
+        <ul>
+            <li><span class="font-bold">扩展式 Harness 架构：</span>参考 Pi 构建 Provider、Core、Coding、Gateway 分层，通过统一扩展契约装配 MCP、计划、权限、结果验证和经验学习；宿主提供后台任务、持久状态与资源快照，结合注册回滚和版本失效管理扩展生命周期。</li>
+            <li><span class="font-bold">可干预的多会话网关：</span>设计会话控制器与持久任务状态机，支持运行中纠正、取消及独立后台执行；结合会话内顺序执行、跨会话公平调度、前后台容量预留和工作区隔离，通过 Inbox / Outbox 完成接收去重与结果恢复投递。</li>
+            <li><span class="font-bold">可插拔的经验学习：</span>以 USER.md、MEMORY.md 与 Skill 管理偏好、事实和程序性经验，通过扩展事件触发受控复盘，生成带来源的候选；结合跨会话验证、版本发布和回滚，在固定模型与预算下评估迁移收益及额外成本。</li>
+            <li><span class="font-bold">事务化会话存储与恢复：</span>以 SQLite 统一管理终端与网关的会话事件、分支、执行状态和资源版本，通过事务提交、写入版本校验及上下文快照重建，支持长会话恢复、历史分叉和异常状态核对，并提供一致性备份与产物恢复。</li>
+            <li><span class="font-bold">Agent 观测与评测闭环：</span>关联模型、工具、调度和经验版本形成执行轨迹，构建运行可靠性、任务能力和跨会话学习三类评测；通过独立环境验收、重复试验与消融对比评估质量和成本，并将真实失败案例沉淀为版本发布依据。</li>
+        </ul>
+    </div>
+</div>
