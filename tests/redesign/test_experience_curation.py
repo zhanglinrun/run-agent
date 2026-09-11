@@ -1,6 +1,6 @@
 """RED: character budgets, time transitions and pinned protection (T-023).
 
-Aligned with the Hermes reference recorded in docs/implementation/hermes-alignment.md.
+Aligned with the Hermes reference on both points.
 Three things it does that this project did not:
 
   character budgets   Hermes limits USER and MEMORY by characters (1375 and 2200), not

@@ -5,8 +5,8 @@ This covers the dialog-teardown contract, which currently holds: when
 come back to the main prompt, and a second answered dialog before it changes
 nothing.
 
-It deliberately does NOT reproduce the intermittent lost-input failure recorded
-in ``docs/implementation/open-issue-flake-01.md``. That failure shows up under
+It deliberately does NOT reproduce the intermittent lost-input failure found while
+chasing the gate's flake. That failure shows up under
 pytest at roughly one run in twelve, while these orderings pass every time, so
 this file records what has been ruled out rather than what is broken.
 """

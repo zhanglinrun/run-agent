@@ -1,7 +1,7 @@
 """RED: a timed-out dialog must hand input over, not lose it (T-002).
 
-docs/implementation/flake-root-cause.md proves the ordering with tracing: the caller
-resumes from ``ui.input(timeout=...)`` in the same instant that the dialog reader is
+Tracing proves the ordering: the caller resumes from ``ui.input(timeout=...)`` in the
+same instant that the dialog reader is
 cancelled and the main prompt is armed. Input arriving in that window is consumed by
 the dying reader and lost, which is what makes the gate flaky about 0.7% of the time
 in isolation and far more often under the full suite.

@@ -67,8 +67,8 @@ Empty or toggle-only reasoning options produce no generated override, matching
 Pi. Provider/manual behavior remains in effect for those models.
 
 Run Agent also refreshes catalogs like Pi. Opening `/model` shows the current snapshot
-immediately and refreshes in the background. `run-agent update --models` forces a
-refresh. Results are ETag-revalidated, throttled to four hours, and cached at
+immediately and refreshes in the background. Results are ETag-revalidated, throttled
+to four hours, and cached at
 `~/.run/models-store.json`; a cache applies only when newer than the bundled
 snapshot. Since Run Agent has no hosted catalog service, it fetches models.dev and
 NVIDIA directly and transforms them locally. `RUN_AGENT_OFFLINE=1` disables catalog

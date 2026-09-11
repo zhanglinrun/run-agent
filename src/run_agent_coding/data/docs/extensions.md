@@ -28,6 +28,6 @@ Headless hosts return `None` or false for dialogs. Extensions must not treat una
 
 Registration failures remove source-owned registrations. Reload retires the old extension generation and clears status displays. Captured APIs from a retired generation reject mutations. This is a lifecycle boundary, not an operating-system sandbox; Python extensions run with the host user's privileges.
 
-MCP, plan mode, permission policy, verification and observability remain optional extensions in the repository. The experience and managed-task service integration is still being implemented; consult `docs/implementation` before relying on planned APIs.
+MCP, plan mode, permission policy, verification and observability remain optional extensions in the repository. The experience and managed-task service integration is still being implemented, so do not treat its APIs as finished.
 
 Gateway channels are a separate extension family: export `setup_gateway(api)` and let the Gateway own adapter startup and shutdown. Do not start a channel listener from each Session extension.

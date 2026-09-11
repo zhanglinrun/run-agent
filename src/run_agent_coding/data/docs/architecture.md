@@ -23,4 +23,4 @@ Session extensions export `setup(api)`. Gateway adapters export `setup_gateway(a
 
 The default coding tools are `read`, `write`, `edit` and `bash`. The existing tool batching behavior remains: bounded pure-read concurrency and serial execution for batches containing mutation-capable calls. Improvements are evaluated against real tasks and failure cases, not presented as an original scheduling algorithm.
 
-Consult `docs/implementation/requirements.json` for remaining managed tasks, experience, durable Gateway and independent evaluation work. Planned capabilities are not implied by these interfaces alone.
+Remaining managed-task, experience, durable Gateway and independent evaluation work is still in progress; these interfaces alone do not imply those capabilities are finished.

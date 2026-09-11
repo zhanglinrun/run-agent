@@ -2,7 +2,7 @@
 
 面向多轮编码任务的本地 Agent Harness，采用 Provider / Core / Coding / Gateway 四层，以及通过 `setup(api)` 装配的 Session 扩展。MCP、计划模式、权限和验证由扩展提供；Gateway 是独立宿主，渠道通过 `setup_gateway(api)` 接入。
 
-项目正在按 [完整改进计划](study/简历五条/00-RunAgent完整改进执行计划.md) 实施改造。[执行记录](docs/implementation/README.md) 列出已验证范围与尚未完成的任务。持久网关调度、experience、独立评测与真实模型实验仍在实施，不能把组件测试成绩视为这些能力已完成。
+项目仍在改造中：持久网关调度、experience、独立评测与真实模型实验仍在实施，不能把组件测试成绩视为这些能力已完成。
 
 ## 安装与启动
 
@@ -59,7 +59,7 @@ run bench --help
 
 内置命令按 Windows Job Object / POSIX 进程组管理，取消时等待退出，无法核实退出则保留工作区隔离及运行名额。重启会检查旧宿主和进程；已提交结果继续投递，未知副作用需人工核对。
 
-`run gateway recover --state-dir <目录>` 检查遗留执行；`--terminate <run_id>` 终止确认归属的残留进程，`--release <run_id> --note "核对说明"` 在进程退出后解除隔离。释放不会将未知结果改成成功或重跑旧任务。飞书配置见 [Gateway 扩展说明](examples/gateway_extensions/README.md)，实现边界见 [执行记录](docs/implementation/checkpoint-12.md)。
+`run gateway recover --state-dir <目录>` 检查遗留执行；`--terminate <run_id>` 终止确认归属的残留进程，`--release <run_id> --note "核对说明"` 在进程退出后解除隔离。释放不会将未知结果改成成功或重跑旧任务。飞书配置见 [Gateway 扩展说明](examples/gateway_extensions/README.md)。
 
 ## 分层与扩展
 
@@ -74,7 +74,7 @@ Observability 与 Evals 是横向配套模块。默认工具为 `read`、`write`
 
 扩展 UI 提供文本通知、选择、确认、输入与 `context.ui.set_status(key, text)`，不接管终端控件。重载会使旧扩展 API 失效，并清理其状态显示。该生命周期机制不构成操作系统沙箱。
 
-扩展可通过 `register_resource_provider` 从宿主提供的只读资源视图中选择上下文；资源视图按来源与 session / project / user 作用域隔离，激活前没有状态写入和任务提交能力。接口与限制见 [资源快照执行记录](docs/implementation/checkpoint-13.md)。
+扩展可通过 `register_resource_provider` 从宿主提供的只读资源视图中选择上下文；资源视图按来源与 session / project / user 作用域隔离，激活前没有状态写入和任务提交能力。
 
 ## 开发验证
 

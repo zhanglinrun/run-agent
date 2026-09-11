@@ -1,8 +1,8 @@
 """RED: the review yields to the foreground without losing the request (T-023).
 
-From docs/implementation/hermes-alignment.md: a background review must not compete with
-the foreground, and its cost must be attributed to the run that caused it rather than
-disappearing into an anonymous total.
+A background review must not compete with the foreground, and its cost must be
+attributed to the run that caused it rather than disappearing into an anonymous
+total.
 
 Where the guard goes is the whole question, and the first attempt got it wrong. Putting
 it on the trigger looked reasonable and broke the pipeline: a completion event arrives

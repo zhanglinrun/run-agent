@@ -1,6 +1,6 @@
 """Character budgets and time-based curation for experience assets (T-023).
 
-Aligned with the Hermes reference in docs/implementation/hermes-alignment.md.
+Aligned with the Hermes reference on both points.
 
 Budgets are counted in characters rather than tokens because the constraint being
 modelled is what fits in a prompt, and Hermes uses the same unit for the same reason.

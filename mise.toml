@@ -3,7 +3,7 @@
 # The /until-done CI hook discovers tasks by verb (run `mise tasks ls --json`)
 # and executes `mise run <verb>`. Every task therefore delegates to the single
 # gate script instead of re-implementing checks, so the hook, CI and local runs
-# cannot drift apart. See docs/implementation/automation.md.
+# cannot drift apart.
 
 [tasks.compile]
 description = "Byte-compile the source, extensions and tests"
