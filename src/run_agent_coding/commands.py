@@ -8,11 +8,9 @@ from pathlib import Path
 from typing import Protocol
 
 from run_agent_coding.prompt_templates import PromptTemplate
-from run_agent_coding.provider_catalog import builtin_provider_catalog, builtin_provider_entry
 from run_agent_coding.reload import CodingReloadSummary, ReloadCategorySummary
 from run_agent_coding.resources import ResourceDiagnostic
 from run_agent_coding.session_manager import (
-    CodingSessionRecord,
     SessionManager,
     normalize_session_name,
 )
@@ -20,11 +18,6 @@ from run_agent_coding.skills import Skill
 from run_agent_coding.system_prompt import ProjectContextFile
 from run_agent_coding.thinking import normalize_thinking_level
 from run_agent_core.tools import AgentTool
-
-LOGIN_PROVIDER_ALIASES = {
-    "anthropic-api": ("anthropic", "api-key"),
-    "anthropic-subscription": ("anthropic", "subscription"),
-}
 
 
 class CommandSession(Protocol):
@@ -109,17 +102,10 @@ class CommandResult:
     resume_picker_requested: bool = False
     prompts_picker_requested: bool = False
     tree_picker_requested: bool = False
-    login_picker_requested: bool = False
-    custom_provider_login_requested: bool = False
-    login_provider: str | None = None
-    login_method: str | None = None
-    logout_picker_requested: bool = False
-    logout_provider: str | None = None
     model_picker_requested: bool = False
     model_selection_provider: str | None = None
     model_selection_model: str | None = None
     tools_picker_requested: bool = False
-    scoped_models_picker_requested: bool = False
     skills_picker_requested: bool = False
     thinking_level: str | None = None
     message: str | None = None
@@ -197,10 +183,6 @@ class CommandRegistry:
             return CommandResult(handled=False)
 
         command = self.get(name)
-        if command is None and name == "scoped" and args.lower() == "models":
-            command = self.get("scoped-models")
-            name = "scoped-models"
-            args = ""
         if command is None:
             return CommandResult(handled=False)
 
@@ -354,27 +336,47 @@ def create_default_command_registry() -> CommandRegistry:
     )
     registry.register(
         SlashCommand(
-            name="scoped-models",
-            usage="/scoped-models",
-            description="Choose models available to quick-cycle with Ctrl+P.",
-            handler=_scoped_models_command,
-            search_terms=("scope", "quick", "cycle", "ctrl+p"),
+            name="help",
+            usage="/help",
+            description="List available commands.",
+            handler=_help_command,
+            search_terms=("commands",),
         )
     )
     registry.register(
         SlashCommand(
-            name="login",
-            usage="/login [provider]",
-            description="Connect a provider with OAuth or an API key.",
-            handler=_login_command,
+            name="thinking",
+            usage="/thinking [level]",
+            description="Show or set the thinking level for future turns.",
+            handler=_thinking_command,
+            search_terms=("reasoning", "effort"),
         )
     )
     registry.register(
         SlashCommand(
-            name="logout",
-            usage="/logout [provider]",
-            description="Remove saved credentials for a built-in provider.",
-            handler=_logout_command,
+            name="context",
+            usage="/context",
+            description="Show the active project context files.",
+            handler=_context_command,
+            search_terms=("agents.md", "instructions"),
+        )
+    )
+    registry.register(
+        SlashCommand(
+            name="resources",
+            usage="/resources",
+            description="Summarize loaded skills, prompt templates and context files.",
+            handler=_resources_command,
+            search_terms=("diagnostics",),
+        )
+    )
+    registry.register(
+        SlashCommand(
+            name="trace",
+            usage="/trace",
+            description="Show where this session's spans are recorded, when tracing is on.",
+            handler=_trace_command,
+            search_terms=("spans", "telemetry", "observability"),
         )
     )
     return registry
@@ -385,6 +387,19 @@ def _help_command(context: CommandContext) -> CommandResult:
     for command in context.registry.list_commands():
         lines.append(f"{command.usage}\t{command.description}")
     return CommandResult(handled=True, message="\n".join(lines))
+
+
+def _trace_command(context: CommandContext) -> CommandResult:
+    recorder = getattr(context.session, "trace_recorder", None)
+    if recorder is None:
+        return CommandResult(
+            handled=True, message="Tracing is off. Start with --trace to record spans."
+        )
+    message = (
+        f"Trace database: {recorder.path}\nSession: {recorder.session_id}\n"
+        f"Recorded spans: {recorder.span_count}; dropped spans: {recorder.dropped_count}"
+    )
+    return CommandResult(handled=True, message=message)
 
 
 def _exit_command(context: CommandContext) -> CommandResult:
@@ -429,14 +444,6 @@ def _status_command(context: CommandContext) -> CommandResult:
         f"Estimated context tokens: {session.context_token_estimate}",
         f"Context window: {session.context_window_tokens}",
     ]
-    if session.provider_name == "huggingface":
-        route = getattr(session, "inference_provider", None)
-        mode = getattr(session, "inference_provider_mode", "fixed" if route else "automatic")
-        if mode == "automatic":
-            route_status = f"automatic (currently {route})" if route else "automatic"
-        else:
-            route_status = f"{route} (fixed)" if route else "fixed"
-        lines.append(f"Hugging Face inference provider: {route_status}")
     context_window_source = getattr(session, "context_window_source", None)
     if context_window_source:
         lines.append(f"Context window source: {context_window_source}")
@@ -621,16 +628,6 @@ def _model_command(context: CommandContext) -> CommandResult:
     return CommandResult(handled=True, model_picker_requested=True)
 
 
-def _scoped_models_command(context: CommandContext) -> CommandResult:
-    refresh_error = _refresh_provider_settings(context.session)
-    if refresh_error is not None:
-        return refresh_error
-
-    if context.args:
-        return CommandResult(handled=True, message="Usage: /scoped-models")
-    return CommandResult(handled=True, scoped_models_picker_requested=True)
-
-
 def _thinking_command(context: CommandContext) -> CommandResult:
     session = context.session
     available = tuple(session.available_thinking_levels)
@@ -683,61 +680,6 @@ def _thinking_unavailable_reason(session: CommandSession) -> str | None:
     return reason if isinstance(reason, str) and reason else None
 
 
-def _login_command(context: CommandContext) -> CommandResult:
-    provider_name = context.args.strip()
-    if provider_name in {"custom", "new", "add"}:
-        return CommandResult(handled=True, custom_provider_login_requested=True)
-    if provider_name:
-        aliased_provider = LOGIN_PROVIDER_ALIASES.get(provider_name)
-        if aliased_provider is not None:
-            provider_name, login_method = aliased_provider
-        else:
-            login_method = None
-        entry = builtin_provider_entry(provider_name)
-        if entry is None:
-            providers = ", ".join(
-                [
-                    *(entry.name for entry in builtin_provider_catalog()),
-                    *LOGIN_PROVIDER_ALIASES,
-                ]
-            )
-            return CommandResult(
-                handled=True,
-                message=(
-                    f"Unknown login provider: {provider_name}\nAvailable providers: {providers}"
-                ),
-            )
-        return CommandResult(
-            handled=True,
-            login_provider=entry.name,
-            login_method=login_method,
-        )
-
-    return CommandResult(handled=True, login_picker_requested=True)
-
-
-def _logout_command(context: CommandContext) -> CommandResult:
-    provider_name = context.args.strip()
-    if provider_name:
-        entry = builtin_provider_entry(provider_name)
-        if entry is None:
-            providers = ", ".join(entry.name for entry in builtin_provider_catalog())
-            return CommandResult(
-                handled=True,
-                message=(
-                    f"Unknown logout provider: {provider_name}\nAvailable providers: {providers}"
-                ),
-            )
-        return CommandResult(handled=True, logout_provider=entry.name)
-
-    return CommandResult(handled=True, logout_picker_requested=True)
-
-
-def _format_session_record(record: CodingSessionRecord) -> str:
-    title = record.title or "Untitled"
-    return f"- {record.id}: {title} ({record.model}) {record.cwd}"
-
-
 def _format_diagnostics(
     diagnostics: Sequence[ResourceDiagnostic], *, kind: str | None = None
 ) -> list[str]:
@@ -774,7 +716,7 @@ def format_reload_summary(summary: CodingReloadSummary) -> str:
         "Diagnostics:",
         f"- Resource diagnostics: {_format_reload_category(summary.diagnostics)}",
         "Provider config:",
-        "- Not refreshed by /reload; use /login or /model for provider/model settings.",
+        "- Read from the environment at startup; use /model to switch provider or model.",
     ]
     return "\n".join(lines)
 

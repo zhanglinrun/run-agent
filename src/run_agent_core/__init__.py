@@ -23,6 +23,7 @@ from run_agent_core.harness import (
 from run_agent_core.loop import (
     AgentLoopTurnUpdate,
     BeforeToolCallResult,
+    ConvertToLlm,
     PrepareNextTurn,
     PrepareNextTurnContext,
     ShouldStopAfterTurn,
@@ -47,6 +48,7 @@ from run_agent_core.messages import (
     UsageCost,
     UserMessage,
     content_text,
+    convert_to_llm,
     message_text,
 )
 from run_agent_core.session import (
@@ -68,6 +70,7 @@ from run_agent_core.tools import (
     ToolExecutionMode,
     ToolExecutor,
     ToolUpdateCallback,
+    validate_tool_arguments,
 )
 from run_agent_core.types import JSONObject, JSONPrimitive, JSONValue
 
@@ -88,6 +91,7 @@ __all__ = [
     "BranchSummaryMessage",
     "CompactionEntry",
     "CompactionSummaryMessage",
+    "ConvertToLlm",
     "CustomEntry",
     "CustomMessage",
     "EventListener",
@@ -130,6 +134,8 @@ __all__ = [
     "UsageCost",
     "UserMessage",
     "content_text",
+    "convert_to_llm",
     "message_text",
     "run_agent_loop",
+    "validate_tool_arguments",
 ]

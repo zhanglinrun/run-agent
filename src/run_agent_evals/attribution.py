@@ -1,4 +1,4 @@
-"""Failure attribution: locate the first error, not the last (T-010, T-011).
+"""Failure attribution: locate the first error, not the last.
 
 Chapter 7's reason for caring is that an end-to-end verdict says only pass or fail:
 "the failing task scores zero, and that zero does not say whether the agent erred in

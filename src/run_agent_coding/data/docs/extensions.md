@@ -24,10 +24,14 @@ The UI contract is textual:
 - `await context.ui.input(title, secret=False)` returns text or `None`; secret input is hidden and does not enter terminal history.
 - `context.ui.set_status(key, text)` updates an extension-owned status line; passing `None` removes it.
 
-Headless hosts return `None` or false for dialogs. Extensions must not treat unavailable confirmation as approval. Textual widgets, sidebar objects and key interception are no longer extension APIs.
+Headless hosts return `None` or false for dialogs. Extensions must not treat unavailable confirmation as approval. Extensions cannot mount terminal widgets or intercept keys.
 
 Registration failures remove source-owned registrations. Reload retires the old extension generation and clears status displays. Captured APIs from a retired generation reject mutations. This is a lifecycle boundary, not an operating-system sandbox; Python extensions run with the host user's privileges.
 
-MCP, plan mode, permission policy, verification and observability remain optional extensions in the repository. The experience and managed-task service integration is still being implemented, so do not treat its APIs as finished.
+All four built-ins in `run_agent_extensions` load by default in new CLI and Gateway sessions: `experience`, `mcp`, `permission_policy` and `plan_mode`. Plan mode starts off, and MCP tools require configured servers. `--no-extensions` disables default and discovered extensions; explicit `run --extension <name-or-path>` entries still load without duplicates. Saved sessions retain their extension snapshot until `--refresh-resources` adopts current defaults. Event tracing is a session option (`--trace`, `/trace`) rather than an extension.
 
-Gateway channels are a separate extension family: export `setup_gateway(api)` and let the Gateway own adapter startup and shutdown. Do not start a channel listener from each Session extension.
+`inference.complete` accepts existing tool schemas by name and returns proposed calls without executing them or altering the main transcript. The experience extension drives its own bounded review loop and applies calls through its allowlist and mutation guards.
+
+Experience keeps `USER.md` and `MEMORY.md` as budgeted, threat-scanned, drift-guarded Markdown entries. `skill_manage` uses ownership/permission checks, advisory lint, usage records and an audit ledger with rollback; optional Skill content scanning defaults off. Review listens only to committed `agent_settled` events and is conditional on cadence or signals, rather than guaranteed after every task. Defaults include a Skill nudge after 10 tool starts and memory cadence of 10 user turns. The native/JSON review loop defaults to at most 16 model requests and 16 tool calls, with 600,000 aggregate input tokens; legacy memory/skills batch compatibility is outside that tool-call counter (see the experience README). New user input cancels review with a bounded acknowledgement wait. The curator ages and recoverably archives managed Skills; model consolidation is opt-in. `/learn` authors a Skill from named sources. See `run_agent_extensions/experience/README.md` for the exact trigger and configuration boundaries.
+
+The Feishu gateway (`run gateway`) is not an extension family: it is a host that loads the same Session extensions with `--extension`. Do not start a channel listener from a Session extension.

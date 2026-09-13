@@ -1,83 +1,64 @@
 # Run Agent providers and models
 
-A provider hosts models; a model is the exact ID accepted by that provider. Use
-`/login` for durable built-in credentials and `/model` to choose an available
-model.
+A provider is one of two wire protocols; a model is the exact ID the endpoint
+accepts. Everything is configured from the environment (a project `.env` is
+loaded at startup without overriding real process variables), the way Pi resolves
+ambient API keys.
 
-## Durable and dynamic providers
+There is no provider catalog file or OAuth/login flow. Use the endpoint's exact
+model ID and keep API keys in the environment or a local, uncommitted `.env`.
 
-Catalog providers are durable user/application configuration. Extension provider
-layers are source- and generation-owned overlays held only by an active
-`ExtensionRuntime`. Their definitions and refresh snapshots are not persisted as
-durable provider configuration. Removing a dynamic layer restores the complete
-preceding layer or the durable baseline.
+## Providers
 
-Dynamic providers support required, optional, or absent authentication without
-fake keys. Secrets resolve immediately before refresh or runtime creation and are
-excluded from representations, diagnostics, snapshots, sessions, and exports.
-The contract is validated with deterministic fake providers. Extension provider
-definitions are never copied into the durable catalog or provider settings.
+| Provider | Protocol | Variables |
+| --- | --- | --- |
+| `openai` | OpenAI-compatible chat completions or responses | `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_API` |
+| `anthropic` | Anthropic Messages | `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_THINKING_MODE` |
 
-## Existing custom providers
+`OPENAI_API` is `openai-completions` (default) or `openai-responses`. Any endpoint
+that speaks one of these protocols works: point `OPENAI_BASE_URL` at a gateway,
+a local server or a vendor host. The reasoning dialect for `deepseek.com`,
+`api.z.ai`, `api.together.ai` and `openrouter.ai` is detected from the URL and
+can be forced with `OPENAI_THINKING_FORMAT`.
 
-Other OpenAI-compatible endpoints can still be configured with `/login custom`,
-`run-agent setup`, or a user-level `~/.run/catalog.toml` entry. That path is useful for
-Ollama, gateways, and manually configured local providers.
+`ANTHROPIC_BASE_URL` gets `/v1` appended when it is missing.
+`ANTHROPIC_THINKING_MODE` is `budget` (default, extended thinking with a token
+budget per level) or `adaptive` (an `effort` value, for models that expect one).
 
-## Metadata and selection rules
+## Selection
 
-Use exact provider/model IDs. Run Agent does not infer context windows, output limits,
-reasoning support, modalities, pricing, or tool compatibility when a server does
-not report them. If a refreshed server no longer reports the active model, Run
-Agent keeps the current runtime usable and marks the model snapshot stale; it does
-not silently replace the model.
+- `PROVIDER` chooses the startup provider. When unset, `anthropic` is used if only
+  `ANTHROPIC_API_KEY` is set, otherwise `openai`.
+- `MODEL` sets the default model; `--model` overrides it for one run.
+- `--provider` overrides `PROVIDER` for one run.
+- `/model <id>` switches the model in a session; `/model` lists the choices.
+- `run --providers` shows both providers and whether their key is set.
 
-Provider/model selection precedence is explicit CLI selection, the resumed
-transcript's provider-aware model entry, the session record for legacy sessions,
-a durable default, and then a usable durable provider. Dynamic providers are
-selected only by explicit startup, a resumed session, or an in-session `/model`
-action.
+Model IDs are not validated against a list: the endpoint decides. A wrong ID
+fails on the first request with the provider's own error.
 
-## Hugging Face routing
-
-Hugging Face routing has two session modes. Automatic mode keeps the provider
-from the first successful response as a sticky route, but retries once through
-unsuffixed routing after that route exhausts retryable pre-output HTTP failures.
-A configured or extension-selected provider is fixed and never silently
-overridden. The external Hugging Face extension controls these modes with
-`/hf route`; core owns safe continuation, persistence, and reroute diagnostics.
-
-## Changing the built-in catalog
-
-Run Agent follows Pi's build-time model-generation design. Provider transports,
-authentication, defaults, compatibility corrections, and fallback model rows
-live in `src/run_agent_coding/data/catalog.toml`. Complete model inventories and
-models.dev-owned metadata live in the checked-in
-`data/models-dev-catalog.json`.
-
-Generation includes non-deprecated, tool-capable text models and copies names,
-reasoning support, modalities, costs, context limits, output limits, and verified
-effort values. New source models therefore require no hand edit to the inventory.
-Verify transports and narrow corrections against official provider documentation;
-never guess them.
+## Thinking
 
 Run Agent thinking levels match Pi: `off`, `minimal`, `low`, `medium`, `high`,
-`xhigh`, and `max`. `none` becomes `off`; `max` remains distinct from `xhigh`.
-Empty or toggle-only reasoning options produce no generated override, matching
-Pi. Provider/manual behavior remains in effect for those models.
+`xhigh` and `max`. `REASONING_EFFORT` sets the default, `--thinking` overrides it
+for one run and `/thinking <level>` changes it in a session. The level is sent as
+`reasoning_effort` (or the vendor dialect) on OpenAI-compatible endpoints and as
+an extended-thinking budget or `effort` on Anthropic. Whether a given model
+honours it is up to the endpoint.
 
-Run Agent also refreshes catalogs like Pi. Opening `/model` shows the current snapshot
-immediately and refreshes in the background. Results are ETag-revalidated, throttled
-to four hours, and cached at
-`~/.run/models-store.json`; a cache applies only when newer than the bundled
-snapshot. Since Run Agent has no hosted catalog service, it fetches models.dev and
-NVIDIA directly and transforms them locally. `RUN_AGENT_OFFLINE=1` disables catalog
-network access.
+## Transport and metadata
 
-Startup never requires network. Missing, invalid, or incompatible generated or
-cached data falls back silently to `catalog.toml`. User `~/.run/catalog.toml`
-overlays are applied last. When withdrawing one provider's model, add it to that
-provider's `removed_models` list so stale user overlays cannot restore it.
+Per provider prefix (`OPENAI_` or `ANTHROPIC_`): `_TIMEOUT_SECONDS` (60),
+`_MAX_RETRIES` (2), `_MAX_RETRY_DELAY_SECONDS` (1.0).
 
-For substantial changes, update this document and run focused provider tests,
-full pytest, Ruff, formatting, and mypy.
+Endpoints that do not report limits can be described with `MODEL_CONTEXT_WINDOW`,
+`MODEL_MAX_TOKENS` and `MODEL_SUPPORTS_IMAGES`. When the endpoint reports a
+context window at runtime, that value wins.
+
+## Dynamic providers
+
+Extensions may register process-local OpenAI-compatible providers through the
+extension API. Their definitions and refresh snapshots belong to the active
+extension generation and are never persisted; secrets resolve immediately before
+runtime creation and are excluded from representations, diagnostics, snapshots,
+sessions and exports.

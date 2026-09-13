@@ -2,7 +2,7 @@
 
 ## 首选：任务目录布局
 
-`tasks/<id>/` 是新的任务布局，支持独立验收与参考解准入：
+`tasks/<id>/` 用于任务准入、参考解检查和独立验收；`bench run` 的模型执行入口仍使用后文的 JSONL 清单：
 
 ```text
 tasks/<id>/
@@ -13,9 +13,7 @@ tasks/<id>/
   reference/       # 参考解，用于任务准入检查
 ```
 
-`task.toml` 里的 `artifacts` 是**唯一**决定哪些产物进入评分的字段。评分目录由
-原始 `environment/`、声明的 artifacts 和任务自带 `grader/` 组成，工作区里的其它内容一律
-不带入——所以改写可见测试、放 `conftest.py` 忽略收集、或改 `pytest.ini` 都无法影响判分。
+`task.toml` 的 `artifacts` 决定从 Agent 工作区复制哪些产物进入评分。评分目录以原始 `environment/`、声明的 artifacts 和任务自带 `grader/` 重建，未声明的测试或配置修改不会复制过去。这是文件选择和验收资产分离；执行产物仍需相应的进程、文件系统和网络隔离。
 
 `tasks.json` 记录任务选择清单（含 family 与 tags）；只有 `status: "ready"` 的条目有磁盘目录。
 
@@ -25,7 +23,15 @@ tasks/<id>/
 .\.venv\Scripts\python.exe -m pytest tests/redesign/test_real_task_specs.py -q
 ```
 
-## 兼容：单文件清单
+使用 CLI 检查全部 ready 任务的参考解：
+
+```powershell
+.\.venv\Scripts\run.exe bench suite evals/coding
+```
+
+`--candidate-root` 目前是保留参数，CLI 尚未读取它指定的候选目录，不能将其当作模型工作区的评分入口。目录任务的候选产物验收由 `GraderSuiteRunner` 等库接口承接。
+
+## 单文件清单：模型执行与链路验证
 
 `tasks.jsonl` 每行定义一个隔离任务：
 
@@ -44,12 +50,11 @@ tasks/<id>/
 
 注意：这种单文件清单的 `verify` 在工作区内运行，因此它**不是**独立验收，只适合验证链路。
 
-运行两个故意以失败状态开局的 smoke fixture：
+用单文件清单跑一次链路验证：
 
 ```powershell
-.\.venv\Scripts\run.exe bench run evals/coding/smoke/tasks.jsonl `
+.\.venv\Scripts\run.exe bench run <tasks.jsonl> `
   --output-root .run/evals/coding-smoke `
-  --extension extensions/observability `
   --candidate-id smoke
 .\.venv\Scripts\run.exe bench rebuild .run/evals/coding-smoke
 ```

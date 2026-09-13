@@ -7,8 +7,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from run_agent_coding.host.evaluation import EvaluationService
+from run_agent_coding.host.inference import InferenceService
+from run_agent_coding.host.maintenance import MaintenanceRegistry
 from run_agent_core.session.contracts import AppendReceipt, RunToken
-from run_agent_core.session.entries import CustomEntry
+from run_agent_core.session.entries import CustomEntry, SessionEntry
 from run_agent_core.types import JSONValue
 
 if TYPE_CHECKING:
@@ -122,6 +124,12 @@ class HostServices(Protocol):
     @property
     def evaluation(self) -> EvaluationService: ...
 
+    @property
+    def inference(self) -> InferenceService: ...
+
+    @property
+    def maintenance(self) -> MaintenanceRegistry: ...
+
     def scope(self, scope: ServiceScope = "session") -> ScopedServices:
         """Choose one host-bound scope; identities cannot be supplied by tools."""
         ...
@@ -144,6 +152,7 @@ class HostServicesRegistry(Protocol):
         expected_generation: str | None = None,
         handlers: Mapping[str, Mapping[str, TaskHandler]] | None = None,
         activation: SessionActivation | None = None,
+        inference: InferenceService | None = None,
     ) -> HostPublication: ...
 
     async def retire(self, session_id: str, generation: str) -> int:
@@ -242,6 +251,10 @@ class SnapshotService(Protocol):
 class HistoryService(Protocol):
     async def read_custom(self, entry_id: str) -> CustomEntry:
         """Read a persisted custom entry belonging to this Session."""
+        ...
+
+    async def read_completed_run(self, run_id: str) -> Sequence[SessionEntry]:
+        """Read the committed entries produced by one completed run."""
         ...
 
 

@@ -71,6 +71,8 @@ def test_print_pipeline_returns_one_json_and_resumes_sqlite(tmp_path, truncated)
         **os.environ,
         "OPENAI_API_KEY": "offline-test-key",
         "OPENAI_BASE_URL": f"http://127.0.0.1:{server.server_port}/v1",
+        # The truncated case is a Responses stream cut before completion.
+        "OPENAI_API": "openai-responses",
     }
     command = [
         sys.executable,

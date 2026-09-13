@@ -1,10 +1,9 @@
-"""RED: a managed task carries a host-assigned origin kind (P5-2).
+"""A managed task carries a host-assigned origin kind.
 
 The host, not the extension and not the payload, decides whether a task is
 ordinary user work or an auxiliary task such as a review. Auxiliary work must be
 excludable from triggering further reviews, and the classification has to survive
-a round trip through storage so it can be queried later - which is also what A05
-means by the convergence state being inspectable.
+a round trip through storage so it can be queried later.
 """
 
 from dataclasses import replace

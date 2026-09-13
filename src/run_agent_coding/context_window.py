@@ -160,16 +160,6 @@ def estimate_tool_tokens(tool: AgentTool) -> int:
     )
 
 
-def estimate_context_tokens(
-    *,
-    system: str,
-    messages: tuple[AgentMessage, ...],
-    tools: tuple[AgentTool, ...],
-) -> int:
-    """Return a rough estimate of the active provider context size."""
-    return estimate_context_usage(system=system, messages=messages, tools=tools).total_tokens
-
-
 def auto_compaction_threshold_for_context_window(context_window_tokens: int) -> int | None:
     """Return Pi-style automatic compaction threshold for a model context window."""
     if context_window_tokens <= 0:

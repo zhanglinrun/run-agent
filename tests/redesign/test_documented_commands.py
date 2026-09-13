@@ -1,14 +1,12 @@
-"""A10: the documented command surface matches the shipped one.
+"""The documented command surface matches the shipped one.
 
 Only ``run`` is registered, so no document may present an obsolete console
 script as a command; every ``run bench <sub>`` example must name a subcommand
-that actually exists; and every example extension must load and expose its
-entry point.
+that actually exists; and every bundled example extension must load and expose
+its entry point.
 
-The scan keys on ``<name>.exe``. The two guards that forbid these scripts mention
-them bare, so they do not trip the scan - which is why this needs no path
-exclusions. Historical checkpoints likewise do not appear, because they record
-prose rather than commands.
+The scan keys on ``<name>.exe``, so prose that merely names a script does not
+trip it.
 """
 
 import importlib.util
@@ -86,7 +84,8 @@ def test_the_eval_documentation_does_not_advertise_removed_jsonl_output():
 
 
 def example_modules() -> list[Path]:
-    return sorted((REPO / "examples").rglob("*.py"))
+    bundled = REPO / "src" / "run_agent_coding" / "data" / "examples"
+    return sorted(bundled.rglob("*.py"))
 
 
 @pytest.mark.parametrize("path", example_modules(), ids=lambda item: item.name)
@@ -95,5 +94,4 @@ def test_example_extension_loads_and_exposes_its_entry_point(path: Path):
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    entry = "setup_gateway" if path.parent.name == "gateway_extensions" else "setup"
-    assert callable(getattr(module, entry, None)), f"{path.name} has no {entry}()"
+    assert callable(getattr(module, "setup", None)), f"{path.name} has no setup()"

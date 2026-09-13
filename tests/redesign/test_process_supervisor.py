@@ -8,18 +8,10 @@ import threading
 from dataclasses import dataclass
 
 import pytest
-from tests.redesign.test_coding_application import ReplyProvider
-from tests.redesign.test_gateway_runtime import eventually, released, runtime, submit
 
 from run_agent_coding.host.process_identity import process_identity
 from run_agent_coding.host.processes import PosixProcess, ProcessCleanupError, ProcessSupervisor
 from run_agent_coding.tools import create_bash_tool
-from run_agent_core.messages import AssistantMessage, ToolCall, ToolResultMessage
-from run_agent_core.provider_events import AssistantDoneEvent
-from run_agent_gateway.coding import CodingAssignmentRunner
-from run_agent_gateway.scheduler import GatewayScheduler
-
-__all__ = ["runtime"]
 
 
 def shell_command(arguments):
@@ -239,131 +231,6 @@ async def test_actual_bash_tool_returns_process_exit_evidence(tmp_path, commands
     assert result.details["exit_code"] == 0
     assert "empty" in result.details["process"]["events"]
     assert not alive(await child_started(marker))
-
-
-async def test_gateway_stop_exits_real_process_before_releasing_assignment(
-    runtime, tmp_path, commands
-):
-    repo, owner, host = runtime
-    command, marker = commands
-
-    class ShellProvider(ReplyProvider):
-        async def stream_response(self, **kwargs):
-            yield AssistantDoneEvent(
-                reason="toolUse",
-                message=AssistantMessage(
-                    content=[ToolCall(id="shell", name="bash", arguments={"command": command()})],
-                    model="test",
-                    provider="test",
-                    stop_reason="toolUse",
-                ),
-            )
-
-    host.provider_factory = lambda _: ShellProvider()
-    runner = CodingAssignmentRunner(host)
-    scheduler = GatewayScheduler(repo, owner, runner)
-    receipt = await repo.admit(owner, submit(tmp_path), model="test")
-    await scheduler.start()
-    try:
-        pid = await child_started(marker)
-        assert alive(pid)
-        assert await repo.cancel(owner, receipt.task_id, principal_id="alice") == "cancelling"
-        scheduler.signal_cancel(receipt.task_id)
-        await eventually(lambda: released(repo, receipt.task_id), timeout=8)
-        assert not alive(pid)
-        assert not scheduler.errors and not runner.quarantined
-        state = await repo.task(receipt.task_id, principal_id="alice")
-        assert state["status"] == "cancelled"
-        lifecycle = await repo.database.run(
-            lambda c: c.execute(
-                "SELECT body_json FROM observations WHERE stream='process.lifecycle' ORDER BY seq"
-            ).fetchall()
-        )
-        records = [json.loads(row[0]) for row in lifecycle]
-        assert [r["phase"] for r in records] == ["launching", "started", "exited"]
-        assert all(r["run_id"] == state["run_id"] for r in records)
-        assert "empty" in records[-1]["events"]
-        journal = await repo.database.run(
-            lambda c: c.execute(
-                "SELECT status,native_json,outcome_json FROM managed_processes WHERE run_id=?",
-                (state["run_id"],),
-            ).fetchone()
-        )
-        assert journal[0] == "exited" and "native_identity" in json.loads(journal[1])
-        assert "empty" in json.loads(journal[2])["events"]
-    finally:
-        await scheduler.shutdown()
-        await repo.release_owner(owner)
-
-
-async def test_gateway_quarantines_when_real_process_exit_cannot_be_verified(
-    runtime,
-    tmp_path,
-    commands,
-    monkeypatch,
-):
-    repo, owner, host = runtime
-    command, marker = commands
-    if os.name == "nt":
-        from run_agent_coding.host.windows_jobs import WindowsJobProcess
-
-        process_type = WindowsJobProcess
-    else:
-        process_type = PosixProcess
-    active = process_type.active_count
-
-    class ShellProvider(ReplyProvider):
-        async def stream_response(self, **kwargs):
-            if not kwargs.get("tools") or any(
-                isinstance(message, ToolResultMessage) for message in kwargs["messages"]
-            ):
-                async for event in super().stream_response(**kwargs):
-                    yield event
-                return
-            yield AssistantDoneEvent(
-                reason="toolUse",
-                message=AssistantMessage(
-                    content=[
-                        ToolCall(id="shell", name="bash", arguments={"command": command("exit")})
-                    ],
-                    model="test",
-                    provider="test",
-                    stop_reason="toolUse",
-                ),
-            )
-
-    host.provider_factory = lambda _: ShellProvider()
-    original_open = host.open
-
-    async def open_assignment(assignment):
-        application = await original_open(assignment)
-        application.session._processes.grace_period = 0
-        application.session._processes.cleanup_timeout = 0.05
-        return application
-
-    monkeypatch.setattr(host, "open", open_assignment)
-    monkeypatch.setattr(process_type, "active_count", lambda _: 1)
-    runner = CodingAssignmentRunner(host)
-    scheduler = GatewayScheduler(repo, owner, runner)
-    receipt = await repo.admit(owner, submit(tmp_path), model="test")
-    await scheduler.start()
-    try:
-        await child_started(marker)
-
-        async def contained():
-            state = await repo.task(receipt.task_id, principal_id="alice")
-            return state if state["workspace_status"] == "quarantined" else None
-
-        state = await eventually(contained, timeout=8)
-        assert state["released"] == 0 and state["status"] == "outcome_unknown"
-        assert runner.quarantined and scheduler.errors
-        await repo.admit(owner, submit(tmp_path, "next"), model="test")
-        assert await repo.claim_next(owner) is None
-    finally:
-        monkeypatch.setattr(process_type, "active_count", active)
-        for application in runner.quarantined.values():
-            await application.session._processes.aclose()
-        await scheduler.shutdown()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows Job Object host death contract")

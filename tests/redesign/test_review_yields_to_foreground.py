@@ -1,4 +1,4 @@
-"""RED: the review yields to the foreground without losing the request (T-023).
+"""The review yields to the foreground without losing the request.
 
 A background review must not compete with the foreground, and its cost must be
 attributed to the run that caused it rather than disappearing into an anonymous
@@ -16,8 +16,9 @@ unattributed ledger refuses to report rather than reporting anonymously.
 """
 
 import pytest
-from extensions.experience.review import ForegroundGate
-from extensions.experience.worker import ReviewLedger, UnattributedUsage
+
+from run_agent_extensions.experience.review import ForegroundGate
+from run_agent_extensions.experience.worker import ReviewLedger, UnattributedUsage
 
 
 def test_a_busy_foreground_defers_the_review():

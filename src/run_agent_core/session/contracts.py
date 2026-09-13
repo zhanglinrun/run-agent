@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Literal
 
 from run_agent_core.session.entries import SessionEntry
 
@@ -71,26 +70,3 @@ class CompletionReceipt:
     head_id: str | None
     watermark: int
     snapshot_id: str | None = None
-
-
-class SessionRepository(Protocol):
-    async def get_head(self, session_id: str, branch_id: str = "main") -> BranchHead: ...
-
-    async def append_entries(
-        self,
-        entries: Sequence[SessionEntry],
-        *,
-        token: RunToken,
-        branch_id: str = "main",
-        expected_head: str | None,
-    ) -> AppendReceipt: ...
-
-    async def read_entries(
-        self,
-        session_id: str,
-        *,
-        branch_id: str | None = None,
-        after_seq: int = 0,
-        through_seq: int | None = None,
-        limit: int = 1000,
-    ) -> EntryPage: ...

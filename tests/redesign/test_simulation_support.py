@@ -1,4 +1,4 @@
-"""RED: minimal runtime-simulation support required by P0-6.
+"""Minimal runtime-simulation support for the runtime and learning suites.
 
 These tests define the contract for three pieces of reusable support the later
 Runtime/learning suites need: deterministic fault injection, controllable tools,

@@ -1,4 +1,4 @@
-"""RED: a timed-out dialog must hand input over, not lose it (T-002).
+"""A timed-out dialog must hand input over, not lose it.
 
 Tracing proves the ordering: the caller resumes from ``ui.input(timeout=...)`` in the
 same instant that the dialog reader is

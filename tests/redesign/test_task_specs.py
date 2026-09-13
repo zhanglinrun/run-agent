@@ -1,4 +1,4 @@
-"""RED: task specification layout and reference admission (P0-4).
+"""Task specification layout and reference admission.
 
 Covers the logical task layout of plan 8.3 and the admission properties of 8.5:
 the authoritative grader lives in the task, never in the workspace the agent can

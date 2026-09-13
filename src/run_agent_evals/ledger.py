@@ -1,4 +1,4 @@
-"""The cost and latency ledger a report carries (T-018, T-019).
+"""The cost and latency ledger a report carries.
 
 Chapter 7 lists what model selection has to weigh and, in doing so, what a report has
 to report: cost per task, cache and retry behaviour, and the two latency stages it is

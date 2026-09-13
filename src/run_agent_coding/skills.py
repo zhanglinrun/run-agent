@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,16 +31,6 @@ class Skill:
 def is_skill_candidate(path: Path) -> bool:
     """Return whether an entry is a loader-eligible ``*/SKILL.md`` candidate."""
     return path.name == "SKILL.md" and (path.is_file() or path.is_symlink())
-
-
-@dataclass(frozen=True, slots=True)
-class SkillInvocation:
-    """Parsed expanded skill invocation message."""
-
-    name: str
-    location: str
-    content: str
-    additional_instructions: str | None = None
 
 
 def load_skills(paths: RunAgentResourcePaths | None = None) -> list[Skill]:
@@ -129,35 +118,6 @@ def format_skill_invocation(
     if additional_instructions and additional_instructions.strip():
         return f"{skill_block}\n\n{additional_instructions.strip()}"
     return skill_block
-
-
-def parse_skill_invocation(text: str) -> SkillInvocation | None:
-    """Parse Run Agent's expanded skill invocation message format."""
-    match = re.match(
-        r'^<skill name="([^"]+)" location="([^"]+)">\n([\s\S]*?)\n</skill>(?:\n\n([\s\S]+))?$',
-        text,
-    )
-    if match is None:
-        return None
-    name, location, content, additional_instructions = match.groups()
-    return SkillInvocation(
-        name=name,
-        location=location,
-        content=content,
-        additional_instructions=additional_instructions,
-    )
-
-
-def build_skill_index(skills: Sequence[Skill]) -> str:
-    """Build a concise index of available skills for future system prompt assembly."""
-    visible_skills = [skill for skill in skills if not skill.disable_model_invocation]
-    if not visible_skills:
-        return "Available skills: none"
-    lines = ["Available skills:"]
-    for skill in sorted(visible_skills, key=lambda item: item.name):
-        description = skill.description or "No description"
-        lines.append(f"- {skill.name}: {description}")
-    return "\n".join(lines)
 
 
 def _load_skills_from_dir(skills_dir: Path) -> list[Skill]:

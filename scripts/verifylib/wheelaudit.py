@@ -1,8 +1,8 @@
 """Audit the built wheel layout, mirroring the CI wheel-layout guard.
 
 Required package set matches the CI guard, plus run_agent_entry.py which the
-plan requires to ship in the wheel. Stale packages and leaked optional
-extensions fail the audit.
+plan requires to ship in the wheel. Stale packages and leaked development
+files fail the audit.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ REQUIRED = (
     "run_agent_gateway/__init__.py",
     "run_agent_observability/__init__.py",
     "run_agent_evals/__init__.py",
+    "run_agent_extensions/__init__.py",
     "run_agent_entry.py",
 )
 LEAK_SUFFIXES = ("/builtins/mem0_memory.py", "/builtins/harness_features.py")
@@ -30,7 +31,7 @@ def audit(wheel: Path) -> list[str]:
     problems = [f"missing from wheel: {name}" for name in REQUIRED if name not in names]
     problems += [f"stale agents package: {n}" for n in sorted(names) if n.startswith("agents/")]
     problems += [
-        f"optional extension leaked into the wheel: {n}" for n in sorted(names) if _leaked(n)
+        f"development file leaked into the wheel: {n}" for n in sorted(names) if _leaked(n)
     ]
     return problems
 

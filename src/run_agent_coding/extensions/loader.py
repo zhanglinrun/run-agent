@@ -379,18 +379,6 @@ def _load_extension(
     ), []
 
 
-def unload_extension_modules() -> int:
-    """Remove previously imported extension modules from `sys.modules`.
-
-    Used by reload so re-discovered extensions import fresh module objects.
-    Returns the number of modules removed.
-    """
-    stale = [name for name in sys.modules if name.startswith(f"{_MODULE_NAME_PREFIX}_")]
-    for name in stale:
-        del sys.modules[name]
-    return len(stale)
-
-
 def _error_diagnostic(entry: DiscoveredExtension, message: str) -> ResourceDiagnostic:
     return ResourceDiagnostic(
         kind="extension",

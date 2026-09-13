@@ -1,7 +1,7 @@
-"""Reference admission checks over the real P0-4 task selection.
+"""Reference admission checks over the real task selection.
 
 Every task marked ``ready`` in evals/coding/tasks/tasks.json must support the
-three admission verdicts P0-4 asks for: a no-op solution fails, the reference
+three admission verdicts: a no-op solution fails, the reference
 solution passes, and a solution that only changes prose the agent can see fails.
 """
 

@@ -16,11 +16,12 @@ from dotenv import load_dotenv
 from run_agent_coding.application import ApplicationOptions, CodingApplication
 from run_agent_coding.events import AgentSettledEvent
 from run_agent_coding.paths import RunAgentPaths
-from run_agent_coding.provider_config import load_provider_settings
+from run_agent_coding.provider_config import load_provider_settings, provider_has_usable_credentials
 from run_agent_coding.session_manager import SessionManager
 from run_agent_coding.thinking import normalize_thinking_level
 from run_agent_core.events import MessageEndEvent
 from run_agent_core.messages import AssistantMessage
+from run_agent_extensions import resolve_extension_path
 
 app = typer.Typer(add_completion=False, pretty_exceptions_enable=False)
 
@@ -52,19 +53,28 @@ def main(
         bool, typer.Option(help="Explicitly adopt current resources when resuming a session.")
     ] = False,
     thinking: Annotated[str | None, typer.Option(help="Reasoning level.")] = None,
-    extension: Annotated[list[Path] | None, typer.Option(help="Load a Session extension.")] = None,
-    no_extensions: Annotated[bool, typer.Option(help="Disable Session extensions.")] = False,
+    extension: Annotated[
+        list[str] | None,
+        typer.Option(help="Load a Session extension by path or built-in name."),
+    ] = None,
+    no_extensions: Annotated[
+        bool,
+        typer.Option(help="Disable default and discovered extensions; explicit paths still load."),
+    ] = False,
     project_extensions: Annotated[
         bool, typer.Option(help="Discover trusted project extensions.")
+    ] = False,
+    trace: Annotated[
+        bool, typer.Option(help="Record one span per turn, provider call and tool call.")
     ] = False,
     trust_project: Annotated[
         bool, typer.Option(help="Trust resources in this project for this invocation.")
     ] = False,
     sessions: Annotated[bool, typer.Option(help="List stored sessions for this project.")] = False,
     providers: Annotated[bool, typer.Option(help="List configured providers.")] = False,
-    login: Annotated[
-        str | None, typer.Option(help="Configure provider credentials before starting a session.")
-    ] = None,
+    tui: Annotated[
+        bool, typer.Option("--tui/--no-tui", help="Use the full-screen terminal interface.")
+    ] = True,
 ) -> None:
     """Run Agent: an interactive coding harness. Also: run gateway, run bench."""
     cwd = cwd.resolve()
@@ -74,20 +84,14 @@ def main(
         raise typer.BadParameter("Working directory does not exist", param_hint="--cwd")
     load_dotenv(cwd / ".env", override=False)
     paths = RunAgentPaths(home=state_dir.resolve()) if state_dir else RunAgentPaths()
-    if login is not None:
-        if not sys.stdin.isatty():
-            raise typer.BadParameter("Login requires an interactive terminal.")
-        from run_agent_coding.authentication import login as authenticate
-        from run_agent_coding.terminal import DirectTerminalUi
-
-        try:
-            typer.echo(asyncio.run(authenticate(paths, DirectTerminalUi(), login)))
-        except (KeyboardInterrupt, asyncio.CancelledError):
-            raise typer.Exit(130) from None
-        return
     if providers:
-        for item in load_provider_settings(paths).providers:
-            typer.echo(item.name)
+        settings = load_provider_settings(paths)
+        for item in settings.providers:
+            state = (
+                "configured" if provider_has_usable_credentials(item) else f"set {item.api_key_env}"
+            )
+            default = " (default)" if item.name == settings.default_provider else ""
+            typer.echo(f"{item.name}{default}: {state}")
         return
     if sessions:
         asyncio.run(_list_sessions(paths, cwd))
@@ -114,13 +118,19 @@ def main(
             model=model or os.environ.get("MODEL"),
             resume=resume,
             refresh_resources=refresh_resources,
-            extension_paths=tuple(extension or ()),
+            extension_paths=tuple(resolve_extension_path(item) for item in extension or ()),
             extensions_enabled=not no_extensions,
             project_extensions_enabled=project_extensions,
+            trace_enabled=trace,
             trust_override="approve" if trust_project else None,
             thinking=normalize_thinking_level(thinking) if thinking is not None else None,
         )
-        succeeded = asyncio.run(_run(options, prompt, print_mode=print_mode, output=output))
+        if tui or print_mode:
+            succeeded = asyncio.run(_run(options, prompt, print_mode=print_mode, output=output))
+        else:
+            succeeded = asyncio.run(
+                _run(options, prompt, print_mode=False, output=output, tui=False)
+            )
     except KeyboardInterrupt:
         raise typer.Exit(130) from None
     except Exception as exc:
@@ -143,13 +153,23 @@ async def _list_sessions(paths: RunAgentPaths, cwd: Path) -> None:
 
 
 async def _run(
-    options: ApplicationOptions, prompt: str, *, print_mode: bool, output: OutputFormat
+    options: ApplicationOptions,
+    prompt: str,
+    *,
+    print_mode: bool,
+    output: OutputFormat,
+    tui: bool = True,
 ) -> bool:
     async with await CodingApplication.open(options) as application:
         if not print_mode:
-            from run_agent_coding.terminal import Terminal
+            if tui:
+                from run_agent_coding.tui import run_tui_app
 
-            await Terminal(application).run(prompt)
+                await run_tui_app(application, initial_prompt=prompt)
+            else:
+                from run_agent_coding.terminal import Terminal
+
+                await Terminal(application).run(prompt)
             return True
         await application.start()
         if prompt.startswith("/"):

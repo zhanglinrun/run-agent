@@ -34,8 +34,7 @@ from run_agent_coding.storage.sessions import SqliteSessionRepository
 from run_agent_coding.storage.resources import NamespaceResources
 assert 'run_agent_coding.session' not in sys.modules
 assert 'run_agent_coding.cli' not in sys.modules
-assert not any(name.startswith(('textual', 'run_agent_gateway', 'run_agent_evals'))
-               for name in sys.modules)
+assert not any(name.startswith(('run_agent_gateway', 'run_agent_evals')) for name in sys.modules)
 """
     result = subprocess.run([sys.executable, "-c", code], text=True, capture_output=True)
     assert result.returncode == 0, result.stderr

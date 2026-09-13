@@ -18,6 +18,7 @@ __pycache__/
 
 # 运行时数据（会话、trace、评测证据等）；保留可提交的项目 Skills
 .run/*
+/.run-smoke/
 !.run/skills/
 !.run/skills/**
 
@@ -35,13 +36,6 @@ build/
 
 /study/*
 
-examples/*
-!examples/README.md
-!examples/extensions/
-!examples/extensions/**
-!examples/gateway_extensions/
-!examples/gateway_extensions/**
-/examples/**/__pycache__/
 .codegraph/
 AI-Agents-in-Depth-*.pdf
 

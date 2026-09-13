@@ -1,9 +1,7 @@
-"""RED: a managed task declares a budget, and the host records it (P5-2, A05).
+"""A managed task declares a budget, and the host records it.
 
-A05 requires that after an extension is closed, the task's cancellation, budget
-and resource convergence are all inspectable. Cancellation and convergence are
-already queryable; the budget was not, because the task contract had no notion of
-one. This pins that contract: a task declares its ceilings, the declaration
+After an extension is closed, the task's cancellation, budget and resource
+convergence are all inspectable: a task declares its ceilings, the declaration
 survives storage, and it reads back with the task's terminal status.
 """
 
@@ -54,7 +52,7 @@ async def test_the_declared_budget_survives_storage_and_reads_back(tmp_path):
         )
         task = await completed(services.tasks, task_id)
         assert task.status == "succeeded"
-        # A05: the budget must still be inspectable once the task is terminal.
+        # The budget must still be inspectable once the task is terminal.
         assert task.budget == declared
 
 
@@ -73,7 +71,7 @@ async def test_an_unbounded_budget_round_trips_as_uncapped(tmp_path):
 
 
 async def test_a_closed_extension_still_reports_status_budget_and_convergence(tmp_path):
-    """A05: cancellation, budget and convergence all stay inspectable after close."""
+    """Cancellation, budget and convergence all stay inspectable after close."""
     extension = tmp_path / "worker.py"
     extension.write_text(WORKER_SETUP, encoding="utf-8")
     opts = replace(options(tmp_path), extension_paths=(extension,))

@@ -68,26 +68,6 @@ class AgentCallDiagnosticLogger:
         self._append(entry)
         return self.path
 
-    def log_huggingface_route_failover(
-        self,
-        *,
-        context: AgentCallDiagnosticContext,
-        failed_route: str,
-        replacement_route: str | None,
-        success: bool,
-        error_message: str | None,
-    ) -> Path:
-        """Log one completed automatic Hugging Face route failover."""
-        entry = _base_entry(context, phase="agent_loop_route_failover", kind="route_failover")
-        entry["route_failover"] = {
-            "from": failed_route,
-            "to": replacement_route,
-            "success": success,
-            **({"error": error_message} if error_message is not None else {}),
-        }
-        self._append(entry)
-        return self.path
-
     def _append(self, entry: dict[str, Any]) -> None:
         self.sink.emit(f"diagnostics:{entry['session_id'] or 'host'}", entry)
 

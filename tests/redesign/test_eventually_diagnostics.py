@@ -1,10 +1,7 @@
-"""RED: a timed-out eventually() must say what it was waiting for and how long.
+"""A timed-out eventually() must say what it was waiting for and how long.
 
-The gate failed once on test_mixed_load with a bare TimeoutError and nothing else, and
-that report is why the failure is still uncharacterised. Twelve measured rounds drain
-in 0.92-1.08 seconds against a five-second budget, and the same measurement under load
-gives the same numbers, so "five seconds is too tight" is not supported - which means
-the next occurrence has to be informative rather than assumed.
+A bare TimeoutError once left a gate failure uncharacterised, so the next occurrence
+has to be informative rather than assumed.
 
 This pins that: a timed-out wait reports the elapsed time and the check it was polling,
 so the next failure says whether it was slow or stuck.
@@ -13,7 +10,7 @@ so the next failure says whether it was slow or stuck.
 import asyncio
 
 import pytest
-from tests.redesign.test_gateway_runtime import eventually
+from tests.redesign.waiting import eventually
 
 
 async def test_a_satisfied_condition_returns_its_value():

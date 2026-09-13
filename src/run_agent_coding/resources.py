@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from run_agent_coding.paths import RunAgentPaths
-from run_agent_core.types import JSONValue
 
 
 class ResourceError(ValueError):
@@ -369,8 +368,3 @@ def derive_description(content: str) -> str | None:
             return stripped.lstrip("#").strip() or None
         return stripped
     return None
-
-
-def metadata_to_json(metadata: dict[str, str]) -> dict[str, JSONValue]:
-    """Convert string metadata into JSON-like values."""
-    return dict(metadata)

@@ -13,7 +13,6 @@ from run_agent_coding.paths import RunAgentPaths
 from run_agent_coding.project_trust import TrustDefault
 from run_agent_coding.provider_config import ProviderSettings, load_provider_settings
 from run_agent_coding.session_manager import SessionManager
-from run_agent_coding.session_usage import estimated_request_cost
 from run_agent_coding.storage.settle import settle
 from run_agent_coding.thinking import ThinkingLevel
 from run_agent_core.events import MessageEndEvent
@@ -184,16 +183,7 @@ def _call_cost(record: dict[str, Any]) -> tuple[float | None, str]:
     reported = float(record.get("cost", 0.0))
     if reported > 0:
         return reported, "provider_reported"
-    estimate = estimated_request_cost(
-        str(record.get("provider", "")),
-        str(record.get("model", "")),
-        fresh=int(record.get("input_tokens", 0)),
-        cached=int(record.get("cache_read_tokens", 0)),
-        cache_write=int(record.get("cache_write_tokens", 0)),
-        cache_write_1h=int(record.get("cache_write_1h_tokens", 0)),
-        output=int(record.get("output_tokens", 0)),
-    )
-    return estimate, "catalog_estimate" if estimate is not None else "unavailable"
+    return None, "unavailable"
 
 
 __all__ = ["CodingTaskExecutor"]

@@ -1,4 +1,4 @@
-"""A weighted rubric with pitfalls and a veto (T-014, T-015).
+"""A weighted rubric with pitfalls and a veto.
 
 Chapter 7's four rules, and what each one demands here:
 

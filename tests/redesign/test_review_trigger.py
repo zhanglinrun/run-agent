@@ -1,4 +1,4 @@
-"""RED: which finished runs deserve a review, and how often (P5-1).
+"""Which finished runs deserve a review, and how often.
 
 A durable completion is not by itself a reason to review. The policy has to pick
 out the runs worth learning from, never review the same run twice, respect a
@@ -7,7 +7,8 @@ review and the loop never ends.
 """
 
 import pytest
-from extensions.experience.review import (
+
+from run_agent_extensions.experience.review import (
     ReviewPolicy,
     ReviewRequest,
     ReviewTrigger,

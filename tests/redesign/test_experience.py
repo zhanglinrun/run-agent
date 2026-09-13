@@ -1,102 +1,139 @@
-import asyncio
-import json
+"""The experience extension over a real session: Markdown memory and managed Skills.
+
+Memory follows my-pi-agent: two entry-delimited files with a character budget, a
+prompt snapshot that is frozen for the life of the session, and a controlled tool
+that adds, replaces and removes single entries. Skills follow hermes-agent's
+``skill_manage``: a SKILL.md directory the ordinary loader picks up on reload.
+"""
+
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from extensions.experience.models import Proposal
-from extensions.experience.repository import ExperienceRepository
 from tests.redesign.test_coding_application import ReplyProvider, options
-from tests.redesign.test_host_services import context
 
 from run_agent_coding.application import CodingApplication
+from run_agent_coding.host.learning import writeback_disabled
 from run_agent_core.messages import AssistantMessage, ToolCall, ToolResultMessage
 from run_agent_core.provider_events import AssistantDoneEvent
-from run_agent_core.session.contracts import SessionConflict
+from run_agent_extensions.experience.memory import ENTRY_DELIMITER, MemoryFile
 
-EXTENSION = Path(__file__).resolve().parents[2] / "extensions" / "experience"
+EXTENSION = Path(__file__).resolve().parents[2] / "src" / "run_agent_extensions" / "experience"
 
 
 def opts(tmp_path, **kwargs):
-    return replace(options(tmp_path), extension_paths=(EXTENSION,), **kwargs)
-
-
-def repository(app):
-    return ExperienceRepository(context(app).services, app.session.session_id)
-
-
-async def evidence(app, action="remember"):
-    return await app.session.append_custom_entry(
-        "experience.command",
-        {
-            "action": action,
-            "scope": "project",
-            "arguments": [],
-        },
+    return replace(
+        options(tmp_path), extension_paths=(EXTENSION,), trust_default="always", **kwargs
     )
 
 
-async def test_manual_preference_persists_scopes_refresh_forget_and_rollback(tmp_path):
-    async with await CodingApplication.open(opts(tmp_path), provider=ReplyProvider()) as app:
+def tool(app, name):
+    return next(item for item in app.session.tools if item.name == name)
+
+
+class RecordingProvider(ReplyProvider):
+    """Remembers the system prompt each run was actually sent."""
+
+    def __init__(self) -> None:
+        self.systems: list[str] = []
+
+    async def stream_response(self, *, messages, system="", **kwargs):
+        self.systems.append(system)
+        async for event in super().stream_response(messages=messages, **kwargs):
+            yield event
+
+
+async def test_memory_files_are_entry_delimited_and_frozen_in_the_prompt(tmp_path):
+    provider = RecordingProvider()
+    async with await CodingApplication.open(opts(tmp_path), provider=provider) as app:
         await app.start()
-        result = await app.command('/experience remember user user style "Use concise replies"')
-        assert "promoted" in result.message
-        original = (await repository(app).search("user"))[0]
-        assert "Use concise replies" not in app.session.system_prompt
+        result = await app.command("/memory add user Use concise replies")
+        assert "Added in USER.md" in result.message
+        user_file = tmp_path / "state" / "USER.md"
+        assert user_file.read_text(encoding="utf-8") == "Use concise replies"
+
+        await app.command("/memory add memory Run pytest before committing")
+        project_file = tmp_path / ".run" / "MEMORY.md"
+        assert project_file.read_text(encoding="utf-8") == "Run pytest before committing"
+
+        # The prompt shown to the model is the snapshot captured at session start, so
+        # a write during the session does not move it until /reload.
+        events = [event async for event in app.prompt("hello")]
+        assert events[-1].status == "succeeded"
+        assert "Use concise replies" not in provider.systems[-1]
         await app.command("/reload")
-        assert "Use concise replies" in app.session.system_prompt
-        await app.command('/experience remember project memory build "Run pytest"')
-        await app.command("/reload")
-        assert "Run pytest" in app.session.system_prompt
-        session_id = app.session.session_id
-        await app.command("/experience forget user user style")
-        await app.command("/reload")
-        assert "Use concise replies" not in app.session.system_prompt
-        await app.command(f"/experience rollback user user/style {original.version}")
-        assert (await repository(app).search("user"))[0].version == original.version
-    async with await CodingApplication.open(
-        opts(tmp_path, resume=session_id, refresh_resources=True), provider=ReplyProvider()
-    ) as resumed:
-        await resumed.start()
-        assert "Use concise replies" in resumed.session.system_prompt
+        _ = [event async for event in app.prompt("again")]
+        assert "Use concise replies" in provider.systems[-1]
+        assert "Run pytest before committing" in provider.systems[-1]
+
+        await app.command("/memory add user Prefers Chinese")
+        assert user_file.read_text(encoding="utf-8") == ENTRY_DELIMITER.join(
+            ["Use concise replies", "Prefers Chinese"]
+        )
+        shown = (await app.command("/memory show")).message
+        assert "Prefers Chinese" in shown and "Run pytest" in shown
+
     other = tmp_path / "other"
     other.mkdir()
-    async with await CodingApplication.open(
-        opts(tmp_path, cwd=other), provider=ReplyProvider()
-    ) as app:
+    provider = RecordingProvider()
+    async with await CodingApplication.open(opts(tmp_path, cwd=other), provider=provider) as app:
         await app.start()
-        assert "Use concise replies" in app.session.system_prompt
-        assert "Run pytest" not in app.session.system_prompt
+        _ = [event async for event in app.prompt("hi")]
+        assert "Use concise replies" in provider.systems[-1]
+        assert "Run pytest before committing" not in provider.systems[-1]
 
 
-async def test_candidates_do_not_publish_and_concurrent_heads_do_not_lose_updates(tmp_path):
-    async with (
-        await CodingApplication.open(opts(tmp_path), provider=ReplyProvider()) as first,
-        await CodingApplication.open(opts(tmp_path), provider=ReplyProvider()) as second,
-    ):
-        await first.start()
-        await second.start()
-        a, b = await asyncio.gather(
-            repository(first).propose(
-                Proposal(name="build", content="first"), command_id=await evidence(first)
-            ),
-            repository(second).propose(
-                Proposal(name="build", content="second"), command_id=await evidence(second)
-            ),
+async def test_the_memory_tool_adds_replaces_and_removes_single_entries(tmp_path):
+    async with await CodingApplication.open(opts(tmp_path), provider=ReplyProvider()) as app:
+        await app.start()
+        memory = tool(app, "memory")
+        added = await memory.execute(
+            "1", {"target": "memory", "action": "add", "content": "Build with uv"}
         )
-        assert not await repository(first).search("project")
-        results = await asyncio.gather(
-            repository(first).publish_manual("project", a.candidate_id, await evidence(first)),
-            repository(second).publish_manual("project", b.candidate_id, await evidence(second)),
-            return_exceptions=True,
+        assert added.details["accepted"] is True and added.details["scope"] == "project"
+        duplicate = await memory.execute(
+            "2", {"target": "memory", "action": "add", "content": "Build with uv"}
         )
-        assert sum(isinstance(item, SessionConflict) for item in results) == 1
-        assert len(await repository(first).search("project")) == 1
-        assert len(await repository(first).candidates("project")) == 2
+        # A duplicate add is idempotent, the way hermes treats it: reported, not refused.
+        assert duplicate.details["accepted"] is True and "already exists" in duplicate.text
+        assert (tmp_path / ".run" / "MEMORY.md").read_text(encoding="utf-8") == "Build with uv"
+        replaced = await memory.execute(
+            "3",
+            {
+                "target": "memory",
+                "action": "replace",
+                "old_text": "with uv",
+                "new_content": "Build with uv sync",
+            },
+        )
+        assert replaced.details["accepted"] is True
+        removed = await memory.execute(
+            "4", {"target": "memory", "action": "remove", "old_text": "uv sync"}
+        )
+        assert removed.details["accepted"] is True
+        assert (tmp_path / ".run" / "MEMORY.md").read_text(encoding="utf-8") == ""
+        with pytest.raises(ValueError):
+            await memory.execute("5", {"target": "memory", "action": "publish"})
 
 
-async def test_model_tool_can_only_propose_with_actual_snapshot_evidence(tmp_path):
-    class Proposer(ReplyProvider):
+def test_a_memory_file_refuses_over_budget_and_ambiguous_writes(tmp_path):
+    memory_file = MemoryFile(tmp_path / "MEMORY.md", limit=40)
+    memory_file.load()
+    assert memory_file.add("alpha fact").accepted
+    assert memory_file.add("beta fact").accepted
+    refused = memory_file.add("a rather long entry that will not fit")
+    assert refused.accepted is False and "exceeds" in refused.message
+    assert "alpha fact" in refused.message
+    ambiguous = memory_file.replace("fact", "gamma")
+    assert ambiguous.accepted is False and "Ambiguous" in ambiguous.message
+    assert memory_file.entries == ("alpha fact", "beta fact")
+    reloaded = MemoryFile(tmp_path / "MEMORY.md", limit=40)
+    reloaded.load()
+    assert reloaded.entries == ("alpha fact", "beta fact")
+
+
+async def test_the_model_can_write_memory_through_a_tool_call(tmp_path):
+    class Writer(ReplyProvider):
         async def stream_response(self, *, messages, **kwargs):
             if not any(isinstance(message, ToolResultMessage) for message in messages):
                 yield AssistantDoneEvent(
@@ -104,14 +141,12 @@ async def test_model_tool_can_only_propose_with_actual_snapshot_evidence(tmp_pat
                     message=AssistantMessage(
                         content=[
                             ToolCall(
-                                id="propose",
+                                id="remember",
                                 name="memory",
                                 arguments={
-                                    "action": "propose",
-                                    "proposal": {
-                                        "name": "observed",
-                                        "content": "An observed project constraint",
-                                    },
+                                    "target": "user",
+                                    "action": "add",
+                                    "content": "Wants answers in Chinese",
                                 },
                             ),
                         ],
@@ -123,93 +158,86 @@ async def test_model_tool_can_only_propose_with_actual_snapshot_evidence(tmp_pat
                 async for event in super().stream_response(messages=messages, **kwargs):
                     yield event
 
-    async with await CodingApplication.open(opts(tmp_path), provider=Proposer()) as app:
-        _ = [event async for event in app.prompt("Investigate the project")]
-        candidates = await repository(app).candidates("project")
-        assert len(candidates) == 1
-        candidate = candidates[0]
-        assert candidate.status == "needs_evidence" and candidate.source_kind == "model"
-        snapshot = await context(app).services.snapshots.read(candidate.source_snapshot)
-        assert snapshot.run_id == candidate.source_run
-        assert not await repository(app).search("project")
-        result = await app.command(f"/experience publish project {candidate.candidate_id}")
-        assert "promoted manually" in result.message
-        assert len(await repository(app).search("project")) == 1
-
-
-async def test_source_proof_required_and_tool_rejects_publication_action(tmp_path):
-    async with await CodingApplication.open(opts(tmp_path), provider=ReplyProvider()) as app:
-        await app.start()
-        with pytest.raises(ValueError, match="source command"):
-            await repository(app).propose(Proposal(name="no-evidence", content="unverified"))
-        tool = next(item for item in app.session.tools if item.name == "memory")
-        with pytest.raises(ValueError):
-            await tool.execute("publish", {"action": "publish", "scope": "project"})
-        with pytest.raises(ValueError, match="No recorded model input"):
-            await tool.execute(
-                "propose",
-                {
-                    "action": "propose",
-                    "proposal": {"name": "test", "content": "unverified"},
-                },
-            )
-        await app.command('/experience remember project memory search "deterministic evidence"')
-        result = await tool.execute("search", {"action": "search", "query": "deterministic"})
-        assert json.loads(result.text)[0]["key"] == "memory/search"
-
-
-async def test_expired_resources_are_omitted_from_new_snapshots_and_extension_is_optional(tmp_path):
-    async with await CodingApplication.open(opts(tmp_path), provider=ReplyProvider()) as app:
-        await app.start()
-        repo = repository(app)
-        candidate = await repo.propose(
-            Proposal(name="old", content="expired environment", expires_at=1),
-            command_id=await evidence(app),
+    async with await CodingApplication.open(opts(tmp_path), provider=Writer()) as app:
+        _ = [event async for event in app.prompt("Remember my language")]
+        assert (tmp_path / "state" / "USER.md").read_text(encoding="utf-8") == (
+            "Wants answers in Chinese"
         )
-        await repo.publish_manual("project", candidate.candidate_id, await evidence(app))
+
+
+async def test_skill_manage_writes_a_loadable_skill_and_refuses_bad_paths(tmp_path):
+    async with await CodingApplication.open(opts(tmp_path), provider=ReplyProvider()) as app:
+        await app.start()
+        skills = tool(app, "skill_manage")
+        created = await skills.execute(
+            "1",
+            {
+                "action": "create",
+                "name": "deploy",
+                "description": "Deploy the service safely",
+                "body": "# Deploy\n\n## Procedure\n1. Run the tests.\n",
+            },
+        )
+        assert created.details["accepted"] is True
+        skill_file = tmp_path / ".run" / "skills" / "deploy" / "SKILL.md"
+        text = skill_file.read_text(encoding="utf-8")
+        assert "description: Deploy the service safely" in text
+        assert "created_by: agent" in text
+
+        assert "deploy" not in app.session.system_prompt
         await app.command("/reload")
-        assert "expired environment" not in app.session.system_prompt
-    async with await CodingApplication.open(options(tmp_path), provider=ReplyProvider()) as plain:
+        assert "deploy" in app.session.system_prompt
+        assert "Deploy the service safely" in app.session.system_prompt
+
+        patched = await skills.execute(
+            "2",
+            {
+                "action": "patch",
+                "name": "deploy",
+                "old_text": "1. Run the tests.",
+                "new_text": "1. Run the tests.\n2. Tag the release.",
+            },
+        )
+        assert patched.details["accepted"] is True
+        assert "Tag the release" in skill_file.read_text(encoding="utf-8")
+
+        written = await skills.execute(
+            "3",
+            {
+                "action": "write_file",
+                "name": "deploy",
+                "file_path": "references/checklist.md",
+                "content": "- verify\n",
+            },
+        )
+        assert written.details["accepted"] is True
+        escaped = await skills.execute(
+            "4",
+            {"action": "write_file", "name": "deploy", "file_path": "../evil.md", "content": "x"},
+        )
+        assert escaped.details["accepted"] is False
+        viewed = await skills.execute("5", {"action": "view", "name": "deploy"})
+        assert "Tag the release" in viewed.text
+        deleted = await skills.execute("6", {"action": "delete", "name": "deploy"})
+        assert deleted.details["accepted"] is True and not skill_file.exists()
+
+
+async def test_no_memory_is_written_while_writeback_is_off(tmp_path):
+    async with await CodingApplication.open(opts(tmp_path), provider=ReplyProvider()) as app:
+        await app.start()
+        await app.command("/memory add memory normal value")
+        with writeback_disabled():
+            refused = await tool(app, "memory").execute(
+                "1", {"target": "memory", "action": "add", "content": "secret value"}
+            )
+        assert refused.details["accepted"] is False and "writeback" in refused.text
+        assert (tmp_path / ".run" / "MEMORY.md").read_text(encoding="utf-8") == "normal value"
+
+
+async def test_the_extension_is_optional(tmp_path):
+    provider = RecordingProvider()
+    async with await CodingApplication.open(options(tmp_path), provider=provider) as plain:
         events = [event async for event in plain.prompt("ordinary coding")]
         assert events[-1].status == "succeeded"
-        assert all(tool.name != "memory" for tool in plain.session.tools)
-
-
-async def test_markdown_checkout_preserves_edits_and_import_checks_base_version(tmp_path):
-    async with await CodingApplication.open(opts(tmp_path), provider=ReplyProvider()) as app:
-        await app.command('/experience remember project memory build "Original build command"')
-        version = (await repository(app).search("project"))[0].version
-        result = await app.command("/experience checkout project memory build")
-        path = Path(result.message)
-        assert path.name == "MEMORY.md" and path.read_text() == "Original build command"
-        path.write_text("Manually corrected build command", encoding="utf-8")
-        await app.command("/experience checkout project memory build")
-        assert path.read_text() == "Manually corrected build command"
-        candidate = await app.command(f"/experience import project memory build {version}")
-        candidate_id = candidate.message.split()[0]
-        await app.command(f"/experience publish project {candidate_id}")
-        assert (await repository(app).search("project"))[0].content == path.read_text()
-        conflict = await app.command(f"/experience import project memory build {version}")
-        assert "base changed" in conflict.message
-        newer = Path((await app.command("/experience checkout project memory build")).message)
-        assert newer != path and path.read_text() == "Manually corrected build command"
-
-
-async def test_skill_index_and_lazy_body_stay_on_the_same_version(tmp_path):
-    async with await CodingApplication.open(opts(tmp_path), provider=ReplyProvider()) as app:
-        created = await app.command(
-            '/experience propose project skill build "Inspect configuration before testing"'
-        )
-        await app.command(f"/experience publish project {created.message.split()[0]}")
-        await app.command("/reload")
-        assert "project/skill/build" in app.session.system_prompt
-        assert "Inspect configuration before testing" not in app.session.system_prompt
-        tool = next(item for item in app.session.tools if item.name == "experience_skill")
-        first = await tool.execute("skill", {"name": "build"})
-        assert first.text == "Inspect configuration before testing"
-        newer = await app.command('/experience propose project skill build "Different procedure"')
-        await app.command(f"/experience publish project {newer.message.split()[0]}")
-        assert (await tool.execute("skill", {"name": "build"})).text == first.text
-        await app.command("/reload")
-        tool = next(item for item in app.session.tools if item.name == "experience_skill")
-        assert (await tool.execute("skill", {"name": "build"})).text == "Different procedure"
+        assert all(item.name not in {"memory", "skill_manage"} for item in plain.session.tools)
+        assert "Long-term memory" not in provider.systems[-1]

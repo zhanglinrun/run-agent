@@ -1,4 +1,4 @@
-"""RED: attribute the FIRST error, not the last one (T-010).
+"""Attribute the FIRST error, not the last one.
 
 Chapter 7 is explicit about the target: "the object of attribution is the first error
 in the trajectory that caused the task to deviate; later errors are usually just

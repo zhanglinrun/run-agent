@@ -29,6 +29,7 @@ from run_agent_core.messages import (
     TextContent,
     ToolCall,
     ToolResultMessage,
+    convert_to_llm,
 )
 from run_agent_core.provider import (
     BeforeModelRequest,
@@ -48,7 +49,7 @@ from run_agent_core.provider_events import (
     ToolCallStartEvent,
 )
 from run_agent_core.tool_history import repair_tool_history
-from run_agent_core.tools import AgentTool, AgentToolResult
+from run_agent_core.tools import AgentTool, AgentToolResult, validate_tool_arguments
 from run_agent_core.types import JSONValue
 
 
@@ -72,6 +73,8 @@ TransformContext = Callable[
     [Sequence[AgentMessage], CancellationToken | None],
     Awaitable[Sequence[AgentMessage]],
 ]
+ConvertToLlm = Callable[[Sequence[AgentMessage]], Sequence[AgentMessage]]
+"""Project the transcript onto what the provider is sent; Pi's ``convertToLlm``."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +105,10 @@ ShouldStopAfterTurn = Callable[
     [PrepareNextTurnContext],
     bool | Awaitable[bool],
 ]
+
+
+class _Aborted(Exception):
+    """The run was cancelled between preparing a tool call and executing it."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,9 +164,16 @@ async def run_agent_loop(
     prepare_next_turn: PrepareNextTurn | None = None,
     should_stop_after_turn: ShouldStopAfterTurn | None = None,
     transform_context: TransformContext | None = None,
+    convert_to_llm: ConvertToLlm = convert_to_llm,
     before_model_request: BeforeModelRequest | None = None,
 ) -> AsyncIterator[AgentEvent]:
-    """Run the provider/tool loop and emit Pi-compatible agent events."""
+    """Run the provider/tool loop and emit Pi-compatible agent events.
+
+    With no ``prompts`` the loop continues from the transcript, which then must
+    not end on an assistant message: there is nothing for the model to answer.
+    """
+    if not prompts and messages and isinstance(messages[-1], AssistantMessage):
+        raise ValueError("Cannot continue from message role: assistant")
     new_messages = list(prompts)
     if prompts:
         messages.extend(prompts)
@@ -233,7 +247,7 @@ async def run_agent_loop(
                     )
                 )
             assistant = None
-            request_messages = _provider_context(request_messages)
+            request_messages = _provider_context(request_messages, convert_to_llm)
             if before_model_request is not None:
                 await before_model_request(
                     ModelRequest(
@@ -364,7 +378,9 @@ def _capture_tool_event(
         )
 
 
-def _provider_context(messages: list[AgentMessage]) -> list[AgentMessage]:
+def _provider_context(
+    messages: list[AgentMessage], convert_to_llm: ConvertToLlm
+) -> list[AgentMessage]:
     """Return replayable messages while retaining failures in durable history."""
     replayable = tuple(
         message
@@ -375,7 +391,7 @@ def _provider_context(messages: list[AgentMessage]) -> list[AgentMessage]:
             and not message.content
         )
     )
-    return list(repair_tool_history(replayable).messages)
+    return list(repair_tool_history(tuple(convert_to_llm(replayable))).messages)
 
 
 async def _assistant_events(
@@ -636,6 +652,7 @@ async def _prepare_tool_call(
             if tool.prepare_arguments is not None
             else call.arguments
         )
+        arguments = validate_tool_arguments(tool.parameters, arguments)
         prepared_call = call.model_copy(update={"arguments": dict(arguments)}, deep=True)
         decision = await before_tool_call(prepared_call) if before_tool_call is not None else None
         if signal is not None and signal.is_cancelled():
@@ -681,6 +698,8 @@ async def _produce_tool_outcome(
 
     try:
         try:
+            if signal is not None and signal.is_cancelled():
+                raise _Aborted
             result = await prepared.tool.execute(
                 prepared.call.id,
                 prepared.arguments,
@@ -691,6 +710,10 @@ async def _produce_tool_outcome(
                 call=prepared.call,
                 result=result,
                 is_error=False,
+            )
+        except _Aborted:
+            outcome = _ToolCallOutcome(
+                call=prepared.call, result=_error_result("Operation aborted"), is_error=True
             )
         except asyncio.CancelledError:
             raise
@@ -764,6 +787,7 @@ def _tool_result_message(outcome: _ToolCallOutcome) -> ToolResultMessage:
         tool_name=outcome.call.name,
         content=outcome.result.content,
         details=outcome.result.details,
+        usage=outcome.result.usage,
         added_tool_names=outcome.result.added_tool_names,
         is_error=outcome.is_error,
     )
@@ -787,6 +811,7 @@ __all__ = [
     "AgentLoopTurnUpdate",
     "BeforeToolCall",
     "BeforeToolCallResult",
+    "ConvertToLlm",
     "PrepareNextTurn",
     "PrepareNextTurnContext",
     "ShouldStopAfterTurn",

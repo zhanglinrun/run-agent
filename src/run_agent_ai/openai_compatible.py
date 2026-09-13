@@ -11,7 +11,6 @@ the original chat-completions path unchanged.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable, Mapping
-from contextlib import suppress
 from json import JSONDecodeError, dumps, loads
 from typing import Any, Protocol
 
@@ -29,7 +28,6 @@ from run_agent_ai._provider_events import (
 from run_agent_ai.content import (
     NON_VISION_TOOL_IMAGE_PLACEHOLDER,
     NON_VISION_USER_IMAGE_PLACEHOLDER,
-    messages_have_images,
     text_and_images,
 )
 from run_agent_ai.env import OpenAICompatibleConfig
@@ -44,7 +42,6 @@ from run_agent_ai.tool_call_ids import portable_tool_call_id
 from run_agent_core.messages import (
     AgentMessage,
     AssistantMessage,
-    AssistantMessageDiagnostic,
     ImageContent,
     ThinkingContent,
     ToolResultMessage,
@@ -162,7 +159,7 @@ class OpenAICompatibleProvider:
         affinity_id = openai_prompt_cache_key(session_id)
         cache_key = self._prompt_cache_key(affinity_id)
         payload = _build_chat_payload(
-            model=self._config.model_aliases.get(model, model),
+            model=model,
             system=system,
             messages=messages,
             tools=tools,
@@ -182,7 +179,6 @@ class OpenAICompatibleProvider:
             parser_factory=_ChatStreamParser,
             session_id=affinity_id,
             session_affinity_format=self._session_affinity_format(responses=False),
-            has_images=(self._config.supports_images and messages_have_images(messages)),
             signal=signal,
         )
 
@@ -200,7 +196,7 @@ class OpenAICompatibleProvider:
         affinity_id = openai_prompt_cache_key(session_id)
         cache_key = self._prompt_cache_key(affinity_id)
         payload = _build_responses_payload(
-            model=self._config.model_aliases.get(model, model),
+            model=model,
             system=system,
             messages=messages,
             tools=tools,
@@ -216,7 +212,6 @@ class OpenAICompatibleProvider:
             parser_factory=_ResponsesStreamParser,
             session_id=affinity_id,
             session_affinity_format=self._session_affinity_format(responses=True),
-            has_images=(self._config.supports_images and messages_have_images(messages)),
             signal=signal,
         )
 
@@ -229,7 +224,6 @@ class OpenAICompatibleProvider:
         parser_factory: Callable[[], _StreamParser],
         session_id: str | None = None,
         session_affinity_format: str | None = None,
-        has_images: bool = False,
         signal: CancellationToken | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         """Run the shared streaming POST + retry envelope for a given endpoint.
@@ -242,26 +236,12 @@ class OpenAICompatibleProvider:
 
         async def iterator() -> AsyncIterator[ProviderEvent]:
             client = self._get_client()
-            api_key = self._config.api_key
             request_url = url
             headers = dict(self._config.headers or {})
-            if self._config.provider_name == "github-copilot" and has_images:
-                headers["Copilot-Vision-Request"] = "true"
-            if self._config.credential_resolver is not None:
-                auth = await self._config.credential_resolver()
-                api_key = auth.api_key
-                headers.update(auth.headers or {})
-                if auth.base_url is not None:
-                    endpoint = (
-                        "/responses"
-                        if url.rstrip("/").endswith("/responses")
-                        else "/chat/completions"
-                    )
-                    request_url = f"{auth.base_url.rstrip('/')}{endpoint}"
             if not self._config.omit_authorization_header:
                 has_authorization = any(key.casefold() == "authorization" for key in headers)
                 if not has_authorization:
-                    headers["Authorization"] = f"Bearer {api_key}"
+                    headers["Authorization"] = f"Bearer {self._config.api_key}"
             _apply_session_affinity_headers(headers, session_id, session_affinity_format)
 
             attempt = 0
@@ -271,10 +251,6 @@ class OpenAICompatibleProvider:
                     async with client.stream(
                         "POST", request_url, json=payload, headers=headers
                     ) as response:
-                        response_provider = _response_header_value(
-                            response,
-                            self._config.response_provider_header,
-                        )
                         if response.status_code >= 400:
                             body = await response.aread()
                             body_text = body.decode(errors="replace")
@@ -309,14 +285,10 @@ class OpenAICompatibleProvider:
                                     "body": body_text,
                                     "attempts": attempt + 1,
                                 },
-                                response_provider=response_provider,
                             )
                             return
 
-                        yield ProviderResponseStartEvent(
-                            model=model,
-                            response_provider=response_provider,
-                        )
+                        yield ProviderResponseStartEvent(model=model)
 
                         async for line in response.aiter_lines():
                             if signal is not None and signal.is_cancelled():
@@ -335,15 +307,6 @@ class OpenAICompatibleProvider:
                         if parser.fatal:
                             return
                         final_events = parser.finalize()
-                        observer = self._config.response_headers_observer
-                        if observer is not None:
-                            try:
-                                observer(dict(response.headers))
-                            except Exception as exc:
-                                # Observer reporting is also best-effort; response
-                                # completion must never depend on metadata hooks.
-                                with suppress(Exception):
-                                    _append_response_observer_diagnostic(final_events, exc)
                         for parser_event in final_events:
                             yield parser_event
                         return
@@ -403,17 +366,6 @@ class OpenAICompatibleProvider:
         return status_code is None or _is_transient_status(status_code)
 
 
-def _response_header_value(response: httpx.Response, header_name: str | None) -> str | None:
-    """Return one normalized response metadata header when configured."""
-    if header_name is None:
-        return None
-    value = response.headers.get(header_name)
-    if value is None:
-        return None
-    normalized = value.strip()
-    return normalized or None
-
-
 def _apply_session_affinity_headers(
     headers: dict[str, str],
     session_id: str | None,
@@ -426,26 +378,6 @@ def _apply_session_affinity_headers(
         return
     if affinity_format == "openai":
         headers["session_id"] = session_id
-
-
-def _append_response_observer_diagnostic(
-    events: list[ProviderEvent],
-    exc: Exception,
-) -> None:
-    for event in events:
-        if isinstance(event, ProviderResponseEndEvent):
-            diagnostic = AssistantMessageDiagnostic(
-                type="response_headers_observer_error",
-                details={
-                    "error": str(exc),
-                    "error_type": type(exc).__name__,
-                },
-            )
-            event.message.diagnostics = [
-                *(event.message.diagnostics or []),
-                diagnostic,
-            ]
-            return
 
 
 class _StreamParser(Protocol):
@@ -1310,9 +1242,8 @@ def _parse_chunk_usage(raw: Mapping[str, Any]) -> Usage:
 def _usage_from_responses_event(chunk: Mapping[str, Any]) -> Usage | None:
     """Parse billed usage from a `/v1/responses` terminal event.
 
-    Mirrors the Codex adapter's ``_usage_from_response``: cache reads and
-    writes are subtracted from ``input_tokens`` to leave fresh input. Cost is
-    left unset because Run Agent has no per-model pricing table.
+    Cache reads and writes are subtracted from ``input_tokens`` to leave fresh
+    input. Cost is left unset because Run Agent has no per-model pricing table.
     """
     response = chunk.get("response")
     if not isinstance(response, Mapping):

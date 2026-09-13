@@ -11,7 +11,11 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import fnmatch
 import json
+import os
+import re
+import subprocess
 import tempfile
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict, dataclass
@@ -185,6 +189,404 @@ def create_coding_tools(
         create_edit_tool(cwd=root),
         create_bash_tool(cwd=root, shell_command_prefix=shell_command_prefix, processes=processes),
     ]
+
+
+def create_read_only_tools(*, cwd: str | Path | None = None) -> list[AgentTool]:
+    """Create Pi's read-only set: `read`, `grep`, `find` and `ls`.
+
+    These inspect the project without changing it, so a host can hand them to a
+    planning or review agent that must not write or run commands.
+    """
+    root = Path.cwd() if cwd is None else Path(cwd)
+    return [
+        create_read_tool(cwd=root),
+        create_grep_tool(cwd=root),
+        create_find_tool(cwd=root),
+        create_ls_tool(cwd=root),
+    ]
+
+
+def create_all_tools(
+    *,
+    cwd: str | Path | None = None,
+    shell_command_prefix: str | None = None,
+    image_support: ImageSupportState | None = None,
+    processes: ProcessSupervisor | None = None,
+) -> dict[str, AgentTool]:
+    """Every built-in tool by name, for hosts that select a subset."""
+    root = Path.cwd() if cwd is None else Path(cwd)
+    tools = [
+        *create_coding_tools(
+            cwd=root,
+            shell_command_prefix=shell_command_prefix,
+            image_support=image_support,
+            processes=processes,
+        ),
+        create_grep_tool(cwd=root),
+        create_find_tool(cwd=root),
+        create_ls_tool(cwd=root),
+    ]
+    return {tool.name: tool for tool in tools}
+
+
+GREP_DEFAULT_LIMIT = 100
+GREP_MAX_LINE_LENGTH = 500
+FIND_DEFAULT_LIMIT = 1000
+LS_DEFAULT_LIMIT = 500
+_ALWAYS_IGNORED_DIRS = frozenset({".git", "node_modules", "__pycache__", ".venv"})
+
+
+def _listing_notice(text: str, notices: list[str]) -> str:
+    return f"{text}\n\n[{'. '.join(notices)}]" if notices else text
+
+
+def _project_files(root: Path, start: Path) -> list[Path]:
+    """Files under ``start``, honouring .gitignore when ``root`` is a git work tree.
+
+    Pi shells out to ripgrep and fd for this; here ``git ls-files`` gives the same
+    ignore semantics without another binary, and a plain walk covers the rest.
+    """
+    listed = _git_listed_files(start)
+    if listed is not None:
+        return listed
+    found: list[Path] = []
+    for directory, dirnames, filenames in os.walk(start):
+        dirnames[:] = sorted(name for name in dirnames if name not in _ALWAYS_IGNORED_DIRS)
+        for name in sorted(filenames):
+            found.append(Path(directory) / name)
+    return found
+
+
+def _git_listed_files(start: Path) -> list[Path] | None:
+    try:
+        completed = subprocess.run(
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "."],
+            cwd=start,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    files = [
+        start / entry.decode("utf-8", errors="replace")
+        for entry in completed.stdout.split(b"\0")
+        if entry
+    ]
+    return [path for path in files if path.is_file()]
+
+
+def _relative_display(path: Path, base: Path) -> str:
+    try:
+        return path.relative_to(base).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def create_grep_tool_definition(*, cwd: str | Path | None = None) -> ToolDefinition:
+    """Create a definition for the `grep` tool (Pi's file-content search)."""
+    root = Path.cwd() if cwd is None else Path(cwd)
+
+    async def execute(
+        arguments: Mapping[str, JSONValue],
+        signal: ToolCancellationToken | None = None,
+    ) -> AgentToolResult:
+        pattern = _str_arg(arguments, "pattern")
+        search = _path_arg(arguments, "path", cwd=root) if arguments.get("path") else root
+        glob = arguments.get("glob")
+        ignore_case = bool(arguments.get("ignoreCase", False))
+        literal = bool(arguments.get("literal", False))
+        context = _optional_int_arg(arguments, "context") or 0
+        limit = max(1, _optional_int_arg(arguments, "limit") or GREP_DEFAULT_LIMIT)
+        if not search.exists():
+            raise ToolInputError(f"Path not found: {search}")
+        flags = re.IGNORECASE if ignore_case else 0
+        try:
+            regex = re.compile(re.escape(pattern) if literal else pattern, flags)
+        except re.error as exc:
+            raise ToolInputError(f"Invalid regex: {exc}") from exc
+
+        files = [search] if search.is_file() else _project_files(root, search)
+        if isinstance(glob, str) and glob:
+            files = [
+                path
+                for path in files
+                if fnmatch.fnmatch(_relative_display(path, search), glob)
+                or fnmatch.fnmatch(path.name, glob)
+            ]
+        base = search.parent if search.is_file() else search
+        lines_out: list[str] = []
+        matches = 0
+        limit_reached = False
+        line_truncated = False
+        for path in files:
+            if signal is not None and signal.is_cancelled():
+                raise ToolInputError("Operation aborted")
+            try:
+                text = path.read_bytes().decode("utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+            display = _relative_display(path, base)
+            for index, line in enumerate(lines):
+                if not regex.search(line):
+                    continue
+                if matches >= limit:
+                    limit_reached = True
+                    break
+                matches += 1
+                if context:
+                    lo, hi = max(0, index - context), min(len(lines), index + context + 1)
+                    for offset in range(lo, hi):
+                        marker = ":" if offset == index else "-"
+                        lines_out.append(f"{display}{marker}{offset + 1}{marker} {lines[offset]}")
+                    lines_out.append("--")
+                else:
+                    shown = line
+                    if len(shown) > GREP_MAX_LINE_LENGTH:
+                        shown = shown[:GREP_MAX_LINE_LENGTH] + "..."
+                        line_truncated = True
+                    lines_out.append(f"{display}:{index + 1}: {shown}")
+            if limit_reached:
+                break
+        if not lines_out:
+            return AgentToolResult(content=[TextContent(text="No matches found")])
+        truncation = truncate_head("\n".join(lines_out), max_lines=1_000_000)
+        notices: list[str] = []
+        if limit_reached:
+            notices.append(
+                f"{limit} matches limit reached. Use limit={limit * 2} for more, or refine pattern"
+            )
+        if truncation.truncated:
+            notices.append(f"{format_size(DEFAULT_MAX_OUTPUT_BYTES)} limit reached")
+        if line_truncated:
+            notices.append(
+                f"Some lines truncated to {GREP_MAX_LINE_LENGTH} chars. "
+                "Use read tool to see full lines"
+            )
+        details: dict[str, JSONValue] = {"matches": matches, "truncation": truncation.to_json()}
+        return AgentToolResult(
+            content=[TextContent(text=_listing_notice(truncation.content, notices))],
+            details=details,
+        )
+
+    return ToolDefinition(
+        name="grep",
+        description=(
+            "Search file contents for a pattern. Returns matching lines with file paths and "
+            f"line numbers. Respects .gitignore. Output is truncated to {GREP_DEFAULT_LIMIT} "
+            f"matches or {DEFAULT_MAX_OUTPUT_BYTES // 1024}KB (whichever is hit first). Long "
+            f"lines are truncated to {GREP_MAX_LINE_LENGTH} chars."
+        ),
+        prompt_snippet="Search file contents for patterns (respects .gitignore)",
+        prompt_guidelines=(),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Search pattern (regex or literal string)",
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Directory or file to search (default: current directory)",
+                },
+                "glob": {
+                    "type": "string",
+                    "description": "Filter files by glob pattern, e.g. '*.py' or '**/*.spec.ts'",
+                },
+                "ignoreCase": {
+                    "type": "boolean",
+                    "description": "Case-insensitive search (default: false)",
+                },
+                "literal": {
+                    "type": "boolean",
+                    "description": (
+                        "Treat pattern as literal string instead of regex (default: false)"
+                    ),
+                },
+                "context": {
+                    "type": "integer",
+                    "description": (
+                        "Number of lines to show before and after each match (default: 0)"
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": (
+                        f"Maximum number of matches to return (default: {GREP_DEFAULT_LIMIT})"
+                    ),
+                },
+            },
+            "required": ["pattern"],
+        },
+        executor=execute,
+    )
+
+
+def create_grep_tool(*, cwd: str | Path | None = None) -> AgentTool:
+    return create_grep_tool_definition(cwd=cwd).to_agent_tool()
+
+
+def create_find_tool_definition(*, cwd: str | Path | None = None) -> ToolDefinition:
+    """Create a definition for the `find` tool (Pi's glob file search)."""
+    root = Path.cwd() if cwd is None else Path(cwd)
+
+    async def execute(
+        arguments: Mapping[str, JSONValue],
+        signal: ToolCancellationToken | None = None,
+    ) -> AgentToolResult:
+        pattern = _str_arg(arguments, "pattern")
+        search = _path_arg(arguments, "path", cwd=root) if arguments.get("path") else root
+        limit = max(1, _optional_int_arg(arguments, "limit") or FIND_DEFAULT_LIMIT)
+        if not search.exists():
+            raise ToolInputError(f"Path not found: {search}")
+        if signal is not None and signal.is_cancelled():
+            raise ToolInputError("Operation aborted")
+        results: list[str] = []
+        limit_reached = False
+        for path in _project_files(root, search):
+            relative = _relative_display(path, search)
+            if not (fnmatch.fnmatch(relative, pattern) or fnmatch.fnmatch(path.name, pattern)):
+                continue
+            if len(results) >= limit:
+                limit_reached = True
+                break
+            results.append(relative)
+        if not results:
+            return AgentToolResult(content=[TextContent(text="No files found")])
+        truncation = truncate_head("\n".join(results), max_lines=1_000_000)
+        notices: list[str] = []
+        if limit_reached:
+            notices.append(
+                f"{limit} results limit reached. Use limit={limit * 2} for more, or refine pattern"
+            )
+        if truncation.truncated:
+            notices.append(f"{format_size(DEFAULT_MAX_OUTPUT_BYTES)} limit reached")
+        details: dict[str, JSONValue] = {
+            "results": len(results),
+            "truncation": truncation.to_json(),
+        }
+        return AgentToolResult(
+            content=[TextContent(text=_listing_notice(truncation.content, notices))],
+            details=details,
+        )
+
+    return ToolDefinition(
+        name="find",
+        description=(
+            "Search for files by glob pattern. Returns matching file paths relative to the "
+            f"search directory. Respects .gitignore. Output is truncated to {FIND_DEFAULT_LIMIT} "
+            f"results or {DEFAULT_MAX_OUTPUT_BYTES // 1024}KB (whichever is hit first)."
+        ),
+        prompt_snippet="Find files by glob pattern (respects .gitignore)",
+        prompt_guidelines=(),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": (
+                        "Glob pattern to match files, e.g. '*.py', '**/*.json', or "
+                        "'src/**/*.spec.ts'"
+                    ),
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Directory to search in (default: current directory)",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": f"Maximum number of results (default: {FIND_DEFAULT_LIMIT})",
+                },
+            },
+            "required": ["pattern"],
+        },
+        executor=execute,
+    )
+
+
+def create_find_tool(*, cwd: str | Path | None = None) -> AgentTool:
+    return create_find_tool_definition(cwd=cwd).to_agent_tool()
+
+
+def create_ls_tool_definition(*, cwd: str | Path | None = None) -> ToolDefinition:
+    """Create a definition for the `ls` tool (Pi's directory listing)."""
+    root = Path.cwd() if cwd is None else Path(cwd)
+
+    async def execute(
+        arguments: Mapping[str, JSONValue],
+        signal: ToolCancellationToken | None = None,
+    ) -> AgentToolResult:
+        del signal
+        target = _path_arg(arguments, "path", cwd=root) if arguments.get("path") else root
+        limit = max(1, _optional_int_arg(arguments, "limit") or LS_DEFAULT_LIMIT)
+        if not target.exists():
+            raise ToolInputError(f"Path not found: {target}")
+        if not target.is_dir():
+            raise ToolInputError(f"Not a directory: {target}")
+        try:
+            names = sorted(os.listdir(target), key=str.casefold)
+        except OSError as exc:
+            raise ToolInputError(f"Cannot read directory: {exc}") from exc
+        entries: list[str] = []
+        limit_reached = False
+        for name in names:
+            if len(entries) >= limit:
+                limit_reached = True
+                break
+            entries.append(f"{name}/" if (target / name).is_dir() else name)
+        if not entries:
+            return AgentToolResult(content=[TextContent(text="(empty directory)")])
+        truncation = truncate_head("\n".join(entries), max_lines=1_000_000)
+        notices: list[str] = []
+        if limit_reached:
+            notices.append(f"{limit} entries limit reached. Use limit={limit * 2} for more")
+        if truncation.truncated:
+            notices.append(f"{format_size(DEFAULT_MAX_OUTPUT_BYTES)} limit reached")
+        details: dict[str, JSONValue] = {
+            "path": str(target),
+            "entries": len(entries),
+            "truncation": truncation.to_json(),
+        }
+        return AgentToolResult(
+            content=[TextContent(text=_listing_notice(truncation.content, notices))],
+            details=details,
+        )
+
+    return ToolDefinition(
+        name="ls",
+        description=(
+            "List directory contents. Returns entries sorted alphabetically, with '/' suffix "
+            "for directories. Includes dotfiles. Output is truncated to "
+            f"{LS_DEFAULT_LIMIT} entries or {DEFAULT_MAX_OUTPUT_BYTES // 1024}KB "
+            "(whichever is hit first)."
+        ),
+        prompt_snippet="List directory contents",
+        prompt_guidelines=(),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Directory to list (default: current directory)",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": (
+                        f"Maximum number of entries to return (default: {LS_DEFAULT_LIMIT})"
+                    ),
+                },
+            },
+        },
+        executor=execute,
+    )
+
+
+def create_ls_tool(*, cwd: str | Path | None = None) -> AgentTool:
+    return create_ls_tool_definition(cwd=cwd).to_agent_tool()
 
 
 def create_read_tool_definition(
@@ -724,7 +1126,7 @@ def create_bash_tool_definition(
                     "description": "Timeout in seconds (optional, no default timeout)",
                 },
             },
-            "required": ["command", "description"],
+            "required": ["command"],
         },
         executor=execute,
         execution_mode="sequential",

@@ -1,4 +1,4 @@
-"""Experience consumes the durable completion receipt (P5-1, T-020).
+"""Experience consumes the durable completion receipt.
 
 The trigger policy is unit-tested in test_review_trigger.py. These tests cover
 the wiring: a real session runs, the extension sees the completion, and only an
@@ -16,7 +16,7 @@ from run_agent_core.messages import AssistantMessage, TextContent
 from run_agent_core.provider_events import AssistantErrorEvent
 
 REPO = Path(__file__).resolve().parents[2]
-EXPERIENCE = REPO / "extensions" / "experience"
+EXPERIENCE = REPO / "src" / "run_agent_extensions" / "experience"
 
 
 class FailingProvider:
@@ -59,7 +59,17 @@ async def test_a_failed_completion_leaves_one_durable_review_request(tmp_path):
         assert recorded.value["key"] == f"{run_id}:1"
 
 
-async def test_a_trivial_successful_completion_leaves_no_review_request(tmp_path):
+async def test_experience_maintenance_unregisters_when_session_closes(tmp_path):
+    maintenance = None
+    async with await CodingApplication.open(
+        experience_options(tmp_path), provider=ReplyProvider()
+    ) as app:
+        await app.start()
+        maintenance = context(app).services.maintenance
+        assert "experience-curator" in maintenance.names
+    assert maintenance is not None
+    assert "experience-curator" not in maintenance.names
+
     async with await CodingApplication.open(
         experience_options(tmp_path), provider=ReplyProvider()
     ) as app:

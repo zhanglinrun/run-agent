@@ -16,7 +16,7 @@ from run_agent_ai.env import (
     DEFAULT_OPENAI_COMPATIBLE_MAX_RETRY_DELAY_SECONDS,
     DEFAULT_OPENAI_COMPATIBLE_TIMEOUT_SECONDS,
 )
-from run_agent_coding.provider_catalog import ModelInput, ProviderApi
+from run_agent_coding.provider_config import ModelInput, ProviderApi
 from run_agent_coding.thinking import ThinkingLevel
 from run_agent_core.provider import CancellationToken, ModelProvider
 from run_agent_core.types import JSONPrimitive, JSONValue
@@ -26,9 +26,6 @@ _PROVIDER_APIS = frozenset(
         "openai-completions",
         "openai-responses",
         "anthropic-messages",
-        "openai-codex-responses",
-        "google-generative-ai",
-        "mistral-conversations",
     }
 )
 _THINKING_LEVELS = frozenset({"off", "minimal", "low", "medium", "high", "xhigh", "max"})

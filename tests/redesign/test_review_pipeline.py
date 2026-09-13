@@ -1,6 +1,6 @@
-"""The review worker consumes what the completion trigger queued (P5-2).
+"""The review worker consumes what the completion trigger queued.
 
-P5-1 records a durable review request when a completion is admitted. This covers
+The trigger records a durable review request when a completion is admitted. This covers
 the next hop: the registered handler takes that request, does its work under the
 review worker's claim, and records exactly one outcome per run.
 """
@@ -17,7 +17,7 @@ from run_agent_coding.application import CodingApplication
 from run_agent_coding.host.contracts import TaskSpec
 
 REPO = Path(__file__).resolve().parents[2]
-EXPERIENCE = REPO / "extensions" / "experience"
+EXPERIENCE = REPO / "src" / "run_agent_extensions" / "experience"
 REVIEW_HANDLER = "experience-review"
 
 

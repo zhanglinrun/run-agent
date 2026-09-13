@@ -71,10 +71,10 @@ def full_plan(python: str, skip_dist: bool) -> runner.Plan:
     steps = [
         runner.Step(
             "compile",
-            (python, "-m", "compileall", "-q", "src", "extensions", "tests"),
+            (python, "-m", "compileall", "-q", "src", "tests"),
             note="mirrors the CI compile step",
         ),
-        *static_steps(python, (".",)),
+        *static_steps(python, ("src", "scripts", "tests")),
         runner.Step("tests", (python, "-m", "pytest", "-q")),
     ]
     notes = ["full gate: mirrors .github/workflows/ci.yml step for step"]

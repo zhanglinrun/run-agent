@@ -1,7 +1,14 @@
-"""Stateful reusable agent harness built on the Pi-compatible loop."""
+"""Stateful reusable agent built on the Pi-compatible loop.
+
+``AgentHarness`` is the analogue of Pi's ``Agent`` class: it owns the transcript,
+the steering and follow-up queues, the listeners and the cancellation token, and
+runs ``run_agent_loop`` for one prompt or continuation at a time. Coding policy
+(persistence, compaction, extensions) sits above it.
+"""
 
 from __future__ import annotations
 
+import asyncio
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import suppress
@@ -9,11 +16,18 @@ from dataclasses import dataclass, field
 from inspect import isawaitable
 from typing import Literal
 
-from run_agent_core.events import AgentEvent, MessageEndEvent, MessageStartEvent
+from run_agent_core.events import (
+    AgentEndEvent,
+    AgentEvent,
+    MessageEndEvent,
+    MessageStartEvent,
+    TurnEndEvent,
+)
 from run_agent_core.loop import (
     AfterToolCall,
     AgentLoopTurnUpdate,
     BeforeToolCall,
+    ConvertToLlm,
     MessageSource,
     PrepareNextTurn,
     PrepareNextTurnContext,
@@ -28,6 +42,7 @@ from run_agent_core.messages import (
     TextContent,
     ToolResultMessage,
     UserMessage,
+    convert_to_llm,
 )
 from run_agent_core.provider import BeforeModelRequest, ModelProvider
 from run_agent_core.tools import AgentTool
@@ -53,7 +68,16 @@ class AgentHarnessConfig:
     system: str
     tools: list[AgentTool] = field(default_factory=list)
     max_turns: int | None = None
-    queue_mode: QueueMode = "one_at_a_time"
+    run_failure: Literal["raise", "message"] = "raise"
+    """What an exception escaping the loop becomes.
+
+    ``"message"`` is Pi's ``Agent.handleRunFailure``: the run still ends with an
+    error assistant message and ``agent_end``. ``"raise"`` lets the host see the
+    exception, which a durable host needs when its own pre-request hook (a
+    snapshot commit, say) fails and the run must be recorded as failed.
+    """
+    steering_mode: QueueMode = "one_at_a_time"
+    follow_up_mode: QueueMode = "one_at_a_time"
     session_id: str | None = None
     before_tool_call: BeforeToolCall | None = None
     after_tool_call: AfterToolCall | None = None
@@ -62,6 +86,7 @@ class AgentHarnessConfig:
     prepare_next_turn: PrepareNextTurn | None = None
     should_stop_after_turn: ShouldStopAfterTurn | None = None
     transform_context: TransformContext | None = None
+    convert_to_llm: ConvertToLlm = convert_to_llm
     before_model_request: BeforeModelRequest | None = None
     steering_source: MessageSource | None = None
 
@@ -91,6 +116,8 @@ class AgentHarness:
         self._listeners: list[EventListener] = []
         self._current_signal: SimpleCancellationToken | None = None
         self._running = False
+        self._idle = asyncio.Event()
+        self._idle.set()
         self._steering_queue: deque[AgentMessage] = deque()
         self._follow_up_queue: deque[AgentMessage] = deque()
 
@@ -136,6 +163,18 @@ class AgentHarness:
         if self._current_signal is not None:
             self._current_signal.cancel()
 
+    abort = cancel
+
+    async def wait_for_idle(self) -> None:
+        """Return once no run is active; returns at once when idle."""
+        await self._idle.wait()
+
+    def reset(self) -> None:
+        """Drop the transcript and both queues; only valid while idle."""
+        self._ensure_not_running()
+        self._messages = []
+        self.clear_queues()
+
     def steer(self, content: str) -> QueuedMessages:
         return self.steer_message(UserMessage(content=content))
 
@@ -153,6 +192,16 @@ class AgentHarness:
     def clear_queues(self) -> QueuedMessages:
         snapshot = self.queued_messages
         self._steering_queue.clear()
+        self._follow_up_queue.clear()
+        return snapshot
+
+    def clear_steering_queue(self) -> QueuedMessages:
+        snapshot = self.queued_messages
+        self._steering_queue.clear()
+        return snapshot
+
+    def clear_follow_up_queue(self) -> QueuedMessages:
+        snapshot = self.queued_messages
         self._follow_up_queue.clear()
         return snapshot
 
@@ -175,7 +224,21 @@ class AgentHarness:
         return self.prompt_message(UserMessage(content=content))
 
     def continue_(self) -> AsyncIterator[AgentEvent]:
+        """Continue from the transcript, as Pi's ``Agent.continue`` does.
+
+        When the transcript ends on an assistant message there is nothing to
+        answer, so a queued steering message (else a queued follow-up) becomes
+        the next prompt instead. With nothing queued that is an error.
+        """
         self._ensure_not_running()
+        if self._messages and isinstance(self._messages[-1], AssistantMessage):
+            queued = self._drain_queue(self._steering_queue, self._config.steering_mode)
+            if not queued:
+                queued = self._drain_queue(self._follow_up_queue, self._config.follow_up_mode)
+            if not queued:
+                raise ValueError("Cannot continue from message role: assistant")
+            self._running = True
+            return self._run(prompts=queued)
         self._running = True
         return self._run()
 
@@ -186,6 +249,8 @@ class AgentHarness:
     ) -> AsyncIterator[AgentEvent]:
         signal = SimpleCancellationToken()
         self._current_signal = signal
+        self._idle.clear()
+        emitted_end = False
         try:
             # Repair dangling tool calls here, not in prompt()/continue_(),
             # so the synthetic results flow through events and reach push
@@ -215,11 +280,38 @@ class AgentHarness:
                 ),
                 should_stop_after_turn=self._config.should_stop_after_turn,
                 transform_context=self._config.transform_context,
+                convert_to_llm=self._config.convert_to_llm,
                 before_model_request=self._config.before_model_request,
+            ):
+                if isinstance(event, AgentEndEvent):
+                    emitted_end = True
+                await self._notify(event)
+                yield event
+        except (asyncio.CancelledError, GeneratorExit):
+            raise
+        except Exception as exc:
+            if self._config.run_failure == "raise":
+                raise
+            # Pi's Agent.handleRunFailure: a loop that throws still ends the run
+            # with an error assistant message, so every consumer sees agent_end.
+            failure = AssistantMessage(
+                model=self._config.model,
+                content=[],
+                stop_reason="aborted" if signal.is_cancelled() else "error",
+                error_message=str(exc) or type(exc).__name__,
+            )
+            self._messages.append(failure)
+            for event in (
+                MessageStartEvent(message=failure),
+                MessageEndEvent(message=failure),
+                TurnEndEvent(message=failure),
+                AgentEndEvent(messages=[failure]),
             ):
                 await self._notify(event)
                 yield event
+            emitted_end = True
         finally:
+            del emitted_end
             if signal.is_cancelled():
                 repaired_from = len(self._messages)
                 self._append_interrupted_tool_results()
@@ -233,6 +325,7 @@ class AgentHarness:
             if self._current_signal is signal:
                 self._current_signal = None
             self._running = False
+            self._idle.set()
 
     async def _prepare_next_turn(
         self,
@@ -273,15 +366,16 @@ class AgentHarness:
                 result = await result
             if result:
                 return tuple(result)
-        return self._drain_queue(self._steering_queue)
+        return self._drain_queue(self._steering_queue, self._config.steering_mode)
 
     def _drain_follow_up_messages(self) -> tuple[AgentMessage, ...]:
-        return self._drain_queue(self._follow_up_queue)
+        return self._drain_queue(self._follow_up_queue, self._config.follow_up_mode)
 
-    def _drain_queue(self, queue: deque[AgentMessage]) -> tuple[AgentMessage, ...]:
+    @staticmethod
+    def _drain_queue(queue: deque[AgentMessage], mode: QueueMode) -> tuple[AgentMessage, ...]:
         if not queue:
             return ()
-        if self._config.queue_mode == "all":
+        if mode == "all":
             messages = tuple(queue)
             queue.clear()
             return messages

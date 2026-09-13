@@ -1,4 +1,4 @@
-"""RED: the EvaluationService host contract (P1-1).
+"""The EvaluationService host contract.
 
 The host must expose an evaluation capability that a candidate cannot
 influence: the caller freezes what is being tested, and the host - not the
@@ -85,7 +85,7 @@ def test_evaluation_report_binds_what_was_actually_measured():
 
 
 def test_host_services_exposes_evaluation_beside_the_other_services():
-    for name in ("tasks", "snapshots", "history", "evaluation"):
+    for name in ("tasks", "snapshots", "history", "evaluation", "inference"):
         assert hasattr(HostServices, name), name
 
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from typing import Literal
 
 ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"]
@@ -40,18 +39,6 @@ def normalize_thinking_level(value: str | None) -> ThinkingLevel:
         return normalized
     allowed = ", ".join(THINKING_LEVELS)
     raise ValueError(f"Unknown thinking mode: {value}. Available modes: {allowed}")
-
-
-def normalize_thinking_levels(values: Sequence[str]) -> tuple[ThinkingLevel, ...]:
-    """Return a validated, duplicate-free thinking level tuple."""
-    if isinstance(values, str) or not values:
-        allowed = ", ".join(THINKING_LEVELS)
-        raise ValueError(f"Thinking modes must be a non-empty list. Available modes: {allowed}")
-
-    normalized = tuple(normalize_thinking_level(value) for value in values)
-    if len(set(normalized)) != len(normalized):
-        raise ValueError("Thinking modes must be unique")
-    return normalized
 
 
 def reasoning_effort_for_level(level: str | None) -> ReasoningEffort:

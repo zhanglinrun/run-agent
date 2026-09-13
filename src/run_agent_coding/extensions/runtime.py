@@ -70,6 +70,7 @@ from run_agent_coding.host.contracts import (
     SessionActivation,
     TaskHandler,
 )
+from run_agent_coding.host.inference import InferenceService
 from run_agent_coding.paths import RunAgentPaths
 from run_agent_coding.project_trust import ExtensionTrustResult, ProjectTrustEvent
 from run_agent_coding.provider_config import ProviderConfig
@@ -101,6 +102,9 @@ class BoundSession(Protocol):
     def cwd(self) -> Path: ...
 
     @property
+    def project_resources_enabled(self) -> bool: ...
+
+    @property
     def telemetry(self) -> TelemetrySink: ...
 
     @property
@@ -113,10 +117,7 @@ class BoundSession(Protocol):
     def provider_name(self) -> str: ...
 
     @property
-    def inference_provider(self) -> str | None: ...
-
-    @property
-    def inference_provider_mode(self) -> str: ...
+    def inference_service(self) -> InferenceService: ...
 
     @property
     def session_id(self) -> str | None: ...
@@ -156,8 +157,6 @@ class BoundSession(Protocol):
     ) -> None: ...
 
     async def append_custom_entry(self, namespace: str, data: dict[str, JSONValue]) -> str: ...
-
-    def set_inference_provider(self, route: str | None) -> str: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -858,6 +857,7 @@ class ExtensionRuntime:
                 expected_generation=expected_generation,
                 handlers=self._task_handlers,
                 activation=activation,
+                inference=session.inference_service,
             )
         )
         self._host_binding = registry, session_id, self._generation.id
@@ -870,6 +870,18 @@ class ExtensionRuntime:
             return self._host_services[source_id]
         except KeyError as exc:
             raise ExtensionError("Host services are available after session activation") from exc
+
+    async def tick_maintenance(self, idle_seconds: float = 0.0) -> None:
+        """Let host-owned maintenance callbacks run without importing extensions."""
+        self._generation.assert_active()
+        seen: set[int] = set()
+        for services in self._host_services.values():
+            registry = services.maintenance
+            marker = id(registry)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            await registry.tick(idle_seconds)
 
     @property
     def ui(self) -> UiBridge:

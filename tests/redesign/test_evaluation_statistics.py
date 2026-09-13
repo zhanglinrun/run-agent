@@ -1,4 +1,4 @@
-"""RED: the metrics chapter 7 defines, with the book's own numbers as anchors (T-032).
+"""The metrics chapter 7 defines, with the book's own numbers as anchors.
 
 Chapter 7 is precise about how success must be defined and reported:
 

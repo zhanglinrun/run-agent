@@ -5,8 +5,8 @@ services:
     env_file:
       - .env
     command:
-      - --extension
-      - /app/examples/gateway_extensions/feishu.py
+      - --state-dir
+      - /home/runagent/.run
       - --cwd
       - /workspace
     volumes:

@@ -4,8 +4,8 @@ Run Agent is a minimalist Python coding-agent harness inspired by Pi. Use these 
 
 - [Extensions](extensions.md): build Python extensions, custom tools, commands, hooks, dialogs, and renderers.
 - [Skills](skills.md): install reusable task knowledge and prompt templates.
-- [Models](models.md): configure durable and extension-provided providers and models.
-- [CLI](cli.md): command-line and slash-command entry points.
+- [Models](models.md): configure the OpenAI-compatible and Anthropic providers from the environment.
+- [CLI](cli.md): Textual terminal, print mode, settings, and Feishu gateway configuration.
 - [Security](security.md): project-input trust behavior and isolation boundaries.
 - [Architecture](architecture.md): package boundaries and contributor design rules.
 

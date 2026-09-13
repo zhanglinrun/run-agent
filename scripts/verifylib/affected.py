@@ -15,7 +15,6 @@ RISKY_PREFIXES = (
     "src/run_agent_coding/storage/",
     "src/run_agent_coding/extensions/",
     "src/run_agent_coding/host/",
-    "extensions/",
     "tests/",
     "pyproject.toml",
 )
@@ -25,7 +24,7 @@ RISKY_FILES = (
     "src/run_agent_coding/application.py",
     "src/run_agent_coding/cli.py",
 )
-SOURCE_ROOTS = ("src/", "extensions/")
+SOURCE_ROOTS = ("src/",)
 
 
 @dataclass(frozen=True)

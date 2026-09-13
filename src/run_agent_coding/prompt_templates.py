@@ -38,16 +38,6 @@ class PromptTemplate:
     description: str | None = None
 
 
-def load_prompt_templates(paths: RunAgentResourcePaths | None = None) -> list[PromptTemplate]:
-    """Load markdown prompt templates from Run Agent and `.agents` resource directories."""
-    resource_paths = paths or RunAgentResourcePaths()
-    templates_by_name: dict[str, PromptTemplate] = {}
-    for prompts_dir in resource_paths.prompts_dirs:
-        for template in _load_prompt_templates_from_dir(prompts_dir):
-            templates_by_name[template.name] = template
-    return sorted(templates_by_name.values(), key=lambda template: template.name)
-
-
 def load_prompt_templates_with_diagnostics(
     paths: RunAgentResourcePaths | None = None,
 ) -> tuple[list[PromptTemplate], list[ResourceDiagnostic]]:
@@ -218,14 +208,6 @@ def _parse_prompt_template_command(text: str) -> tuple[str, str]:
     if match is None:
         return "", ""
     return match.group(1).lower(), (match.group(2) or "").strip()
-
-
-def _load_prompt_templates_from_dir(prompts_dir: Path) -> list[PromptTemplate]:
-    templates, diagnostics = _load_prompt_templates_from_dir_with_diagnostics(prompts_dir)
-    if diagnostics:
-        first = diagnostics[0]
-        raise ResourceError(first.message)
-    return templates
 
 
 def _load_prompt_templates_from_dir_with_diagnostics(

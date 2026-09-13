@@ -10,14 +10,6 @@ from run_agent_coding.system_prompt import ProjectContextFile
 PROJECT_MARKERS = (".git", "pyproject.toml", "setup.py", "package.json")
 
 
-def discover_project_context(
-    paths: RunAgentResourcePaths | None = None,
-) -> tuple[ProjectContextFile, ...]:
-    """Discover project instruction files for system prompt context."""
-    context_files, _diagnostics = discover_project_context_with_diagnostics(paths)
-    return context_files
-
-
 def discover_project_context_with_diagnostics(
     paths: RunAgentResourcePaths | None = None,
 ) -> tuple[tuple[ProjectContextFile, ...], tuple[ResourceDiagnostic, ...]]:

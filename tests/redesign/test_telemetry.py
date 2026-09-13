@@ -1,7 +1,6 @@
 import asyncio
 import sqlite3
 from dataclasses import replace
-from pathlib import Path
 
 import httpx
 import pytest
@@ -261,8 +260,10 @@ async def test_application_name_compaction_reload_and_limits_remain_instrumented
     manager = SessionManager(options(tmp_path).paths)
     ledger = ProviderCallLedger(await manager.telemetry(), stream="calls")
     raw = LimitedProvider()
-    extension = Path(__file__).parents[2] / "extensions/observability"
-    opts = replace(options(tmp_path), extension_paths=(extension,))
+    # Tracing is a session feature now; an empty extension keeps a scoped sink reachable.
+    extension = tmp_path / "scoped.py"
+    extension.write_text("def setup(api): pass", encoding="utf-8")
+    opts = replace(options(tmp_path), extension_paths=(extension,), trace_enabled=True)
     try:
         async with await CodingApplication.open(
             opts,
@@ -287,6 +288,8 @@ async def test_application_name_compaction_reload_and_limits_remain_instrumented
             assert events[-1].status == "succeeded"
             result = await app.command("/trace")
             assert "sqlite" in result.message
+            assert app.session.trace_recorder is not None
+            assert app.session.trace_recorder.span_count > 0
         rows = await ledger.read_all()
         # First answer, automatic name, manual compaction, second answer.
         assert sum(row["type"] == "provider_call" for row in rows) == 4

@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from run_agent_coding.extensions.providers import DynamicProvider
     from run_agent_coding.extensions.runtime import ExtensionRuntime
     from run_agent_coding.paths import RunAgentPaths
+    from run_agent_coding.skills import Skill
 
 AGENT_EVENT_TYPES: frozenset[str] = frozenset(
     {
@@ -88,9 +89,9 @@ class MessageRenderOptions:
     expanded: bool = False
 
 
-# A message renderer returns a Rich-markup (or plain) string, NOT a Textual
-# widget, so extensions never import the TUI toolkit (deviation from Pi's
-# ``Component`` return; see the phase-21 custom-renderer Ruling).
+# A message renderer returns a Rich-markup (or plain) string rather than a
+# widget, so extensions never import the terminal toolkit (Pi returns a
+# ``Component`` here).
 MessageRenderer = Callable[[CustomMessageView, MessageRenderOptions], str]
 
 # Host-side resolver installed into render paths: given a custom message's
@@ -214,9 +215,7 @@ class InputEvent:
     mid-run (``"steer"``/``"follow_up"``), and is ``None`` on the idle prompt
     path.
 
-    Pi's `images` field is omitted (Run Agent has no image input yet) and Pi's
-    ``"rpc"`` source is omitted (Run Agent has no RPC mode). Both defaults keep
-    existing handlers that read only ``.text`` working unchanged.
+    Pi's `images` field and ``"rpc"`` source are omitted; Run Agent has neither.
     """
 
     text: str
@@ -321,15 +320,6 @@ ExtensionHandler = Callable[[object, "ExtensionContext"], object | Awaitable[obj
 ExtensionCommandHandler = Callable[
     ["str", "ExtensionCommandContext"], "str | None | Awaitable[str | None]"
 ]
-
-
-@dataclass(frozen=True, slots=True)
-class ExtensionRuntimeDiagnostic:
-    """A runtime failure raised by an extension handler."""
-
-    extension: str
-    event: str
-    message: str
 
 
 class UiBridge(Protocol):
@@ -553,10 +543,27 @@ class ExtensionContext:
         self._ui = ExtensionUi(runtime, self._generation, source_id=source_id)
 
     @property
+    def is_active(self) -> bool:
+        """Return whether this captured context generation is still live."""
+        return self._generation.active
+
+    @property
+    def generation_id(self) -> str:
+        """Return the stable id of this context generation."""
+        self._generation.assert_active()
+        return self._generation.id
+
+    @property
     def cwd(self) -> Path:
         """Return the session working directory."""
         self._generation.assert_active()
         return self._runtime.session_view.cwd
+
+    @property
+    def project_resources_enabled(self) -> bool:
+        """Whether project-local inputs are trusted; extension project files share the gate."""
+        self._generation.assert_active()
+        return self._runtime.session_view.project_resources_enabled
 
     @property
     def telemetry(self) -> TelemetrySink:
@@ -596,18 +603,6 @@ class ExtensionContext:
         return self._runtime.session_view.provider_name
 
     @property
-    def inference_provider(self) -> str | None:
-        """Return the active Hugging Face inference-provider pin, if any."""
-        self._generation.assert_active()
-        return self._runtime.session_view.inference_provider
-
-    @property
-    def inference_provider_mode(self) -> str:
-        """Return whether Hugging Face routing is automatic or explicitly fixed."""
-        self._generation.assert_active()
-        return self._runtime.session_view.inference_provider_mode
-
-    @property
     def session_id(self) -> str | None:
         """Return the current session id, if the session is indexed."""
         self._generation.assert_active()
@@ -618,6 +613,12 @@ class ExtensionContext:
         """Latest actual model input, recorded before its tools can run."""
         self._generation.assert_active()
         return self._runtime.session_view.current_snapshot_id
+
+    @property
+    def skills(self) -> tuple[Skill, ...]:
+        """Selected, frozen Skill metadata, including its original source path."""
+        self._generation.assert_active()
+        return tuple(getattr(self._runtime.session_view, "skills", ()))
 
     @property
     def resource_snapshot(self) -> ExtensionResourceSnapshot:
@@ -750,11 +751,6 @@ class ExtensionAPI:
         self._generation.assert_active()
         self._runtime.register_disposer(self._source_id, disposer)
 
-    def set_inference_provider(self, route: str | None) -> str:
-        """Select or reset the active Hugging Face session route."""
-        self._generation.assert_active()
-        return self._runtime.session_view.set_inference_provider(route)
-
     def register_tool(self, tool: AgentTool) -> None:
         """Register an agent tool (first registration per name wins)."""
         self._generation.assert_active()
@@ -853,8 +849,8 @@ class ExtensionAPI:
 
         Ports Pi's ``registerMessageRenderer``: the first registration per
         ``custom_type`` wins. The renderer receives a :class:`CustomMessageView`
-        and :class:`MessageRenderOptions` and returns a Rich-markup string; it
-        must not return a Textual widget (that keeps extensions TUI-free).
+        and :class:`MessageRenderOptions` and returns a Rich-markup string, never
+        a widget.
         """
         self._generation.assert_active()
         self._runtime.register_message_renderer(

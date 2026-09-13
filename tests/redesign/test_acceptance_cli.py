@@ -1,9 +1,9 @@
-"""Acceptance coverage for A04 and A07.
+"""CLI acceptance.
 
-A04 - the Coding CLI reads and manages experience without loading the Gateway.
-A07 - redirected stdin without --print is refused instead of waiting for input,
-      and Ctrl+C maps to exit code 130. The "no control codes in machine
-      output" half of A07 is already asserted by test_print_sqlite.
+- The Coding CLI reads and manages experience without loading the Gateway.
+- Redirected stdin without --print is refused instead of waiting for input, and
+  Ctrl+C maps to exit code 130. "No control codes in machine output" is asserted
+  by test_print_sqlite.
 """
 
 import json
@@ -40,7 +40,7 @@ def probe_options():
         paths=RunAgentPaths(home=STATE, agents_home=STATE / "agents"),
         model="test",
         provider_name="test",
-        extension_paths=(REPO / "extensions" / "experience",),
+        extension_paths=(REPO / "src" / "run_agent_extensions" / "experience",),
         extensions_enabled=True,
     )
 
@@ -48,7 +48,7 @@ def probe_options():
 async def main():
     app = await CodingApplication.open(probe_options(), provider=ReplyProvider())
     await app.start()
-    result = await app.command("/experience list project")
+    result = await app.command("/memory show")
     tools = sorted(tool.name for tool in app.session.extension_runtime.extension_tools)
     gateway_loaded = "run_agent_gateway" in sys.modules
     await app.aclose()

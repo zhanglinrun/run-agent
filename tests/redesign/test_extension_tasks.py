@@ -1,7 +1,5 @@
 import asyncio
-import json
 from dataclasses import replace
-from pathlib import Path
 
 import pytest
 from tests.redesign.test_coding_application import ReplyProvider, options
@@ -10,7 +8,7 @@ from tests.redesign.test_host_services import context
 from run_agent_coding.application import CodingApplication
 from run_agent_coding.extensions.api import ExtensionError
 from run_agent_coding.extensions.loader import LoadedExtension
-from run_agent_coding.host.contracts import ArtifactRef, StateChange, TaskSpec
+from run_agent_coding.host.contracts import StateChange, TaskSpec
 from run_agent_coding.storage.tasks import TaskRejected
 
 
@@ -136,23 +134,6 @@ async def test_noncooperative_task_is_reported_and_cannot_publish_after_retireme
             await asyncio.gather(*app.session.host_services.tasks._running.values())
         assert rejected
         assert (await runtime.aclose()).drained
-
-
-async def test_observability_export_is_a_managed_artifact_task(tmp_path):
-    extension_path = Path(__file__).parents[2] / "extensions/observability"
-    opts = replace(options(tmp_path), extension_paths=(extension_path,))
-    async with await CodingApplication.open(opts, provider=ReplyProvider()) as app:
-        assert [event async for event in app.prompt("record me")][-1].status == "succeeded"
-        result = await app.command("/trace export")
-        task_id = result.message.split(": ", 1)[1].split(".", 1)[0]
-        services = context(app).services
-        task = await completed(services.tasks, task_id)
-        assert task.status == "succeeded", task.error
-        ref = ArtifactRef(task.result["digest"], task.result["size"])
-        report = json.loads(await services.scope().artifacts.read(ref))
-        assert report["session_id"] == app.session.session_id
-        assert len(report["spans"]) == task.result["spans"] > 0
-        assert "succeeded" in (await app.command(f"/trace status {task_id}")).message
 
 
 async def test_failed_setup_cannot_resurrect_handlers_through_a_captured_api(tmp_path, extension):

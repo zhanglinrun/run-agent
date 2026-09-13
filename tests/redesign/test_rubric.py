@@ -1,4 +1,4 @@
-"""RED: a rubric with weights, a pitfall tier, and a veto (T-014).
+"""A rubric with weights, a pitfall tier, and a veto.
 
 Chapter 7's four rules for a rubric: grounded in expert guidance, comprehensive
 including explicit pitfalls, weighted by importance with a veto mechanism, and

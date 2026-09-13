@@ -1,13 +1,10 @@
-"""S08: interactive, print, Gateway and Eval leave no product JSONL behind.
+"""Interactive, print, Gateway and Eval leave no product JSONL behind.
 
 The four entry points share one working root here, then a single audit runs over
 all of it. Two things must hold: no product JSONL state file may exist anywhere,
-and the call ledger and spans must be queryable from SQLite instead.
-
-The one legitimate ``*.jsonl`` in the repository is the evaluation task manifest
-(``evals/coding/smoke/tasks.jsonl``), which is an input, not product state. This
-test audits generated state directories, so that file is out of scope by
-construction rather than by an exclusion list.
+and the call ledger and spans must be queryable from SQLite instead. Evaluation
+task manifests are inputs, not product state, and live outside the audited
+state directories by construction.
 """
 
 import asyncio
@@ -22,7 +19,8 @@ from prompt_toolkit.output import DummyOutput
 from rich.console import Console
 from tests.redesign.test_coding_application import ReplyProvider, options
 from tests.redesign.test_evaluation_sqlite import EvaluatedProvider, settings
-from tests.redesign.test_gateway_runtime import eventually, released, submit
+from tests.redesign.test_gateway_runner import FakeAdapter
+from tests.redesign.test_gateway_runner import config as gateway_config
 
 from run_agent_coding.application import CodingApplication
 from run_agent_coding.events import AgentSettledEvent
@@ -31,10 +29,7 @@ from run_agent_coding.terminal import Terminal
 from run_agent_evals.coding import CodingTaskExecutor
 from run_agent_evals.models import FrozenTask
 from run_agent_evals.runner import EvaluationRunner
-from run_agent_gateway.coding import CodingAssignmentRunner
-from run_agent_gateway.repository import GatewayRepository
-from run_agent_gateway.runtime import GatewayCodingRuntime
-from run_agent_gateway.scheduler import GatewayScheduler
+from run_agent_gateway.run import GatewayRunner
 
 
 async def drive_interactive_and_print(opts) -> None:
@@ -67,23 +62,18 @@ async def drive_interactive_and_print(opts) -> None:
 
 
 async def drive_gateway(opts, workspace: Path) -> None:
-    """One task through the real gateway: admit, schedule, complete, release."""
-    async with await SqliteDatabase.open(opts.paths.database_path) as database:
-        repository = GatewayRepository(database)
-        await repository.initialize()
-        owner = await repository.acquire_owner("s08-host")
-        host = GatewayCodingRuntime(
-            repository, owner, opts, provider_factory=lambda _: ReplyProvider()
-        )
-        scheduler = GatewayScheduler(repository, owner, CodingAssignmentRunner(host))
-        receipt = await repository.admit(owner, submit(workspace, "gateway-1"), model="test")
-        await scheduler.start()
-        try:
-            await eventually(lambda: released(repository, receipt.task_id))
-            assert not scheduler.errors and scheduler.failure is None
-        finally:
-            await scheduler.shutdown()
-            await repository.release_owner(owner)
+    """One chat message through the real gateway runner: session, agent, reply."""
+    adapter = FakeAdapter()
+    gateway = GatewayRunner(
+        gateway_config(), opts, adapter, provider_factory=lambda: ReplyProvider()
+    )
+    await gateway.start()
+    try:
+        await adapter.deliver("gateway-1")
+        await adapter.wait_idle()
+        assert adapter.sent[-1][1] == "reply: gateway-1"
+    finally:
+        await gateway.stop()
 
 
 async def drive_eval(tmp_path: Path, monkeypatch) -> dict:
@@ -140,11 +130,10 @@ def test_no_removed_jsonl_style_table_exists(tmp_path, removed):
 
 
 def test_no_jsonl_reader_writer_adapter_or_rpc_survives():
-    """S08 also forbids keeping the removed format's code paths around."""
+    """The removed format's code paths must not survive either."""
     repo = Path(__file__).resolve().parents[2]
     sources = [
         *sorted((repo / "src").rglob("*.py")),
-        *sorted((repo / "extensions").rglob("*.py")),
     ]
     for name in ("session/jsonl.py", "rpc.py", "stdin_jsonl.py"):
         matches = [str(p.relative_to(repo)) for p in sources if str(p).endswith(name)]

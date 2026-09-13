@@ -1,9 +1,4 @@
-"""RED: run bench must reach the task pipeline (T-008).
-
-The evaluation package grew four modules - task_spec, environment, verifier,
-statistics - that were implemented and tested but unreachable from the command
-line: run bench still drove the old JSONL loader and campaign. A pipeline nothing
-can invoke is not a pipeline. These tests pin the wiring: a task directory is
+"""Run bench reaches the task pipeline: a task directory is
 enumerated, each ready task is graded through the dual propositions, and the result
 carries the rates the report needs.
 """

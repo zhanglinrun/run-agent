@@ -1,4 +1,4 @@
-"""Trajectory-prefix regression tasks (T-012, T-013).
+"""Trajectory-prefix regression tasks.
 
 Chapter 7 separates two kinds of regression task. An end-to-end task runs the whole
 workflow and checks the final state, which is closest to production but cannot say

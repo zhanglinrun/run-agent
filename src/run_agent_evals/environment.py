@@ -1,4 +1,4 @@
-"""The five elements chapter 7 requires of a repeatable evaluation environment (T-006).
+"""The five elements chapter 7 requires of a repeatable evaluation environment.
 
 Chapter 7 names them: dataset, resettable state, atomic tools, scoring criteria, and
 an interaction protocol - "if any one of the five is missing, the evaluation cannot

@@ -1,15 +1,12 @@
-"""Provider selections travel through actual activation, resume and Gateway paths."""
+"""Provider selections travel through actual activation and resume paths."""
 
-import asyncio
 import os
 import py_compile
 from dataclasses import replace
 
 import pytest
-from tests.redesign.git_helpers import create_repository
 from tests.redesign.test_coding_application import ReplyProvider, options
 from tests.redesign.test_context_snapshots import RecordingProvider
-from tests.redesign.test_gateway_runtime import runtime, submit
 from tests.redesign.test_host_services import context
 from tests.redesign.test_skill_packages import resource_events
 
@@ -19,9 +16,6 @@ from run_agent_coding.extensions.loader import load_extensions
 from run_agent_coding.host.contracts import HeadChange, StateChange
 from run_agent_coding.resources import RunAgentResourcePaths
 from run_agent_coding.session_manager import SessionManager
-from run_agent_gateway.coding import CodingAssignmentRunner
-
-__all__ = ["runtime"]
 
 
 @pytest.fixture
@@ -236,46 +230,6 @@ def setup(api):
         assert not resource_events(app)
         with pytest.raises(ExtensionError, match="after session activation"):
             _ = context(app).services
-
-
-async def test_background_uses_source_resource_content_after_live_head_changes(
-    runtime, tmp_path, resource_extension
-):
-    repo, owner, host = runtime
-    workspace = create_repository(tmp_path / "project")
-    host.options = replace(host.options, extension_paths=(resource_extension,))
-    manager = SessionManager(host.options.paths, database=repo.database, principal_id="alice")
-    async with await CodingApplication.open(
-        replace(host.options, cwd=workspace), provider=ReplyProvider(), manager=manager
-    ) as seed:
-        await seed.start()
-        await publish(seed, "fixed gateway memory", scope="user")
-    first = await repo.admit(owner, submit(workspace), model="test")
-    runner = CodingAssignmentRunner(host)
-    foreground = await repo.claim_next(owner)
-    await runner.run(foreground, asyncio.Event())
-    await repo.release(owner, foreground)
-    background = await repo.admit(
-        owner,
-        replace(submit(workspace, "background", "isolated task"), lane="background"),
-        model="test",
-    )
-    async with await CodingApplication.open(
-        replace(host.options, cwd=workspace), provider=ReplyProvider(), manager=manager
-    ) as updater:
-        await updater.start()
-        await publish(updater, "new live gateway memory", scope="user")
-    await manager.aclose()
-    provider = RecordingProvider()
-    host.provider_factory = lambda _: provider
-    assignment = await repo.claim_next(owner)
-    await runner.run(assignment, asyncio.Event())
-    await repo.release(owner, assignment)
-    task = await repo.task(background.task_id, principal_id="alice")
-    assert task["status"] == "succeeded", task
-    assert first.session_id != assignment.session_id
-    assert "fixed gateway memory" in provider.requests[-1]["system"]
-    assert "new live gateway memory" not in provider.requests[-1]["system"]
 
 
 async def test_changed_extension_code_blocks_model_and_resume_until_explicit_reload(

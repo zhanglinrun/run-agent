@@ -1,4 +1,4 @@
-"""RED: the cost and latency ledger chapter 7 asks a report to carry (T-018).
+"""The cost and latency ledger chapter 7 asks a report to carry.
 
 Chapter 7's selection dimensions include cost and the two latency stages that are
 easy to confuse: prefill decides time-to-first-token, decode decides the rest, and p95

@@ -27,6 +27,8 @@ from run_agent_coding.host.evaluation import (
     EvaluationService,
     UnavailableEvaluation,
 )
+from run_agent_coding.host.inference import InferenceService, UnavailableInference
+from run_agent_coding.host.maintenance import MaintenanceRegistry
 from run_agent_coding.storage.artifacts import ArtifactStore
 from run_agent_coding.storage.resources import NamespaceResources
 from run_agent_coding.storage.sessions import SqliteSessionRepository, canonical_json, decode_entry
@@ -36,7 +38,7 @@ from run_agent_coding.storage.state import ExtensionRetired, NamespaceState, ass
 from run_agent_coding.storage.tasks import BoundTaskService, LocalTaskManager
 from run_agent_coding.storage.unit_of_work import CommitParticipant, UnitOfWork
 from run_agent_core.session.contracts import AppendReceipt
-from run_agent_core.session.entries import CustomEntry
+from run_agent_core.session.entries import CustomEntry, SessionEntry
 
 
 class SqliteHostServices:
@@ -50,6 +52,7 @@ class SqliteHostServices:
         self.database, self.artifacts, self.owner_id = database, artifacts, owner_id
         self.fault = fault
         self.tasks = LocalTaskManager(database)
+        self.maintenance = MaintenanceRegistry()
 
     def _hit_fault(self, point: str) -> None:
         """Fire a named fault point; raising here aborts the enclosing transaction."""
@@ -122,6 +125,7 @@ class SqliteHostServices:
         expected_generation: str | None = None,
         handlers: Mapping[str, Mapping[str, TaskHandler]] | None = None,
         activation: SessionActivation | None = None,
+        inference: InferenceService | None = None,
     ) -> HostPublication:
         if (
             not generation
@@ -218,6 +222,8 @@ class SqliteHostServices:
                 assert_active,
                 self.tasks,
                 dict((handlers or {}).get(source, {})),
+                inference=inference,
+                maintenance=self.maintenance,
             )
             for source in frozen_sources
         }
@@ -261,6 +267,8 @@ class BoundHostServices:
         tasks: LocalTaskManager,
         handlers: dict[str, TaskHandler],
         evaluation: EvaluationService | None = None,
+        inference: InferenceService | None = None,
+        maintenance: MaintenanceRegistry | None = None,
     ) -> None:
         self._assert_active = assert_active
         self._tasks = BoundTaskService(tasks, token, handlers, self, assert_active)
@@ -269,6 +277,10 @@ class BoundHostServices:
         self._evaluation: EvaluationService = (
             evaluation if evaluation is not None else UnavailableEvaluation()
         )
+        self._inference: InferenceService = (
+            inference if inference is not None else UnavailableInference()
+        )
+        self._maintenance = maintenance or MaintenanceRegistry()
         self._scopes: dict[ServiceScope, ScopedServices] = {}
         for name, scope in scopes.items():
             scoped_artifacts = ScopedArtifacts(database, artifacts, token, scope, assert_active)
@@ -313,6 +325,17 @@ class BoundHostServices:
         self._assert_active()
         return self._evaluation
 
+    @property
+    def maintenance(self) -> MaintenanceRegistry:
+        self._assert_active()
+        return self._maintenance
+
+    @property
+    def inference(self) -> InferenceService:
+        """Report the composed completion capability, or its explicit absence."""
+        self._assert_active()
+        return self._inference
+
 
 class BoundHistory:
     def __init__(
@@ -334,6 +357,18 @@ class BoundHistory:
             if not isinstance(entry, CustomEntry):
                 raise ValueError("Entry is not a custom record")
             return entry
+
+        return await self._database.run(read)
+
+    async def read_completed_run(self, run_id: str) -> Sequence[SessionEntry]:
+        def read(connection: sqlite3.Connection) -> tuple[SessionEntry, ...]:
+            self._assert_active()
+            assert_extension(connection, self._token)
+            rows = connection.execute(
+                "SELECT * FROM entries WHERE session_id=? AND run_id=? ORDER BY seq",
+                (self._token.session_id, run_id),
+            ).fetchall()
+            return tuple(decode_entry(row) for row in rows)
 
         return await self._database.run(read)
 

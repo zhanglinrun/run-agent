@@ -21,6 +21,19 @@ Run Agent's own product knowledge is regular packaged documentation, not a built
 
 A higher-precedence skill with the same name overrides the lower one. Run Agent places only each skill's name, description, and path in the system prompt; the model reads the full file when its description matches the task. Use `/skill:<name>` for explicit invocation.
 
+Project Skills require project trust. Loaded Skill packages are frozen in the session's
+resource snapshot; edits become available after `/reload` or a new session. The default
+experience extension exposes `skill_manage` for creation and maintenance, plus `/skillset`
+for pinning, adoption, recoverable restore and ledger rollback. Autonomous review cannot
+modify pinned or user-owned Skills. Ownership checks always apply; optional content
+scanning requires `EXPERIENCE_SKILL_GUARD=true`.
+
+Explicit `/skill:<name>` invocation and successful `read` calls on the selected `SKILL.md`
+record consultations. Uses are deduplicated per Skill per user run; shell reads and arbitrary
+custom readers are not inferred as usage. Review may save reusable procedures after an
+eligible completed task, but neither review admission nor a saved Skill proves future
+task improvement.
+
 A skill with `disable-model-invocation: true` in its `SKILL.md` frontmatter is excluded from the system prompt entirely, so the model cannot invoke it on its own. The skill stays loaded and remains available through explicit `/skill:<name>` invocation and the `/skills` picker.
 
 ## Prompt templates

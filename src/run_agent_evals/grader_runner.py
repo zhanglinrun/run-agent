@@ -1,4 +1,4 @@
-"""Run a task's own grader and report one outcome per test (T-004).
+"""Run a task's own grader and report one outcome per test.
 
 Admission answers "did the grader pass" with a single exit code. The dual
 propositions need more than that: they need to know which tests changed verdict, so

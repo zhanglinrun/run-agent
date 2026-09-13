@@ -1,4 +1,4 @@
-"""RED: the dual propositions must hold against a real grader (T-004).
+"""The dual propositions must hold against a real grader.
 
 The classification core was tested against a fake suite, which proves it decides
 correctly but not that it is connected to anything. These tests drive the real grader

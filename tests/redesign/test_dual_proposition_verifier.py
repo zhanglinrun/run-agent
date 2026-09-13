@@ -1,4 +1,4 @@
-"""RED: the two propositions chapter 7 requires before "fixed" means anything (T-052).
+"""The two propositions chapter 7 requires before "fixed" means anything.
 
 Chapter 7 is explicit that one group of tests is not enough:
 

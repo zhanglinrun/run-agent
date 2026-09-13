@@ -1,12 +1,9 @@
-"""Acceptance coverage for A01, A03 and A05.
+"""Extension lifecycle acceptance.
 
-A01 - a setup that fails halfway must leave no tool, command or prompt guideline.
-A03 - with every extension disabled, skills, compaction and recovery still work.
-A05 - extension shutdown reports concrete convergence values and resources.
-
-A05's budget/quota clause is not asserted here: extension task budgets do not
-exist yet (they arrive with the review worker in P5-2). Until then A05 stays
-open rather than being closed on a partial assertion.
+- A setup that fails halfway must leave no tool, command or prompt guideline.
+- With every extension disabled, skills, compaction and recovery still work.
+- Extension shutdown reports concrete convergence values and resources; the
+  task budget half of that is covered in test_task_budget.
 """
 
 from dataclasses import replace
@@ -75,7 +72,7 @@ async def test_coding_compaction_skills_and_recovery_survive_without_extensions(
     await app.start()
     runtime = app.session.extension_runtime
     assert runtime.extension_tools == ()
-    assert runtime.build_command_registry().get("experience") is None
+    assert runtime.build_command_registry().get("memory") is None
 
     events = [event async for event in app.prompt("first")]
     head = events[-1].head_id

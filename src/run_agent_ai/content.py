@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from run_agent_core.messages import ImageContent, TextContent, ToolResultMessage, UserMessage
+from run_agent_core.messages import ImageContent, TextContent
 
 NON_VISION_USER_IMAGE_PLACEHOLDER = (
     "(image omitted: current model does not support image input; image contents are "
@@ -14,16 +14,6 @@ NON_VISION_TOOL_IMAGE_PLACEHOLDER = (
     "(tool image omitted: current model does not support image input; image contents are "
     "unavailable—do not infer or describe them; ask the user to switch to a vision-capable model)"
 )
-
-
-def messages_have_images(messages: Sequence[object]) -> bool:
-    """Return whether user or tool-result context contains image blocks."""
-    return any(
-        isinstance(message, (UserMessage, ToolResultMessage))
-        and not isinstance(message.content, str)
-        and any(isinstance(block, ImageContent) for block in message.content)
-        for message in messages
-    )
 
 
 def text_and_images(

@@ -1,9 +1,4 @@
-"""The task pipeline behind ``run bench suite`` (T-008, T-009).
-
-This is the wiring the evaluation package was missing. task_spec, environment,
-verifier and statistics each existed and were tested, but nothing could invoke them
-from the command line: run bench still drove the old JSONL loader and campaign, so
-the dual propositions and the metrics were unreachable in practice.
+"""The task pipeline behind ``run bench suite``.
 
 The suite enumerates the ready tasks in a directory, grades each one through the
 dual propositions against a candidate workspace, and reduces the verdicts into a

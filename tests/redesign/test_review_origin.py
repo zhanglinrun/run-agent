@@ -1,4 +1,4 @@
-"""A review's own writes are marked agent-created (T-047).
+"""A review's own writes are marked agent-created.
 
 The provenance variable has to be bound by the review fork itself, not only
 available by hand. Anything the worker consumes is written under the review
@@ -19,7 +19,7 @@ from run_agent_coding.host.contracts import TaskSpec
 from run_agent_coding.host.learning import is_agent_created
 
 REPO = Path(__file__).resolve().parents[2]
-EXPERIENCE = REPO / "extensions" / "experience"
+EXPERIENCE = REPO / "src" / "run_agent_extensions" / "experience"
 
 
 def experience_options(tmp_path):

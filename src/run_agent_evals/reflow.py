@@ -1,4 +1,4 @@
-"""Turn an attributed failure into a regression task (T-016, T-017).
+"""Turn an attributed failure into a regression task.
 
 Chapter 7 closes the loop here: once the first error and its category are known, the
 dataset can be extended with end-to-end and trajectory-prefix regression tasks, and it

@@ -22,7 +22,6 @@ from run_agent_ai._provider_events import (
 from run_agent_ai.content import (
     NON_VISION_TOOL_IMAGE_PLACEHOLDER,
     NON_VISION_USER_IMAGE_PLACEHOLDER,
-    messages_have_images,
     text_and_images,
 )
 from run_agent_ai.env import (
@@ -140,12 +139,10 @@ class AnthropicProvider:
         messages: list[AgentMessage],
         tools: list[AgentTool],
     ) -> _PreparedRequest:
-        """Resolve credentials and build the request every attempt will send."""
-        api_key, base_url, auth_headers = await self._resolve_credentials()
+        """Build the request every attempt will send."""
         payload = _build_messages_payload(
             model=model,
             system=system,
-            oauth_system_prompt=self._config.oauth_system_prompt,
             messages=messages,
             tools=tools,
             max_tokens=self._config.max_tokens,
@@ -158,49 +155,19 @@ class AnthropicProvider:
         )
         return _PreparedRequest(
             client=self._get_client(),
-            url=f"{base_url.rstrip('/')}/messages",
-            headers=self._request_headers(api_key, auth_headers, messages),
+            url=f"{self._config.base_url.rstrip('/')}/messages",
+            headers=self._request_headers(),
             payload=payload,
         )
 
-    async def _resolve_credentials(self) -> tuple[str, str, dict[str, str]]:
-        """The api key, base url and extra headers, after any credential resolver."""
-        api_key = self._config.api_key
-        base_url = self._config.base_url
-        extra: dict[str, str] = {}
-        if self._config.credential_resolver is None:
-            return api_key, base_url, extra
-        auth = await self._config.credential_resolver()
-        api_key = auth.api_key
-        if auth.base_url is not None:
-            base_url = auth.base_url.rstrip("/")
-            if not base_url.endswith("/v1"):
-                base_url = f"{base_url}/v1"
-        extra.update(auth.headers or {})
-        return api_key, base_url, extra
-
-    def _request_headers(
-        self, api_key: str, auth_headers: dict[str, str], messages: list[AgentMessage]
-    ) -> dict[str, str]:
-        """Version header, then configured headers, then auth last so it wins."""
-        headers = {
+    def _request_headers(self) -> dict[str, str]:
+        """Version header, then configured headers, then the key last so it wins."""
+        return {
             "anthropic-version": ANTHROPIC_VERSION,
             "content-type": "application/json",
             **(dict(self._config.headers or {})),
-            **auth_headers,
+            "x-api-key": self._config.api_key,
         }
-        vision = (
-            self._config.provider_name == "github-copilot"
-            and self._config.supports_images
-            and messages_have_images(messages)
-        )
-        if vision:
-            headers["Copilot-Vision-Request"] = "true"
-        if self._config.bearer_auth:
-            headers.setdefault("Authorization", f"Bearer {api_key}")
-        else:
-            headers["x-api-key"] = api_key
-        return headers
 
     async def _stream_attempts(
         self,
@@ -399,7 +366,6 @@ def _build_messages_payload(
     model: str,
     system: str,
     messages: list[AgentMessage],
-    oauth_system_prompt: str | None = None,
     tools: list[AgentTool],
     max_tokens: int | None = None,
     thinking_budget_tokens: int | None = None,
@@ -426,7 +392,7 @@ def _build_messages_payload(
         "model": model,
         "max_tokens": resolved_max_tokens,
         "stream": True,
-        "system": _anthropic_system(system, oauth_system_prompt, cache_control),
+        "system": _anthropic_system(system, cache_control),
         "messages": cast("JSONValue", payload_messages),
     }
     if thinking_mode == "disabled":
@@ -465,34 +431,14 @@ def _cache_control(cache_retention: CacheRetention) -> dict[str, JSONValue] | No
     return {"type": "ephemeral"}
 
 
-def _anthropic_system(
-    system: str,
-    oauth_system_prompt: str | None,
-    cache_control: dict[str, JSONValue] | None,
-) -> JSONValue:
-    """Build the system field, marking its tail as a cache breakpoint when enabled.
-
-    Only the final block is marked. A breakpoint on the OAuth identity block would
-    cache a prefix already covered by the block after it, wasting one of the four
-    breakpoints Anthropic allows.
-    """
-    if cache_control is None:
-        if oauth_system_prompt:
-            return [
-                {"type": "text", "text": oauth_system_prompt},
-                {"type": "text", "text": system},
-            ]
-        return system
-    blocks: list[dict[str, JSONValue]] = []
-    if oauth_system_prompt:
-        blocks.append({"type": "text", "text": oauth_system_prompt})
-    if system:
-        blocks.append({"type": "text", "text": system})
-    if not blocks:
+def _anthropic_system(system: str, cache_control: dict[str, JSONValue] | None) -> JSONValue:
+    """Build the system field, marking it as a cache breakpoint when enabled."""
+    if cache_control is None or not system:
         # An empty text block carrying cache_control is rejected outright.
         return system
-    blocks[-1]["cache_control"] = dict(cache_control)
-    return cast("JSONValue", blocks)
+    return cast(
+        "JSONValue", [{"type": "text", "text": system, "cache_control": dict(cache_control)}]
+    )
 
 
 def _apply_message_cache_breakpoints(

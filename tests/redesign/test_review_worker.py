@@ -1,4 +1,4 @@
-"""RED: the review worker's budget and its capability limits (P5-2).
+"""The review worker's budget and its capability limits.
 
 A review fork runs a model like anything else, so it has to be bounded the way
 Hermes bounds its background review: an explicit input-token budget that a
@@ -12,7 +12,8 @@ configuration, or write the main workspace.
 """
 
 import pytest
-from extensions.experience.worker import (
+
+from run_agent_extensions.experience.worker import (
     ReviewBudget,
     ReviewCapabilities,
     ReviewCapabilityError,

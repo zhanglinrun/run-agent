@@ -1,11 +1,11 @@
-"""Whether learned experience may be written back right now (P5-4).
+"""Whether learned experience may be written back right now.
 
 An evaluation run must not change the asset it is measuring, so writeback is
 switched off for the duration of a measured trial and restored afterwards.
 
 This lives in the Coding layer rather than in the experience extension because the
-evaluation package ships in the wheel and ``extensions/`` does not: the flag has
-to be settable without importing the extension that honours it. It is the same
+evaluation package must not import an optional extension to switch it off: the flag
+has to be settable without importing the extension that honours it. It is the same
 mechanism Hermes uses for skill write provenance - a ContextVar, so a nested or
 concurrent context cannot leak the setting.
 """

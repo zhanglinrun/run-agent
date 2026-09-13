@@ -1,4 +1,4 @@
-"""RED: turn an attributed failure into a regression task, and keep the holdout clean.
+"""Turn an attributed failure into a regression task, and keep the holdout clean.
 
 Chapter 7 closes the loop this way: once the first error and its category are known,
 "you can construct the evaluation dataset, including both end-to-end and

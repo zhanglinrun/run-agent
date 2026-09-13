@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from time import time
 from typing import Annotated, Any, Literal
 
@@ -132,7 +133,6 @@ class AssistantMessage(WireModel):
     provider: str = "unknown"
     model: str = "unknown"
     response_model: str | None = None
-    response_provider: str | None = None
     response_id: str | None = None
     diagnostics: list[AssistantMessageDiagnostic] | None = None
     usage: Usage = Usage()
@@ -182,6 +182,7 @@ class ToolResultMessage(WireModel):
     tool_name: str
     content: list[ToolResultContent] = Field(default_factory=list)
     details: JSONValue = None
+    usage: Usage | None = None
     added_tool_names: list[str] | None = None
     is_error: bool = False
     timestamp: int = Field(default_factory=current_timestamp_ms)
@@ -270,9 +271,68 @@ def content_text(content: str | list[Any]) -> str:
     return "".join(block.text for block in content if isinstance(block, TextContent))
 
 
+COMPACTION_SUMMARY_PREFIX = (
+    "The conversation history before this point was compacted into the following "
+    "summary:\n\n<summary>\n"
+)
+COMPACTION_SUMMARY_SUFFIX = "\n</summary>"
+BRANCH_SUMMARY_PREFIX = (
+    "The following is a summary of a branch that this conversation came back from:\n\n<summary>\n"
+)
+BRANCH_SUMMARY_SUFFIX = "</summary>"
+
+type LlmMessage = UserMessage | AssistantMessage | ToolResultMessage
+
+
+def bash_execution_to_text(message: BashExecutionMessage) -> str:
+    """Render a user-run shell command the way Pi shows it to the model."""
+    text = f"Ran `{message.command}`\n"
+    text += f"```\n{message.output}\n```" if message.output else "(no output)"
+    if message.cancelled:
+        text += "\n\n(command cancelled)"
+    elif message.exit_code not in (None, 0):
+        text += f"\n\nCommand exited with code {message.exit_code}"
+    if message.truncated and message.full_output_path:
+        text += f"\n\n[Output truncated. Full output: {message.full_output_path}]"
+    return text
+
+
 def message_to_user(message: AgentMessage) -> UserMessage:
-    """Convert custom/session-only messages to provider-compatible user context."""
+    """Convert one session-only message to the user message the provider sees.
+
+    Ports Pi's ``convertToLlm``: summaries are wrapped so the model knows they
+    are summaries, shell executions become a fenced transcript, and custom
+    messages keep their content blocks. Provider-native roles pass through.
+    """
+    if isinstance(message, UserMessage):
+        return message
+    if isinstance(message, BashExecutionMessage):
+        return UserMessage(content=bash_execution_to_text(message), timestamp=message.timestamp)
+    if isinstance(message, CustomMessage):
+        return UserMessage(content=message.content, timestamp=message.timestamp)
+    if isinstance(message, BranchSummaryMessage):
+        text = f"{BRANCH_SUMMARY_PREFIX}{message.summary}{BRANCH_SUMMARY_SUFFIX}"
+        return UserMessage(content=text, timestamp=message.timestamp)
+    if isinstance(message, CompactionSummaryMessage):
+        text = f"{COMPACTION_SUMMARY_PREFIX}{message.summary}{COMPACTION_SUMMARY_SUFFIX}"
+        return UserMessage(content=text, timestamp=message.timestamp)
     return UserMessage(content=message_text(message), timestamp=message.timestamp)
+
+
+def convert_to_llm(messages: Sequence[AgentMessage]) -> list[LlmMessage]:
+    """Project a transcript onto the three roles a provider accepts.
+
+    A shell execution marked ``exclude_from_context`` is dropped, as in Pi.
+    """
+    converted: list[LlmMessage] = []
+    for message in messages:
+        if isinstance(message, (AssistantMessage, ToolResultMessage)):
+            converted.append(message)
+        elif isinstance(message, BashExecutionMessage) and message.exclude_from_context:
+            continue
+        else:
+            converted.append(message_to_user(message))
+    return converted
 
 
 def message_text(message: AgentMessage) -> str:

@@ -16,10 +16,12 @@ from run_agent_coding.provider_config import ProviderSettings, load_provider_set
 from run_agent_coding.resources import RunAgentResourcePaths
 from run_agent_coding.session import CodingSession, CodingSessionConfig, ModelChoice
 from run_agent_coding.session_manager import SessionManager
-from run_agent_coding.shell_config import load_shell_settings
+from run_agent_coding.settings import load_settings
 from run_agent_coding.storage.handle import OutcomeCommitter
 from run_agent_coding.thinking import ThinkingLevel
 from run_agent_core.provider import ModelProvider
+from run_agent_core.session import SessionState, load_session_entries
+from run_agent_extensions import BUILTIN_EXTENSIONS
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +35,7 @@ class ApplicationOptions:
     extension_paths: tuple[Path, ...] = ()
     extensions_enabled: bool = True
     project_extensions_enabled: bool = False
+    trace_enabled: bool = False
     trust_override: TrustOverride | None = None
     trust_default: TrustDefault | None = None
     thinking: ThinkingLevel | None = None
@@ -69,7 +72,7 @@ class CodingApplication:
             if options.refresh_resources and options.pinned_resources:
                 raise ValueError("Pinned background resources cannot be refreshed")
             settings = settings or (load_provider_settings(paths) if provider is None else None)
-            shell = load_shell_settings(paths)
+            shell = load_settings(paths, options.cwd)
             if options.resume is not None:
                 record = await manager.get_session(options.resume)
                 if record is None:
@@ -82,6 +85,39 @@ class CodingApplication:
                     session_id=options.session_id,
                 )
             storage = await manager.open_storage(record.id, committer=committer)
+            extension_paths = options.extension_paths
+            if options.extensions_enabled:
+                defaults = tuple(BUILTIN_EXTENSIONS.values())
+                if options.resume is not None and not options.refresh_resources:
+                    entries = await load_session_entries(storage)
+                    head = await storage.get_head()
+                    state = SessionState.from_entries(entries, leaf_id=head.entry_id)
+                    snapshot = next(
+                        (
+                            entry
+                            for entry in reversed(state.custom_entries)
+                            if entry.namespace == "run.resources"
+                        ),
+                        None,
+                    )
+                    if snapshot is not None:
+                        payload = snapshot.data.get("payload")
+                        sources = payload.get("extensions", []) if isinstance(payload, dict) else []
+                        source_ids = (
+                            {
+                                source.get("source_id")
+                                for source in sources
+                                if isinstance(source, dict)
+                            }
+                            if isinstance(sources, list)
+                            else set()
+                        )
+                        defaults = tuple(
+                            path
+                            for path in defaults
+                            if f"extension:{(path / 'extension.py').as_uri()}" in source_ids
+                        )
+                extension_paths = tuple(dict.fromkeys((*extension_paths, *defaults)))
             session = await CodingSession.load(
                 CodingSessionConfig(
                     provider=provider,
@@ -107,16 +143,18 @@ class CodingApplication:
                     requested_provider=options.provider_name,
                     requested_model=options.model,
                     session_provider_name=record.provider_name,
-                    inference_provider=record.inference_provider,
-                    inference_provider_mode=record.inference_provider_mode,
                     provider_settings=settings,
                     thinking_level_override=options.thinking,
-                    extension_paths=options.extension_paths,
+                    extension_paths=extension_paths,
                     extensions_enabled=options.extensions_enabled,
                     project_extensions_enabled=options.project_extensions_enabled,
+                    trace_enabled=options.trace_enabled,
                     trust_override=options.trust_override,
                     trust_default=options.trust_default or shell.default_project_trust,
                     shell_command_prefix=shell.shell_command_prefix,
+                    steering_mode=shell.steering_mode,
+                    follow_up_mode=shell.follow_up_mode,
+                    auto_compact_enabled=shell.compaction_enabled,
                 )
             )
             return cls(session, manager, owns_manager=owns_manager)
@@ -235,30 +273,6 @@ class CodingApplication:
             message = (
                 "\n".join(f"/{item.name}: {item.description}" for item in session.prompt_templates)
                 or "No prompt templates."
-            )
-        elif result.scoped_models_picker_requested:
-            scoped_choices = session.available_model_choices
-            labels = [f"{item.provider_name}:{item.model}" for item in scoped_choices]
-            selected = await ui.select("Toggle model shortcut", labels) if ui.has_ui else None
-            if selected:
-                session.toggle_scoped_model(scoped_choices[labels.index(selected)])
-            message = "\n".join(
-                f"{item.provider_name}:{item.model}" for item in session.scoped_model_choices
-            )
-        elif result.login_provider is not None or result.login_picker_requested:
-            from run_agent_coding.authentication import login
-
-            message = await login(
-                self.manager.paths, ui, result.login_provider, result.login_method
-            )
-            session.reload_provider_settings()
-        elif result.logout_provider is not None or result.logout_picker_requested:
-            from run_agent_coding.authentication import logout
-
-            message = await logout(self.manager.paths, ui, result.logout_provider)
-        elif result.custom_provider_login_requested:
-            raise ValueError(
-                "Configure custom providers in models.json, then select them with /model."
             )
         return replace(result, message=message)
 

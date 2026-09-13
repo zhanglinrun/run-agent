@@ -22,6 +22,7 @@ from run_agent_evals.runtime_bench import (
 )
 from run_agent_evals.suite import report_for_directory
 from run_agent_evals.task_loading import load_tasks
+from run_agent_extensions import resolve_extension_path
 
 
 async def _run(args: argparse.Namespace) -> int:
@@ -37,7 +38,7 @@ async def _run(args: argparse.Namespace) -> int:
         thinking_level_override=(
             normalize_thinking_level(requested_thinking) if requested_thinking else None
         ),
-        extension_paths=tuple(path.resolve() for path in args.extension),
+        extension_paths=tuple(resolve_extension_path(path).resolve() for path in args.extension),
         project_extensions_enabled=args.project_extensions,
         trust_default="always" if args.trust_project else "never",
     )

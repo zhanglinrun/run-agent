@@ -1,4 +1,4 @@
-"""RED: the JSONL task loader must resolve the {python} placeholder (T-021).
+"""The JSONL task loader must resolve the {python} placeholder.
 
 The directory task format resolves it - task_spec replaces ``{python}`` with the
 running interpreter - but the JSONL loader passed verifier commands through

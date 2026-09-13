@@ -1,4 +1,4 @@
-"""RED: the five environment elements, reshaped for a coding agent (T-006).
+"""The five environment elements, reshaped for a coding agent.
 
 Chapter 7 lists what a repeatable evaluation environment needs - dataset,
 resettable state, atomic tools, scoring criteria, and an interaction protocol - and

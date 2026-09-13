@@ -1,4 +1,4 @@
-"""RED: freeze the prefix before the first error and judge the next action (T-012).
+"""Freeze the prefix before the first error and judge the next action.
 
 Chapter 7 calls the trajectory-prefix task the one that matters most for a
 high-reliability agent: "it freezes the existing context, dialogue, tool returns and

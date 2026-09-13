@@ -7,7 +7,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN useradd --create-home --uid 1000 runagent \
-    && mkdir -p /workspace /home/runagent/.run
+    && mkdir -p /workspace /home/runagent/.run \
+    && python -c "import uuid; open('/etc/machine-id','w',encoding='ascii').write(uuid.uuid4().hex)"
 
 COPY . .
 
@@ -19,4 +20,4 @@ USER runagent
 VOLUME ["/home/runagent/.run"]
 
 ENTRYPOINT ["run", "gateway"]
-CMD ["--extension", "/app/examples/gateway_extensions/feishu.py", "--cwd", "/workspace"]
+CMD ["--state-dir", "/home/runagent/.run", "--cwd", "/workspace"]

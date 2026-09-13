@@ -1,4 +1,4 @@
-"""RED: a measured evaluation must not write experience back (P5-4).
+"""A measured evaluation must not write experience back.
 
 Plan 6.6 requires that the evaluation process has learning writeback switched off.
 Holding that only because the bench path happens not to load the extension is not
@@ -26,7 +26,7 @@ from run_agent_evals.coding import CodingTaskExecutor
 from run_agent_evals.models import FrozenTask
 
 REPO = Path(__file__).resolve().parents[2]
-EXPERIENCE = REPO / "extensions" / "experience"
+EXPERIENCE = REPO / "src" / "run_agent_extensions" / "experience"
 
 
 def experience_options(tmp_path):
@@ -47,14 +47,15 @@ async def test_no_experience_is_written_while_writeback_is_off(tmp_path):
         experience_options(tmp_path), provider=ReplyProvider()
     ) as app:
         await app.start()
-        await app.command('/experience remember project memory warm "normal value"')
-        before = (await app.command("/experience list project")).message
+        await app.command("/memory add memory normal value")
+        memory_file = tmp_path / ".run" / "MEMORY.md"
+        before = memory_file.read_text(encoding="utf-8")
 
-        # A command path surfaces the refusal rather than raising it, so assert the
-        # effect: with writeback off the published set is untouched.
+        # The command path surfaces the refusal rather than raising it, so assert the
+        # effect: with writeback off the file is untouched.
         with writeback_disabled():
-            await app.command('/experience remember project memory frozen "secret value"')
-        after = (await app.command("/experience list project")).message
+            await app.command("/memory add memory secret value")
+        after = memory_file.read_text(encoding="utf-8")
 
         assert after == before
         assert "secret value" not in after, after

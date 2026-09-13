@@ -27,11 +27,6 @@ class RunAgentPaths:
         return self.home / "logs"
 
     @property
-    def models_store_path(self) -> Path:
-        """Return the persisted remote model-catalog cache path."""
-        return self.home / "models-store.json"
-
-    @property
     def extension_state_dir(self) -> Path:
         """Return the user-level state directory owned by extensions."""
         return self.home / "state" / "extensions"
