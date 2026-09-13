@@ -6,6 +6,7 @@ import ctypes
 import os
 import re
 import signal
+import sys
 from ctypes import wintypes
 from pathlib import Path
 from time import monotonic, sleep
@@ -19,7 +20,7 @@ def _inspect_unreleased_gate(intent: dict[str, Any]) -> dict[str, Any]:
     identity = intent.get("process_id", "")
     if not isinstance(identity, str) or re.fullmatch(r"[0-9a-f]{32}", identity) is None:
         return {"empty": False, "reason": "Missing launch identity"}
-    if intent.get("kind") == "windows_job" and os.name == "nt":
+    if intent.get("kind") == "windows_job" and sys.platform == "win32":
         return inspect_windows_job("Local\\run-agent-" + identity)
     if intent.get("kind") == "posix_group" and os.name == "posix":
         members = []
@@ -59,7 +60,7 @@ def inspect_native_process(intent: dict[str, Any], native: dict[str, Any] | None
         current = process_identity(pid)
         if current == identity:
             return {"empty": False, "reason": "Command process is still alive", "pid": pid}
-        if native.get("kind") == "windows_job" and os.name == "nt":
+        if native.get("kind") == "windows_job" and sys.platform == "win32":
             name = native.get("identity", "")
             if not isinstance(name, str):
                 return {"empty": False, "reason": "Invalid job identity"}
@@ -102,7 +103,7 @@ def terminate_orphan(intent: dict[str, Any], native: dict[str, Any] | None) -> d
     current = process_identity(native["pid"])
     if current is not None and current != native["native_identity"]:
         return {"empty": False, "reason": "Native process identity was reused"}
-    if native.get("kind") == "windows_job" and os.name == "nt":
+    if native.get("kind") == "windows_job" and sys.platform == "win32":
         name = native.get("identity", "")
         if re.fullmatch(r"Local\\run-agent-[0-9a-f]{32}", name) is None:
             return check

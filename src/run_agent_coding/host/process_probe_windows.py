@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ctypes
 import re
+import sys
 from ctypes import wintypes
 from typing import Any
 
@@ -21,6 +22,8 @@ ERROR_FILE_NOT_FOUND = 2
 def inspect_windows_job(name: str) -> dict[str, Any]:
     """Whether a named job object still holds processes, or has gone entirely."""
 
+    if sys.platform != "win32":
+        raise RuntimeError("Windows job inspection requires Windows")
     if re.fullmatch(JOB_NAME_PATTERN, name) is None:
         return {"empty": False, "reason": "Invalid job identity"}
     api = _kernel32()
@@ -38,6 +41,8 @@ def inspect_windows_job(name: str) -> dict[str, Any]:
 
 def _kernel32() -> Any:
     """kernel32 with the argument types declared, so the calls are checked."""
+    if sys.platform != "win32":
+        raise RuntimeError("Windows job inspection requires Windows")
     api = ctypes.WinDLL("kernel32", use_last_error=True)
     api.OpenJobObjectW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
     api.OpenJobObjectW.restype = wintypes.HANDLE
@@ -53,6 +58,8 @@ def _kernel32() -> Any:
 
 
 def _membership(api: Any, handle: Any) -> dict[str, Any]:
+    if sys.platform != "win32":
+        raise RuntimeError("Windows job inspection requires Windows")
     from run_agent_coding.host.windows_jobs import _Accounting
 
     accounting = _Accounting()

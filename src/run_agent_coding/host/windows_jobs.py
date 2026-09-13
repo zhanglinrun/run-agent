@@ -6,6 +6,7 @@ import ctypes
 import importlib
 import os
 import subprocess
+import sys
 from ctypes import wintypes
 from pathlib import Path
 from typing import Any, BinaryIO, cast
@@ -106,9 +107,12 @@ class _ProcessInfo(ctypes.Structure):
 
 class WindowsJobProcess:
     kind = "windows_job"
+    pid: int
 
     def __init__(self, command: str, cwd: Path, output: BinaryIO, *, identity: str) -> None:
         self.identity = "Local\\run-agent-" + identity
+        if sys.platform != "win32":
+            raise RuntimeError("Windows job processes require Windows")
         self._api = ctypes.WinDLL("kernel32", use_last_error=True)
         for name, result, arguments in (
             ("CreateJobObjectW", wintypes.HANDLE, [ctypes.c_void_p, wintypes.LPCWSTR]),
@@ -208,6 +212,8 @@ class WindowsJobProcess:
             raise
 
     def _create(self, shell: str, command: str, cwd: Path, handles: list[int]) -> None:
+        if sys.platform != "win32":
+            raise RuntimeError("Windows job processes require Windows")
         size = ctypes.c_size_t()
         self._api.InitializeProcThreadAttributeList(None, 2, 0, ctypes.byref(size))
         attributes = ctypes.create_string_buffer(size.value)
@@ -263,6 +269,8 @@ class WindowsJobProcess:
             self._api.DeleteProcThreadAttributeList(attributes)
 
     def resume(self) -> None:
+        if sys.platform != "win32":
+            raise RuntimeError("Windows job processes require Windows")
         if self._thread is None:
             raise RuntimeError("Process thread is not suspended")
         if self._api.ResumeThread(self._thread) == 0xFFFFFFFF:
@@ -272,15 +280,21 @@ class WindowsJobProcess:
 
     @staticmethod
     def _check(result: Any) -> None:
+        if sys.platform != "win32":
+            raise RuntimeError("Windows job processes require Windows")
         if not result:
             raise ctypes.WinError(ctypes.get_last_error())
 
     def poll(self) -> int | None:
+        if sys.platform != "win32":
+            raise RuntimeError("Windows job processes require Windows")
         if self._winapi.WaitForSingleObject(self._process, 0) == self._winapi.WAIT_TIMEOUT:
             return None
         return cast(int, self._winapi.GetExitCodeProcess(self._process))
 
     def active_count(self) -> int:
+        if sys.platform != "win32":
+            raise RuntimeError("Windows job processes require Windows")
         info = _Accounting()
         self._check(
             self._api.QueryInformationJobObject(
@@ -290,11 +304,15 @@ class WindowsJobProcess:
         return int(info.ActiveProcesses)
 
     def terminate(self, *, force: bool) -> None:
+        if sys.platform != "win32":
+            raise RuntimeError("Windows job processes require Windows")
         # Hidden Windows jobs have no console for CTRL_BREAK. Terminate the owned
         # job directly; never report a graceful signal that was not delivered.
         self._check(self._api.TerminateJobObject(self._job, 1))
 
     def close(self) -> None:
+        if sys.platform != "win32":
+            raise RuntimeError("Windows job processes require Windows")
         if self._thread is not None:
             self._winapi.CloseHandle(self._thread)
             self._thread = None

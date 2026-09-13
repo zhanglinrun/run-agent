@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import sys
 from ctypes import wintypes
 from pathlib import Path
 
@@ -11,7 +12,7 @@ from pathlib import Path
 def process_identity(pid: int) -> str | None:
     if pid <= 0:
         raise ValueError("Process PID must be positive")
-    if os.name == "nt":
+    if sys.platform == "win32":
         api = ctypes.WinDLL("kernel32", use_last_error=True)
         api.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
         api.OpenProcess.restype = wintypes.HANDLE
@@ -53,7 +54,7 @@ def current_process_identity() -> str:
 
 
 def machine_identity() -> str:
-    if os.name == "nt":
+    if sys.platform == "win32":
         import winreg
 
         with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography") as key:
