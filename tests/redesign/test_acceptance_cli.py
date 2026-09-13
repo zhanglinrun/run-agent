@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from rich.text import Text
 
 import run_agent_entry
 from run_agent_coding import cli
@@ -98,7 +99,7 @@ def test_redirected_stdin_without_print_is_refused_not_awaited(tmp_path):
         timeout=30,
     )
     assert completed.returncode == 2, (completed.returncode, completed.stdout, completed.stderr)
-    assert "--print" in completed.stderr
+    assert "--print" in Text.from_ansi(completed.stderr).plain
 
 
 def test_keyboard_interrupt_maps_to_exit_code_130(monkeypatch):

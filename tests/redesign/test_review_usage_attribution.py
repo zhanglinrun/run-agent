@@ -16,13 +16,12 @@ from tests.redesign.test_coding_application import options
 from tests.redesign.test_experience_review_wiring import FailingProvider
 from tests.redesign.test_extension_tasks import completed
 from tests.redesign.test_host_services import context
+from tests.redesign.test_review_closure import review_task_id
 
 from run_agent_coding.application import CodingApplication
-from run_agent_coding.host.contracts import TaskSpec
 
 REPO = Path(__file__).resolve().parents[2]
 EXPERIENCE = REPO / "src" / "run_agent_extensions" / "experience"
-REVIEW_HANDLER = "experience-review"
 
 
 async def test_the_review_reports_usage_bound_to_the_parent_run(tmp_path):
@@ -32,9 +31,7 @@ async def test_the_review_reports_usage_bound_to_the_parent_run(tmp_path):
         run_id = [event async for event in app.prompt("please fail")][-1].run_id
         services = context(app).services
 
-        task_id = await services.tasks.submit(
-            TaskSpec(handler=REVIEW_HANDLER, payload={"run_id": run_id})
-        )
+        task_id = await review_task_id(app, run_id)
         task = await completed(services.tasks, task_id)
 
         assert task.status == "succeeded", task.error

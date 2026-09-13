@@ -12,6 +12,7 @@ from tests.redesign.test_coding_application import options
 from tests.redesign.test_experience_review_wiring import FailingProvider
 from tests.redesign.test_extension_tasks import completed
 from tests.redesign.test_host_services import context
+from tests.redesign.test_review_closure import review_task_id
 
 from run_agent_coding.application import CodingApplication
 from run_agent_coding.host.contracts import TaskSpec
@@ -43,15 +44,19 @@ async def test_the_review_worker_consumes_a_queued_request_exactly_once(tmp_path
         services = context(app).services
         assert await services.scope("session").state.get(f"review-request:{run_id}") is not None
 
-        first = await run_review(app, run_id)
+        first = await completed(services.tasks, await review_task_id(app, run_id))
         assert first.status == "succeeded", first.error
         assert first.result["consumed"] == run_id
         assert first.result["key"] == f"{run_id}:1"
+        state = services.scope("session").state
+        consumed = await state.get(f"review-consumed:{run_id}")
+        assert consumed is not None
 
         # The request is consumed once; a second pass finds nothing left to do.
         second = await run_review(app, run_id)
         assert second.status == "succeeded", second.error
         assert second.result["consumed"] is None
+        assert await state.get(f"review-consumed:{run_id}") == consumed
 
 
 async def test_the_review_worker_refuses_a_missing_run_id(tmp_path):
