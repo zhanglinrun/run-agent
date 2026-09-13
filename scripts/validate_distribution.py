@@ -8,6 +8,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from rich.text import Text
+
 SMOKE = """
 import asyncio, json, os, pathlib, shlex, subprocess, sys
 from importlib.metadata import distribution
@@ -147,7 +149,8 @@ async def check():
         assert 'installed memory version two' not in app.session.system_prompt
     assert not list(pathlib.Path.cwd().rglob('*.jsonl'))
 asyncio.run(check())
-print(json.dumps({'entry_module':run_agent_entry.__file__, 'scripts':scripts,
+print(json.dumps({'entry_module':run_agent_entry.__file__, 'python_prefix':sys.prefix,
+                  'scripts':scripts,
                   'schema_initialization_and_reopen':True,
                   'application_completion_and_resume':True,
                   'sqlite_telemetry':True, 'no_jsonl_output':True,
@@ -164,7 +167,8 @@ def main() -> None:
     parser.add_argument("--run", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    python, launcher = args.python.resolve(), args.run.resolve()
+    # Resolving a venv's Python symlink would select the global interpreter on POSIX.
+    python, launcher = args.python.absolute(), args.run.absolute()
     with tempfile.TemporaryDirectory(prefix="run-distribution-check-") as directory:
         smoke = subprocess.run(
             [str(python), "-c", SMOKE],
@@ -176,7 +180,9 @@ def main() -> None:
             check=True,
         )
         report = json.loads(smoke.stdout)
-        assert Path(report["entry_module"]).is_relative_to(python.parent.parent)
+        prefix = Path(report["python_prefix"]).resolve()
+        assert prefix == python.parent.parent.resolve()
+        assert Path(report["entry_module"]).resolve().is_relative_to(prefix)
         report["launcher"] = str(launcher)
         report["commands"] = []
         for argv in [
@@ -213,7 +219,9 @@ def main() -> None:
             timeout=30,
             env={k: v for k, v in os.environ.items() if not k.startswith("FEISHU_")},
         )
-        assert missing.returncode != 0 and "FEISHU_APP_ID" in missing.stderr, missing.stderr
+        assert (
+            missing.returncode != 0 and "FEISHU_APP_ID" in Text.from_ansi(missing.stderr).plain
+        ), missing.stderr
         report["gateway_requires_feishu_credentials"] = True
         refreshed = subprocess.run(
             [str(launcher), "--refresh-resources", "--print", "unused"],
@@ -223,7 +231,10 @@ def main() -> None:
             encoding="utf-8",
             timeout=10,
         )
-        assert refreshed.returncode != 0 and "requires --session" in refreshed.stderr
+        assert (
+            refreshed.returncode != 0
+            and "requires --session" in Text.from_ansi(refreshed.stderr).plain
+        )
         report["refresh_resources_requires_session"] = True
     report["scope"] = (
         "Wheel import, schema, persistence, command routing, application completion and resume; "
