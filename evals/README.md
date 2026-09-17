@@ -29,9 +29,8 @@
 - `inventory.json`：每个 trial 的字节数和 SHA-256。
 - `report.json`：pass rate、P50/P95、调用数和可用时的成本归约。
 
-调用账本与执行 spans 不再写成逐行文件，而是以 stream 形式落在 SQLite 的 `observations`
-表（`<state-dir>/state.sqlite3`），丢弃与失败计数在 `observation_health` 表。这保证证据可以
-被事务化查询和一致性备份，而不是扫描散落的文件。
+调用账本与执行 spans 以 stream 形式追加到 `<state-dir>/logs/observations.jsonl`。
+评测当时的模型输入写到该 trial 工作区的 `eval-input.json`，不进会话库。
 
 `rebuild` 会校验 manifest、trial matrix、artifact path 和全部内容凭证；证据被修改后拒绝重建。
 
@@ -42,7 +41,7 @@
 .\.venv\Scripts\run.exe bench runtime-rebuild .run/benchmarks/runtime/<run-id>
 ```
 
-该命令测量两项：生产 Agent 循环中合成异步只读工具的串行/并发耗时，以及启用 SQLite `TraceRecorder` 相对于无追踪循环的开销，后者包含持久化刷盘。
+该命令测量两项：生产 Agent 循环中合成异步只读工具的串行/并发耗时，以及启用 JSONL `TraceRecorder` 相对于无追踪循环的开销，后者包含持久化刷盘。
 
 默认每批 8 个工具调用、每个调用模拟 20 ms 延迟，工具对比和追踪对比各重复 9 次。可用 `--tool-calls`、`--tool-delay-ms`、`--tool-repeats` 和 `--trace-repeats` 调整。时延依赖机器条件；合成工具数据不能当作真实文件系统或线上接口性能。
 

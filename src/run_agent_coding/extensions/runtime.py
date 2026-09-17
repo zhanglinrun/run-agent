@@ -18,12 +18,15 @@ from run_agent_coding.commands import (
     SlashCommand,
     create_default_command_registry,
 )
+from run_agent_coding.events import CompactionReason
 from run_agent_coding.extensions.api import (
-    AGENT_EVENT_TYPES,
     AGENT_EVENT_WILDCARD,
-    LIFECYCLE_EVENT_TYPES,
+    EXTENSION_EVENT_TYPES,
+    AfterProviderResponseEvent,
     BeforeAgentStartEvent,
     BeforeAgentStartResult,
+    BeforeProviderHeadersEvent,
+    BeforeProviderRequestEvent,
     ContextEvent,
     ContextHookResult,
     CustomMessageView,
@@ -36,10 +39,21 @@ from run_agent_coding.extensions.api import (
     ExtensionHandler,
     InputEvent,
     InputHookResult,
+    MessageEndHookResult,
     MessageRenderer,
     MessageRenderOptions,
     NullUiBridge,
     RegisteredExtension,
+    ResourcesDiscoverEvent,
+    ResourcesDiscoverResult,
+    SessionBeforeCompactEvent,
+    SessionBeforeCompactResult,
+    SessionBeforeForkEvent,
+    SessionBeforeForkResult,
+    SessionBeforeSwitchEvent,
+    SessionBeforeSwitchResult,
+    SessionBeforeTreeEvent,
+    SessionBeforeTreeResult,
     SessionLifecycleReason,
     SessionShutdownEvent,
     SessionStartEvent,
@@ -50,6 +64,11 @@ from run_agent_coding.extensions.api import (
     TurnEndEvent,
     TurnStartEvent,
     UiBridge,
+    UIPromptEndEvent,
+    UIPromptKind,
+    UIPromptStartEvent,
+    UserBashEvent,
+    UserBashHookResult,
 )
 from run_agent_coding.extensions.disposers import Disposer, DisposerOwner
 from run_agent_coding.extensions.loader import (
@@ -77,12 +96,12 @@ from run_agent_coding.provider_config import ProviderConfig
 from run_agent_coding.resources import ResourceDiagnostic, RunAgentResourcePaths
 from run_agent_coding.storage.settle import settle
 from run_agent_coding.system_prompt import PromptSection
-from run_agent_core.events import AgentEvent, AgentStartEvent
+from run_agent_core.events import AgentEvent, AgentStartEvent, MessageEndEvent
 from run_agent_core.events import TurnEndEvent as AgentTurnEndEvent
 from run_agent_core.events import TurnStartEvent as AgentTurnStartEvent
 from run_agent_core.loop import BeforeToolCallResult
 from run_agent_core.messages import AgentMessage, CustomMessage, TextContent, ToolCall
-from run_agent_core.provider import CancellationToken
+from run_agent_core.provider import CancellationToken, ModelRequest
 from run_agent_core.session.contracts import AppendReceipt
 from run_agent_core.tools import AgentTool, AgentToolResult
 from run_agent_core.types import JSONValue
@@ -188,6 +207,15 @@ class InputHookOutcome:
     handled: bool
     text: str
     message: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class UserBashOutcome:
+    """Combined outcome of running all `user_bash` hooks."""
+
+    command: str
+    block: bool = False
+    reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -746,11 +774,7 @@ class ExtensionRuntime:
 
     def subscribe(self, source_id: str, event: str, handler: ExtensionHandler) -> None:
         """Subscribe an extension handler to a named event."""
-        known = (
-            event in AGENT_EVENT_TYPES
-            or event in LIFECYCLE_EVENT_TYPES
-            or event == AGENT_EVENT_WILDCARD
-        )
+        known = event in EXTENSION_EVENT_TYPES or event == AGENT_EVENT_WILDCARD
         if not known:
             self._load_diagnostics.append(
                 ResourceDiagnostic(
@@ -1107,6 +1131,225 @@ class ExtensionRuntime:
                 current = current.model_copy(update=updates)
         return current, is_error
 
+    async def apply_message_end(self, event: MessageEndEvent) -> None:
+        """Chain `message_end` hooks and replace the event message when roles match."""
+        current = event.message
+        for owner, handler in self._handlers_for("message_end"):
+            try:
+                result = await _resolve(handler(event, self._fresh_context(owner.source_id)))
+            except Exception as exc:  # message_end must not abort the turn
+                self._record_runtime_failure(owner.name, "message_end", exc)
+                continue
+            replacement = None
+            if isinstance(result, MessageEndHookResult):
+                replacement = result.message
+            elif result is not None:
+                self._record_bad_result(owner.name, "message_end", result)
+                continue
+            if replacement is None:
+                continue
+            if getattr(replacement, "role", None) != getattr(current, "role", None):
+                self._record_bad_result(owner.name, "message_end", replacement)
+                continue
+            current = replacement
+            event.message = replacement
+        await self._emit_wildcard(event)
+
+    async def discover_resources(
+        self,
+        cwd: Path,
+        reason: Literal["startup", "reload"],
+    ) -> ResourcesDiscoverResult:
+        """Collect extra resource paths after `session_start`."""
+        skill_paths: list[str] = []
+        prompt_paths: list[str] = []
+        theme_paths: list[str] = []
+        event = ResourcesDiscoverEvent(cwd=str(cwd), reason=reason)
+        for owner, handler in self._handlers_for("resources_discover"):
+            try:
+                result = await _resolve(handler(event, self._fresh_context(owner.source_id)))
+            except Exception as exc:
+                self._record_runtime_failure(owner.name, "resources_discover", exc)
+                continue
+            if result is None:
+                continue
+            if not isinstance(result, ResourcesDiscoverResult):
+                self._record_bad_result(owner.name, "resources_discover", result)
+                continue
+            skill_paths.extend(result.skill_paths)
+            prompt_paths.extend(result.prompt_paths)
+            theme_paths.extend(result.theme_paths)
+        return ResourcesDiscoverResult(
+            skill_paths=tuple(skill_paths),
+            prompt_paths=tuple(prompt_paths),
+            theme_paths=tuple(theme_paths),
+        )
+
+    async def emit_session_before_switch(
+        self,
+        reason: Literal["new", "resume"],
+        target_session_id: str | None = None,
+    ) -> bool:
+        """Return True when an extension cancels the pending session switch."""
+        event = SessionBeforeSwitchEvent(reason=reason, target_session_id=target_session_id)
+        return await self._first_cancel(
+            "session_before_switch", event, SessionBeforeSwitchResult
+        )
+
+    async def emit_session_before_fork(
+        self,
+        entry_id: str,
+        position: Literal["before", "at"] = "at",
+    ) -> bool:
+        """Return True when an extension cancels the pending session fork."""
+        event = SessionBeforeForkEvent(entry_id=entry_id, position=position)
+        return await self._first_cancel("session_before_fork", event, SessionBeforeForkResult)
+
+    async def emit_session_before_compact(
+        self,
+        reason: CompactionReason,
+        *,
+        will_retry: bool = False,
+        custom_instructions: str | None = None,
+    ) -> bool:
+        """Return True when an extension cancels the pending compaction."""
+        event = SessionBeforeCompactEvent(
+            reason=reason,
+            will_retry=will_retry,
+            custom_instructions=custom_instructions,
+        )
+        return await self._first_cancel(
+            "session_before_compact", event, SessionBeforeCompactResult
+        )
+
+    async def emit_session_before_tree(
+        self,
+        target_id: str,
+        *,
+        old_leaf_id: str | None = None,
+        user_wants_summary: bool = False,
+    ) -> bool:
+        """Return True when an extension cancels pending tree navigation."""
+        event = SessionBeforeTreeEvent(
+            target_id=target_id,
+            old_leaf_id=old_leaf_id,
+            user_wants_summary=user_wants_summary,
+        )
+        return await self._first_cancel("session_before_tree", event, SessionBeforeTreeResult)
+
+    async def apply_before_provider_request(self, request: ModelRequest) -> ModelRequest:
+        """Chain `before_provider_request` replacements onto one model request."""
+        current = request
+        for owner, handler in self._handlers_for("before_provider_request"):
+            event = BeforeProviderRequestEvent(payload=current)
+            try:
+                result = await _resolve(handler(event, self._fresh_context(owner.source_id)))
+            except Exception as exc:
+                self._record_runtime_failure(owner.name, "before_provider_request", exc)
+                continue
+            if result is None:
+                continue
+            if not isinstance(result, ModelRequest):
+                self._record_bad_result(owner.name, "before_provider_request", result)
+                continue
+            current = result
+        return current
+
+    async def prepare_provider_headers(self, headers: dict[str, str]) -> None:
+        """Let `before_provider_headers` handlers mutate request headers in place."""
+        mutable: dict[str, str | None] = dict(headers)
+        event = BeforeProviderHeadersEvent(headers=mutable)
+        for owner, handler in self._handlers_for("before_provider_headers"):
+            try:
+                await _resolve(handler(event, self._fresh_context(owner.source_id)))
+            except Exception as exc:
+                self._record_runtime_failure(owner.name, "before_provider_headers", exc)
+        headers.clear()
+        headers.update(
+            {key: value for key, value in mutable.items() if value is not None}
+        )
+
+    async def observe_provider_response(
+        self,
+        status: int,
+        headers: Mapping[str, str],
+    ) -> None:
+        """Dispatch `after_provider_response` to observers."""
+        await self.emit_event(
+            AfterProviderResponseEvent(status=status, headers=dict(headers))
+        )
+
+    async def run_user_bash(
+        self,
+        command: str,
+        *,
+        exclude_from_context: bool,
+        cwd: Path,
+    ) -> UserBashOutcome:
+        """Run `user_bash` hooks; block wins, command rewrites chain."""
+        current = command
+        event_cwd = str(cwd)
+        for owner, handler in self._handlers_for("user_bash"):
+            event = UserBashEvent(
+                command=current,
+                exclude_from_context=exclude_from_context,
+                cwd=event_cwd,
+            )
+            try:
+                result = await _resolve(handler(event, self._fresh_context(owner.source_id)))
+            except Exception as exc:
+                self._record_runtime_failure(owner.name, "user_bash", exc)
+                continue
+            if result is None:
+                continue
+            if not isinstance(result, UserBashHookResult):
+                self._record_bad_result(owner.name, "user_bash", result)
+                continue
+            if result.block:
+                return UserBashOutcome(
+                    command=current, block=True, reason=result.reason
+                )
+            if result.command is not None:
+                current = result.command
+        return UserBashOutcome(command=current)
+
+    async def emit_ui_prompt(self, kind: UIPromptKind, title: str | None) -> None:
+        """Notify observers that an extension UI dialog is opening."""
+        await self.emit_event(UIPromptStartEvent(kind=kind, title=title))
+
+    async def emit_ui_prompt_end(self, kind: UIPromptKind, title: str | None) -> None:
+        """Notify observers that an extension UI dialog has closed."""
+        await self.emit_event(UIPromptEndEvent(kind=kind, title=title))
+
+    async def _first_cancel(
+        self,
+        event_name: str,
+        payload: object,
+        result_type: type,
+    ) -> bool:
+        for owner, handler in self._handlers_for(event_name):
+            try:
+                result = await _resolve(handler(payload, self._fresh_context(owner.source_id)))
+            except Exception as exc:
+                self._record_runtime_failure(owner.name, event_name, exc)
+                continue
+            if result is None:
+                continue
+            if not isinstance(result, result_type):
+                self._record_bad_result(owner.name, event_name, result)
+                continue
+            if getattr(result, "cancel", False):
+                return True
+        return False
+
+    async def _emit_wildcard(self, event: object) -> None:
+        for owner, handler in self._handlers_for(AGENT_EVENT_WILDCARD):
+            try:
+                await _resolve(handler(event, self._fresh_context(owner.source_id)))
+            except Exception as exc:
+                event_type = getattr(event, "type", "agent_event")
+                self._record_runtime_failure(owner.name, str(event_type), exc)
+
     # -- commands ---------------------------------------------------------------
 
     def build_command_registry(self) -> CommandRegistry:
@@ -1318,7 +1561,10 @@ class ExtensionRuntime:
                 message=event.message,
                 tool_results=list(event.tool_results),
             )
-        await self.emit_event(extension_event)
+        if isinstance(event, MessageEndEvent):
+            await self.apply_message_end(event)
+        else:
+            await self.emit_event(extension_event)
         if isinstance(event, AgentTurnEndEvent):
             self._extension_turn_index += 1
 

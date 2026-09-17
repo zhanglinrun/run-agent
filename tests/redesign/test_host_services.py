@@ -8,7 +8,7 @@ from run_agent_coding.application import CodingApplication
 from run_agent_coding.extensions.api import ExtensionError
 from run_agent_coding.host.contracts import HeadChange, StateChange
 from run_agent_coding.session_manager import SessionManager
-from run_agent_coding.storage.state import ExtensionRetired
+from run_agent_coding.storage.host import ExtensionRetired
 
 
 @pytest.fixture

@@ -62,9 +62,10 @@ class SessionInfoChangedEvent(WireModel):
     name: str | None = None
 
 
-class ThinkingLevelChangedEvent(WireModel):
-    type: Literal["thinking_level_changed"] = "thinking_level_changed"
+class ThinkingLevelSelectEvent(WireModel):
+    type: Literal["thinking_level_select"] = "thinking_level_select"
     level: str
+    previous_level: str | None = None
 
 
 class AutoRetryStartEvent(WireModel):
@@ -90,7 +91,7 @@ type SessionOwnEvent = Annotated[
     | CompactionEndEvent
     | EntryAppendedEvent
     | SessionInfoChangedEvent
-    | ThinkingLevelChangedEvent
+    | ThinkingLevelSelectEvent
     | AutoRetryStartEvent
     | AutoRetryEndEvent,
     Field(discriminator="type"),

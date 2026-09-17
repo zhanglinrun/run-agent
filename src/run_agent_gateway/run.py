@@ -102,11 +102,11 @@ class GatewayRunner:
         state = paths.home / "gateway"
         self._approval_state = state
         self.manager = SessionManager(paths)
-        self.store = SessionStore(state / "sessions.json", config.reset_policy)
+        self.store = SessionStore(state / "sessions.jsonl", config.reset_policy)
         self.leases = SessionTurnLeaseRegistry()
         self.stalls = StallMonitor(config.stall_timeout_seconds, clock=clock)
         self.ledger = (
-            DeliveryLedger(state / "deliveries.sqlite3") if config.delivery_ledger_enabled else None
+            DeliveryLedger(state / "deliveries.jsonl") if config.delivery_ledger_enabled else None
         )
         self.approvals = ApprovalRegistry(
             ApprovalStore(state / "approvals.json"),

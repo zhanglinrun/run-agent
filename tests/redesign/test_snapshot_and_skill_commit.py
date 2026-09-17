@@ -11,8 +11,7 @@ S06 - a skill package may be written but its version commit can still fail. When
 from dataclasses import replace
 
 import pytest
-from tests.redesign.test_coding_application import options
-from tests.redesign.test_context_snapshots import RecordingProvider
+from tests.redesign.test_coding_application import RecordingProvider, options
 
 from run_agent_coding.application import CodingApplication
 from run_agent_core.session.memory import SessionState
@@ -46,7 +45,7 @@ async def test_full_history_rebuild_matches_the_recorded_snapshot(tmp_path, skil
         _ = [event async for event in app.prompt("second task")]
         await app.command("/name a longer session")
 
-        snapshot = await app.session.storage.repository.get_snapshot(snapshot_id)
+        snapshot = await app.session.storage.get_snapshot(snapshot_id)
         assert snapshot["payload"]["resource_snapshot_id"] == resource_at_snapshot
 
         entries = (await app.session.storage.read_entries()).entries

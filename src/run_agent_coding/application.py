@@ -17,10 +17,9 @@ from run_agent_coding.resources import RunAgentResourcePaths
 from run_agent_coding.session import CodingSession, CodingSessionConfig, ModelChoice
 from run_agent_coding.session_manager import SessionManager
 from run_agent_coding.settings import load_settings
-from run_agent_coding.storage.handle import OutcomeCommitter
 from run_agent_coding.thinking import ThinkingLevel
 from run_agent_core.provider import ModelProvider
-from run_agent_core.session import SessionState, load_session_entries
+from run_agent_core.session import SessionState, load_session_entries, resolve_active_leaf_id
 from run_agent_extensions import BUILTIN_EXTENSIONS
 
 
@@ -61,7 +60,7 @@ class CodingApplication:
         manager: SessionManager | None = None,
         provider: ModelProvider | None = None,
         settings: ProviderSettings | None = None,
-        committer: OutcomeCommitter | None = None,
+        committer: object | None = None,
         provider_transform: Callable[[ModelProvider, str], ModelProvider] | None = None,
         input_source: InputSource | None = None,
     ) -> CodingApplication:
@@ -91,7 +90,8 @@ class CodingApplication:
                 if options.resume is not None and not options.refresh_resources:
                     entries = await load_session_entries(storage)
                     head = await storage.get_head()
-                    state = SessionState.from_entries(entries, leaf_id=head.entry_id)
+                    leaf_id = resolve_active_leaf_id(entries) or head.entry_id
+                    state = SessionState.from_entries(entries, leaf_id=leaf_id)
                     snapshot = next(
                         (
                             entry
@@ -235,6 +235,10 @@ class CodingApplication:
                 if selected
                 else "\n".join(labels) or "No entries yet."
             )
+        elif result.rewind_entry_id is not None:
+            message = await session.rewind(result.rewind_entry_id)
+        elif result.fork_entry_id is not None:
+            message = await session.fork_session(result.fork_entry_id)
         elif result.session_name is not None:
             message = f"Session renamed: {await session.set_session_name(result.session_name)}"
         elif result.reload_requested:

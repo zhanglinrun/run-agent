@@ -112,7 +112,7 @@ async def test_gateway_exposes_learning_commands_and_opt_out(tmp_path, disabled)
         await gateway.stop()
 
 
-async def test_default_plan_and_guarded_permissions(tmp_path, monkeypatch):
+async def test_default_plan_and_review_permissions(tmp_path, monkeypatch):
     monkeypatch.delenv("RUN_AGENT_PERMISSION_MODE", raising=False)
     async with await CodingApplication.open(
         replace(options(tmp_path), extensions_enabled=True), provider=ReplyProvider()
@@ -125,9 +125,11 @@ async def test_default_plan_and_guarded_permissions(tmp_path, monkeypatch):
                 await runtime.before_tool_call(ToolCall(id="probe", name=name, arguments=arguments))
             ).block
 
+        # review + no UI: my-pi-agent allows when confirm_callback is missing
         assert not await blocked("write", {"path": "inside.txt", "content": "ok"})
-        assert await blocked("write", {"path": str(tmp_path.parent / "outside.txt")})
-        assert await blocked("bash", {"command": "git reset --hard"})
+        assert not await blocked("write", {"path": str(tmp_path.parent / "outside.txt")})
+        assert not await blocked("bash", {"command": "git reset --hard"})
+        assert not await blocked("bash", {"command": "git status"})
         await app.command("/plan on")
         for name, arguments in (
             ("memory", {"action": "add", "content": "fact"}),

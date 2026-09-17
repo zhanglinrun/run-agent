@@ -1,33 +1,26 @@
-"""Bounded local extension jobs with durable descriptors and explicit shutdown."""
+"""Bounded in-memory extension jobs. Interrupted work is not replayed."""
 
 from __future__ import annotations
 
 import asyncio
 import json
-import sqlite3
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
-from time import time
 from uuid import uuid4
 
 from run_agent_coding.host.contracts import (
     ExtensionToken,
     HostServices,
-    TaskBudget,
     TaskContext,
     TaskHandler,
     TaskInfo,
     TaskSpec,
 )
-from run_agent_coding.storage.sessions import canonical_json
+from run_agent_coding.storage.canonical import canonical_json
 from run_agent_coding.storage.settle import settle
-from run_agent_coding.storage.sqlite import SqliteDatabase
-from run_agent_coding.storage.state import assert_extension
 from run_agent_core.types import JSONValue
 
-# Mirrors the CHECK constraint on extension_tasks.origin_kind: the host assigns
-# this, and auxiliary kinds are excluded from triggering further reviews.
 TASK_ORIGIN_KINDS = ("user", "review", "evaluation", "naming")
 
 
@@ -48,21 +41,25 @@ class _Job:
 class LocalTaskManager:
     """No coroutine per queued job, and no replay after process interruption."""
 
-    def __init__(
-        self, database: SqliteDatabase, *, concurrency: int = 2, max_pending: int = 32
-    ) -> None:
+    def __init__(self, *, concurrency: int = 2, max_pending: int = 32) -> None:
         if concurrency < 1 or max_pending < 1:
             raise ValueError("Task limits must be positive")
-        self.database = database
         self.concurrency, self.max_pending = concurrency, max_pending
         self._pending: deque[_Job] = deque()
         self._jobs: dict[str, _Job] = {}
         self._running: dict[str, asyncio.Task[None]] = {}
         self._started: set[str] = set()
         self._cancelled: set[str] = set()
+        self._records: dict[tuple[str, str, str], TaskInfo] = {}
         self._lock = asyncio.Lock()
         self._closing = False
         self.errors: list[str] = []
+
+    def _key(self, token: ExtensionToken, task_id: str) -> tuple[str, str, str]:
+        return token.session_id, token.source_id, task_id
+
+    def _record(self, token: ExtensionToken, info: TaskInfo) -> None:
+        self._records[self._key(token, info.task_id)] = info
 
     async def submit(
         self,
@@ -73,14 +70,15 @@ class LocalTaskManager:
         assert_active: Callable[[], None],
     ) -> str:
         assert_active()
-        payload = canonical_json(spec.payload)
-        if not spec.handler or len(spec.handler.encode()) > 128 or len(payload.encode()) > 65536:
+        payload = json.loads(canonical_json(spec.payload))
+        oversized = len(canonical_json(payload).encode()) > 65536
+        if not spec.handler or len(spec.handler.encode()) > 128 or oversized:
             raise TaskRejected("Task handler or payload exceeds admission limits")
         if spec.origin_kind not in TASK_ORIGIN_KINDS:
             raise TaskRejected(f"Unknown task origin kind: {spec.origin_kind}")
         frozen = TaskSpec(
             spec.handler,
-            json.loads(payload),
+            payload,
             spec.snapshot_id,
             spec.origin_kind,
             spec.budget,
@@ -92,40 +90,18 @@ class LocalTaskManager:
                 assert_active()
                 if self._closing or len(self._jobs) >= self.max_pending:
                     raise TaskRejected("Local background task capacity is full or closing")
-
-                def persist(connection: sqlite3.Connection) -> None:
-                    assert_active()
-                    assert_extension(connection, token)
-                    if frozen.snapshot_id is not None:
-                        snapshot = connection.execute(
-                            "SELECT 1 FROM context_snapshots WHERE snapshot_id=? AND session_id=?",
-                            (frozen.snapshot_id, token.session_id),
-                        ).fetchone()
-                        if snapshot is None:
-                            raise TaskRejected(
-                                "Task snapshot is missing or belongs to another session"
-                            )
-                    connection.execute(
-                        "INSERT INTO extension_tasks "
-                        "VALUES (?,?,?,?,?,?,?,?,?,?,'queued',NULL,NULL,?,NULL)",
-                        (
-                            task_id,
-                            token.session_id,
-                            token.source_id,
-                            token.owner_id,
-                            token.generation,
-                            frozen.handler,
-                            payload,
-                            frozen.snapshot_id,
-                            frozen.origin_kind,
-                            canonical_json(frozen.budget.as_json()),
-                            time(),
-                        ),
-                    )
-
-                await self.database.run(persist, write=True)
                 job = _Job(task_id, token, frozen, handler, services, assert_active)
                 self._jobs[task_id] = job
+                self._record(
+                    token,
+                    TaskInfo(
+                        task_id,
+                        frozen.handler,
+                        "queued",
+                        origin_kind=frozen.origin_kind,
+                        budget=frozen.budget,
+                    ),
+                )
                 self._pending.append(job)
                 self._pump()
 
@@ -149,7 +125,16 @@ class LocalTaskManager:
             if job.task_id in self._cancelled:
                 raise asyncio.CancelledError
             job.assert_active()
-            await self._set_status(job, "running")
+            self._record(
+                job.token,
+                TaskInfo(
+                    job.task_id,
+                    job.spec.handler,
+                    "running",
+                    origin_kind=job.spec.origin_kind,
+                    budget=job.spec.budget,
+                ),
+            )
             result = await job.handler(
                 job.spec.payload,
                 TaskContext(job.task_id, job.spec.snapshot_id, job.services),
@@ -164,83 +149,29 @@ class LocalTaskManager:
             status = "cancelled" if job.task_id in self._cancelled else "failed"
             error = f"{type(exc).__name__}: {exc}"
         finally:
-            try:
-                await settle(self._set_status(job, status, result=result, error=error))
-            except Exception as exc:
-                self.errors.append(f"Task {job.task_id} completion: {type(exc).__name__}: {exc}")
-                self.errors[:] = self.errors[-32:]
+            self._record(
+                job.token,
+                TaskInfo(
+                    job.task_id,
+                    job.spec.handler,
+                    status,
+                    result,
+                    error,
+                    job.spec.origin_kind,
+                    job.spec.budget,
+                ),
+            )
             self._running.pop(job.task_id, None)
             self._started.discard(job.task_id)
             self._jobs.pop(job.task_id, None)
             self._cancelled.discard(job.task_id)
             self._pump()
 
-    async def _set_status(
-        self,
-        job: _Job,
-        status: str,
-        *,
-        result: JSONValue = None,
-        error: str | None = None,
-    ) -> None:
-        token = job.token
-        encoded = canonical_json(result)
-
-        def update(connection: sqlite3.Connection) -> None:
-            # Task cleanup can record its own outcome after extension retirement,
-            # but a process which lost session ownership cannot publish success.
-            current = connection.execute(
-                "SELECT owner_id,owner_active FROM sessions WHERE session_id=?",
-                (token.session_id,),
-            ).fetchone()
-            selected = status
-            if status == "succeeded":
-                try:
-                    job.assert_active()
-                    assert_extension(connection, token)
-                except Exception:
-                    selected = "interrupted"
-                if current is None or current[0] != token.owner_id or not current[1]:
-                    selected = "interrupted"
-            terminal = selected in {"succeeded", "failed", "cancelled", "interrupted"}
-            connection.execute(
-                "UPDATE extension_tasks SET status=?,result_json=?,error=?,finished_at=? "
-                "WHERE task_id=? AND owner_id=? AND generation=? "
-                "AND status IN ('queued','running','cancelling')",
-                (
-                    selected,
-                    encoded,
-                    error,
-                    time() if terminal else None,
-                    job.task_id,
-                    token.owner_id,
-                    token.generation,
-                ),
-            )
-
-        await self.database.run(update, write=True)
-
     async def status(self, token: ExtensionToken, task_id: str) -> TaskInfo:
-        def read(connection: sqlite3.Connection) -> TaskInfo:
-            row = connection.execute(
-                "SELECT handler,status,result_json,error,origin_kind,budget_json "
-                "FROM extension_tasks "
-                "WHERE task_id=? AND session_id=? AND source_id=?",
-                (task_id, token.session_id, token.source_id),
-            ).fetchone()
-            if row is None:
-                raise KeyError("Unknown task in this extension session")
-            return TaskInfo(
-                task_id,
-                row[0],
-                row[1],
-                json.loads(row[2]) if row[2] else None,
-                row[3],
-                row[4],
-                TaskBudget.from_json(json.loads(row[5])),
-            )
-
-        return await self.database.run(read)
+        info = self._records.get(self._key(token, task_id))
+        if info is None:
+            raise KeyError("Unknown task in this extension session")
+        return info
 
     async def cancel(self, task_id: str) -> None:
         job = self._jobs.get(task_id)
@@ -249,16 +180,34 @@ class LocalTaskManager:
         self._cancelled.add(task_id)
         operation = self._running.get(task_id)
         if operation is None:
-            self._pending.remove(job)
-            try:
-                await self._set_status(job, "cancelled", error="Cancelled before execution")
-            finally:
-                self._jobs.pop(task_id, None)
-                self._cancelled.discard(task_id)
-        else:
-            if task_id in self._started:
-                operation.cancel()
-            await self._set_status(job, "cancelling")
+            if job in self._pending:
+                self._pending.remove(job)
+            self._record(
+                job.token,
+                TaskInfo(
+                    job.task_id,
+                    job.spec.handler,
+                    "cancelled",
+                    error="Cancelled before execution",
+                    origin_kind=job.spec.origin_kind,
+                    budget=job.spec.budget,
+                ),
+            )
+            self._jobs.pop(task_id, None)
+            self._cancelled.discard(task_id)
+            return
+        if task_id in self._started:
+            operation.cancel()
+        self._record(
+            job.token,
+            TaskInfo(
+                job.task_id,
+                job.spec.handler,
+                "cancelling",
+                origin_kind=job.spec.origin_kind,
+                budget=job.spec.budget,
+            ),
+        )
 
     async def retire(self, session_id: str, generation: str, *, timeout: float = 1.0) -> int:
         matching = [

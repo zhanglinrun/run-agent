@@ -14,14 +14,13 @@ SMOKE = """
 import asyncio, json, os, pathlib, shlex, subprocess, sys
 from importlib.metadata import distribution
 import run_agent_entry
-from run_agent_coding.storage.sqlite import SqliteDatabase
-from run_agent_coding.storage.sessions import SqliteSessionRepository
-from run_agent_coding.storage.telemetry import SqliteTelemetrySink
+from run_agent_coding.session_manager import SessionManager
 from run_agent_core.session.entries import MessageEntry
 from run_agent_core.messages import UserMessage
 from run_agent_coding.application import CodingApplication, ApplicationOptions
 from run_agent_coding.paths import RunAgentPaths
 from run_agent_coding.host.contracts import StateChange, HeadChange
+from run_agent_coding.storage.telemetry import JsonlTelemetrySink
 from run_agent_core.messages import AssistantMessage, TextContent
 from run_agent_core.provider_events import AssistantDoneEvent
 from run_agent_gateway import BasePlatformAdapter, FeishuConfig, GatewayConfig
@@ -30,18 +29,22 @@ scripts = {e.name:e.value for e in distribution('run-agent-harness').entry_point
            if e.group == 'console_scripts'}
 assert scripts == {'run':'run_agent_entry:main'}, scripts
 async def check():
-    async with await SqliteDatabase.open('state.sqlite3') as db:
-        repo = SqliteSessionRepository(db)
-        await repo.create_session(cwd='.', principal_id='local', model='test', session_id='s')
-        token = await repo.claim('s', owner_id='host', run_id='run')
-        await repo.append_entries([MessageEntry(id='a', message=UserMessage(content='persist'))],
-                                  token=token, expected_head=None)
-    async with await SqliteDatabase.open('state.sqlite3') as db:
-        assert (await SqliteSessionRepository(db).get_head('s')).entry_id == 'a'
-        sink = SqliteTelemetrySink(db)
-        await sink.append('accounting', {'cost':0.5})
-        assert (await sink.read('accounting'))[0]['cost'] == 0.5
-        await sink.aclose()
+    paths = RunAgentPaths(home=pathlib.Path('state'), agents_home=pathlib.Path('agents'))
+    manager = SessionManager(paths)
+    record = await manager.create_session(cwd='.', model='test', session_id='s')
+    writer = await manager.open_storage(record.id)
+    await writer.append_entries([MessageEntry(id='a', message=UserMessage(content='persist'))],
+                                token=writer.token, expected_head=None)
+    await writer.aclose()
+    await manager.aclose()
+    manager = SessionManager(paths)
+    writer = await manager.open_storage('s')
+    assert (await writer.get_head()).entry_id == 'a'
+    sink = JsonlTelemetrySink(paths.logs_dir / 'observations.jsonl')
+    await sink.append('accounting', {'cost':0.5})
+    assert (await sink.read('accounting'))[0]['cost'] == 0.5
+    await sink.aclose()
+    await manager.aclose()
     class Provider:
         async def stream_response(self, **kwargs):
             yield AssistantDoneEvent(reason='stop', message=AssistantMessage(
@@ -77,7 +80,7 @@ async def check():
         await adapter.handle_message(MessageEvent('again', source, message_id='m3'))
         await adapter.wait_idle()
         assert adapter.sent[-1][1] == 'installed-wheel'
-        assert (gateway_paths.home / 'gateway' / 'sessions.json').is_file()
+        assert (gateway_paths.home / 'gateway' / 'sessions.jsonl').is_file()
     finally:
         await runner.stop()
     paths = RunAgentPaths(home=pathlib.Path('application'), agents_home=pathlib.Path('agents'))
@@ -111,10 +114,9 @@ async def check():
         identity = app.session.session_id
         head = events[-1].head_id
         runtime = app.session.extension_runtime
-        snapshot = await runtime._extensions[0].api.context.services.snapshots.read(
-            events[-1].snapshot_id)
-        assert snapshot.payload['purpose'] == 'agent'
-        assert snapshot.payload['resource_snapshot_id'] == app.session._resource_snapshot_id
+        snapshot = await app.session.storage.get_snapshot(events[-1].snapshot_id)
+        assert snapshot['payload']['purpose'] == 'agent'
+        assert snapshot['payload']['resource_snapshot_id'] == app.session._resource_snapshot_id
         original_skill = app.session.skills[0]
         assert original_skill.package_digest in str(original_skill.path)
         (skill_root / 'SKILL.md').write_text('Installed skill v2', encoding='utf-8')
@@ -147,13 +149,13 @@ async def check():
         await app.start()
         assert 'installed memory version one' in app.session.system_prompt
         assert 'installed memory version two' not in app.session.system_prompt
-    assert not list(pathlib.Path.cwd().rglob('*.jsonl'))
+    assert list(pathlib.Path.cwd().rglob('*.sqlite3')) == []
 asyncio.run(check())
 print(json.dumps({'entry_module':run_agent_entry.__file__, 'python_prefix':sys.prefix,
                   'scripts':scripts,
                   'schema_initialization_and_reopen':True,
                   'application_completion_and_resume':True,
-                  'sqlite_telemetry':True, 'no_jsonl_output':True,
+                  'jsonl_telemetry':True, 'no_sqlite_output':True,
                   'host_services_and_reload':True, 'context_snapshot':True,
                   'skill_package_and_resume':True, 'extension_disposer':True,
                   'extension_resource_capture_reload_resume':True,

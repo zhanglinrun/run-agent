@@ -28,7 +28,10 @@ when isolation is required.
 Review extension code before loading it and keep secrets out of project files
 and diagnostics.
 
-The default `permission_policy` extension uses `guarded` checks for tools; it
-does not create an OS sandbox. The `bash` tool has no default timeout: callers
+The default `permission_policy` extension is my-pi-agent's `PermissionGate` on
+`tool_call`: `review` (default) auto-allows `read`/`grep`/`find` and safe bash
+prefixes, then prompts when a UI is attached; `yolo`/`autonomous` allows all;
+`strict` prompts every tool including reads. Missing confirm callback allows the
+call. This is not an OS sandbox. The `bash` tool has no default timeout: callers
 must supply one when a command needs a time limit. Gateway stall notices do not
 provide a shell timeout.

@@ -8,13 +8,15 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol, TypeVar
 from uuid import uuid4
 
+from run_agent_coding.events import CompactionReason
 from run_agent_coding.extensions.disposers import Disposer
 from run_agent_coding.host.context_resources import ExtensionResourceSnapshot, ResourceProvider
 from run_agent_coding.host.contracts import HostServices, TaskHandler
 from run_agent_core.messages import AgentMessage, CustomMessage, ToolResultMessage
+from run_agent_core.provider import ModelRequest
 from run_agent_core.tools import AgentTool, AgentToolResult
 from run_agent_core.types import JSONValue
 from run_agent_observability.sink import ScopedTelemetrySink, TelemetrySink
@@ -25,47 +27,60 @@ if TYPE_CHECKING:
     from run_agent_coding.paths import RunAgentPaths
     from run_agent_coding.skills import Skill
 
-AGENT_EVENT_TYPES: frozenset[str] = frozenset(
+OBSERVATION_EVENT_TYPES: frozenset[str] = frozenset(
     {
         "agent_start",
         "agent_end",
         "agent_settled",
         "turn_start",
         "turn_end",
-        "queue_update",
         "message_start",
         "message_update",
-        "message_end",
         "tool_execution_start",
         "tool_execution_update",
         "tool_execution_end",
-        "compaction_start",
-        "compaction_end",
-        "entry_appended",
-        "session_info_changed",
-        "thinking_level_changed",
-        "auto_retry_start",
-        "auto_retry_end",
-    }
-)
-AGENT_EVENT_WILDCARD = "agent_event"
-
-LIFECYCLE_EVENT_TYPES: frozenset[str] = frozenset(
-    {
         "session_start",
         "session_shutdown",
+        "session_info_changed",
+        "session_compact",
+        "session_compact_failed",
+        "session_tree",
+        "after_provider_response",
+        "model_select",
+        "thinking_level_select",
+        "ui_prompt_start",
+        "ui_prompt_end",
+    }
+)
+HOOK_EVENT_TYPES: frozenset[str] = frozenset(
+    {
         "input",
         "before_agent_start",
         "context",
         "tool_call",
         "tool_result",
         "project_trust",
+        "resources_discover",
+        "session_before_switch",
+        "session_before_fork",
+        "session_before_compact",
+        "session_before_tree",
+        "before_provider_headers",
+        "before_provider_request",
+        "user_bash",
+        "message_end",
     }
 )
+# Aliases: observation names used to live in AGENT_EVENT_TYPES, hooks in LIFECYCLE.
+AGENT_EVENT_TYPES = OBSERVATION_EVENT_TYPES
+LIFECYCLE_EVENT_TYPES = HOOK_EVENT_TYPES
+AGENT_EVENT_WILDCARD = "agent_event"
+EXTENSION_EVENT_TYPES = OBSERVATION_EVENT_TYPES | HOOK_EVENT_TYPES
 
 SessionLifecycleReason = Literal["startup", "reload", "new", "resume", "branch", "quit"]
 DeliverAs = Literal["steer", "follow_up"]
 NotifyLevel = Literal["info", "warning", "error"]
+_T = TypeVar("_T")
 
 
 @dataclass(frozen=True, slots=True)
@@ -314,6 +329,205 @@ class ToolResultHookResult:
     terminate: bool | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class MessageEndHookResult:
+    """Replace a finalized message; the replacement must keep the original role."""
+
+    message: AgentMessage | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ResourcesDiscoverEvent:
+    """Fired after `session_start` so extensions can contribute extra resource paths."""
+
+    cwd: str
+    reason: Literal["startup", "reload"]
+    type: Literal["resources_discover"] = field(default="resources_discover", init=False)
+
+
+@dataclass(frozen=True, slots=True)
+class ResourcesDiscoverResult:
+    """Extra skill/prompt/theme directories to merge into this session load."""
+
+    skill_paths: tuple[str, ...] = ()
+    prompt_paths: tuple[str, ...] = ()
+    theme_paths: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class SessionBeforeSwitchEvent:
+    """Fired before `/new` or `/resume` replaces the active session."""
+
+    reason: Literal["new", "resume"]
+    target_session_id: str | None = None
+    type: Literal["session_before_switch"] = field(default="session_before_switch", init=False)
+
+
+@dataclass(frozen=True, slots=True)
+class SessionBeforeSwitchResult:
+    """Cancel a pending session switch."""
+
+    cancel: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class SessionBeforeForkEvent:
+    """Fired before forking a session at an entry."""
+
+    entry_id: str
+    position: Literal["before", "at"] = "at"
+    type: Literal["session_before_fork"] = field(default="session_before_fork", init=False)
+
+
+@dataclass(frozen=True, slots=True)
+class SessionBeforeForkResult:
+    """Cancel a pending session fork."""
+
+    cancel: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class SessionBeforeCompactEvent:
+    """Fired before context compaction; `cancel` skips the compaction."""
+
+    reason: CompactionReason
+    will_retry: bool = False
+    custom_instructions: str | None = None
+    type: Literal["session_before_compact"] = field(default="session_before_compact", init=False)
+
+
+@dataclass(frozen=True, slots=True)
+class SessionBeforeCompactResult:
+    """Cancel a pending compaction."""
+
+    cancel: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class SessionCompactEvent:
+    """Fired after context compaction succeeds."""
+
+    reason: CompactionReason
+    will_retry: bool = False
+    from_extension: bool = False
+    type: Literal["session_compact"] = field(default="session_compact", init=False)
+
+
+@dataclass(frozen=True, slots=True)
+class SessionCompactFailedEvent:
+    """Fired after context compaction fails or is aborted."""
+
+    reason: CompactionReason
+    aborted: bool = False
+    will_retry: bool = False
+    error_message: str | None = None
+    from_extension: bool = False
+    type: Literal["session_compact_failed"] = field(default="session_compact_failed", init=False)
+
+
+@dataclass(frozen=True, slots=True)
+class SessionBeforeTreeEvent:
+    """Fired before navigating the session tree."""
+
+    target_id: str
+    old_leaf_id: str | None = None
+    user_wants_summary: bool = False
+    type: Literal["session_before_tree"] = field(default="session_before_tree", init=False)
+
+
+@dataclass(frozen=True, slots=True)
+class SessionBeforeTreeResult:
+    """Cancel pending session-tree navigation."""
+
+    cancel: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class SessionTreeEvent:
+    """Fired after navigating the session tree."""
+
+    new_leaf_id: str | None = None
+    old_leaf_id: str | None = None
+    type: Literal["session_tree"] = field(default="session_tree", init=False)
+
+
+@dataclass(frozen=True, slots=True)
+class BeforeProviderRequestEvent:
+    """Fired before a provider request is sent; handlers may return a replacement."""
+
+    payload: ModelRequest
+    type: Literal["before_provider_request"] = field(default="before_provider_request", init=False)
+
+
+@dataclass(frozen=True, slots=True)
+class BeforeProviderHeadersEvent:
+    """Fired after request headers are assembled; handlers mutate `headers` in place."""
+
+    headers: dict[str, str | None]
+    type: Literal["before_provider_headers"] = field(default="before_provider_headers", init=False)
+
+
+@dataclass(frozen=True, slots=True)
+class AfterProviderResponseEvent:
+    """Fired after a provider HTTP response arrives, before the body is consumed."""
+
+    status: int
+    headers: dict[str, str]
+    type: Literal["after_provider_response"] = field(default="after_provider_response", init=False)
+
+
+UIPromptKind = Literal["select", "confirm", "input"]
+
+
+@dataclass(frozen=True, slots=True)
+class UIPromptStartEvent:
+    """Fired when the host starts waiting on an extension UI dialog."""
+
+    kind: UIPromptKind
+    title: str | None = None
+    reason: Literal["ui_prompt"] = "ui_prompt"
+    type: Literal["ui_prompt_start"] = field(default="ui_prompt_start", init=False)
+
+
+@dataclass(frozen=True, slots=True)
+class UIPromptEndEvent:
+    """Fired when the host is no longer waiting on an extension UI dialog."""
+
+    kind: UIPromptKind
+    title: str | None = None
+    reason: Literal["ui_prompt"] = "ui_prompt"
+    type: Literal["ui_prompt_end"] = field(default="ui_prompt_end", init=False)
+
+
+@dataclass(frozen=True, slots=True)
+class ModelSelectEvent:
+    """Fired after the active model changes."""
+
+    model: str
+    previous_model: str | None = None
+    source: Literal["set", "cycle", "restore"] = "set"
+    type: Literal["model_select"] = field(default="model_select", init=False)
+
+
+@dataclass(frozen=True, slots=True)
+class UserBashEvent:
+    """Fired before a user-entered bash command runs in the session cwd."""
+
+    command: str
+    exclude_from_context: bool
+    cwd: str
+    type: Literal["user_bash"] = field(default="user_bash", init=False)
+
+
+@dataclass(frozen=True, slots=True)
+class UserBashHookResult:
+    """Block or rewrite a user bash command."""
+
+    block: bool = False
+    reason: str | None = None
+    command: str | None = None
+
+
 ExtensionHandler = Callable[[object, "ExtensionContext"], object | Awaitable[object]]
 # Command handlers are sync-only: the slash-command path (CommandRegistry ->
 # CodingSession.handle_command -> TUI submit) is synchronous end to end.
@@ -482,8 +696,11 @@ class ExtensionUi:
         timeout: float | None = None,
     ) -> str | None:
         """Prompt the user to pick an option; None on cancel/no UI."""
-        self._generation.assert_active()
-        return await self._runtime.ui.select(title, options, timeout=timeout)
+        return await self._prompt_ui(
+            "select",
+            title,
+            lambda: self._runtime.ui.select(title, options, timeout=timeout),
+        )
 
     async def confirm(
         self,
@@ -493,8 +710,11 @@ class ExtensionUi:
         timeout: float | None = None,
     ) -> bool:
         """Ask the user to confirm; True only if confirmed."""
-        self._generation.assert_active()
-        return await self._runtime.ui.confirm(title, message, timeout=timeout)
+        return await self._prompt_ui(
+            "confirm",
+            title,
+            lambda: self._runtime.ui.confirm(title, message, timeout=timeout),
+        )
 
     async def input(
         self,
@@ -505,8 +725,24 @@ class ExtensionUi:
         timeout: float | None = None,
     ) -> str | None:
         """Prompt the user for text; None on cancel/no UI."""
+        return await self._prompt_ui(
+            "input",
+            title,
+            lambda: self._runtime.ui.input(title, placeholder, secret=secret, timeout=timeout),
+        )
+
+    async def _prompt_ui(
+        self,
+        kind: UIPromptKind,
+        title: str,
+        action: Callable[[], Awaitable[_T]],
+    ) -> _T:
         self._generation.assert_active()
-        return await self._runtime.ui.input(title, placeholder, secret=secret, timeout=timeout)
+        await self._runtime.emit_ui_prompt(kind, title)
+        try:
+            return await action()
+        finally:
+            await self._runtime.emit_ui_prompt_end(kind, title)
 
     def set_status(self, key: str, text: str | None) -> None:
         """Update this extension's terminal status without owning UI widgets."""

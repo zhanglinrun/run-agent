@@ -61,7 +61,7 @@ class ExperienceConfig:
     memory_notifications: NotifyMode = "on"
 
     # -- skills (hermes ``skills.*``) -------------------------------------------------
-    # A skill-review nudge every N tool iterations without a skill_manage call
+    # A skill-review nudge every N model rounds without a skill_manage call
     # (``skills.creation_nudge_interval``).
     skill_nudge_interval: int = 10
     # Security scan of skills the agent writes (``skills.guard_agent_created``).
@@ -79,8 +79,8 @@ class ExperienceConfig:
     review_max_output_tokens: int = 1600
     review_cancel_timeout_seconds: float = 2.0
     # Runs that ended in failure or a user correction also admit a review; hermes reviews
-    # on the nudge cadence only, this is an addition and can be switched off.
-    review_on_signals: bool = True
+    # on the nudge cadence only, so this stays off unless the host opts in.
+    review_on_signals: bool = False
     review_cooldown_seconds: float = 0.0
     review_notify: NotifyMode = "on"
 
@@ -157,7 +157,7 @@ def load_experience_config(env: Mapping[str, str]) -> ExperienceConfig:
         review_cancel_timeout_seconds=_float(
             env.get("EXPERIENCE_REVIEW_CANCEL_TIMEOUT_SECONDS"), 2.0, minimum=0.0
         ),
-        review_on_signals=_bool(env.get("EXPERIENCE_REVIEW_ON_SIGNALS"), True),
+        review_on_signals=_bool(env.get("EXPERIENCE_REVIEW_ON_SIGNALS"), False),
         review_cooldown_seconds=_float(
             env.get("EXPERIENCE_REVIEW_COOLDOWN_SECONDS"), 0.0, minimum=0.0
         ),

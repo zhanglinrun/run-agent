@@ -270,10 +270,12 @@ async def test_review_status_exposes_failure_and_error():
         review_every_turns=10,
         review_cooldown_seconds=900,
         review_notify="on",
+        review_on_signals=False,
     )
     register_learning_commands(
         api,
         config=lambda: config,
+        stores=lambda: None,
         curator=lambda: None,
         coordinator=coordinator,
         ask=None,

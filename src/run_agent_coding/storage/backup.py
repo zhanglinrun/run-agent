@@ -1,4 +1,4 @@
-"""Consistent SQLite snapshots and verified immutable artifacts in one package."""
+"""Copy session trees and gateway JSONL files into a verified backup directory."""
 
 from __future__ import annotations
 
@@ -7,21 +7,14 @@ import hashlib
 import json
 import os
 import shutil
-import sqlite3
 import tempfile
-from contextlib import closing
-from importlib.metadata import version
 from pathlib import Path
 from time import time
 from typing import Any
-from uuid import uuid4
 
-from run_agent_coding.host.contracts import ArtifactRef
-from run_agent_coding.storage.artifacts import ArtifactCorrupt, ArtifactStore
-from run_agent_coding.storage.sessions import canonical_json
-from run_agent_coding.storage.sqlite import APPLICATION_ID, SCHEMA_VERSION, SqliteDatabase
+from run_agent_coding.storage.canonical import canonical_json
 
-BACKUP_SCHEMA = "run.backup.v1"
+BACKUP_SCHEMA = "run.backup.v2"
 
 
 def _digest(path: Path) -> str:
@@ -29,33 +22,50 @@ def _digest(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def _verify_database(connection: sqlite3.Connection) -> None:
-    if connection.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID:
-        raise ValueError("Backup does not contain a Run Agent database")
-    if connection.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
-        raise ValueError("Unsupported backup database schema")
-    if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
-        raise ValueError("Backup database failed integrity verification")
-    if connection.execute("PRAGMA foreign_key_check").fetchall():
-        raise ValueError("Backup database contains broken references")
+def _assert_index_complete(index_path: Path) -> None:
+    for line in index_path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid session index {index_path}") from exc
+        if not isinstance(payload, dict):
+            continue
+        relative = payload.get("path")
+        if not relative:
+            continue
+        candidate = Path(str(relative))
+        if not candidate.is_absolute():
+            candidate = index_path.parent / candidate
+        if not candidate.is_file():
+            raise FileNotFoundError(f"Session file missing: {candidate}")
 
 
-def _references(connection: sqlite3.Connection) -> list[ArtifactRef]:
-    rows = connection.execute(
-        """SELECT DISTINCT a.digest, a.size FROM artifacts a JOIN artifact_refs r
-           ON a.digest=r.digest ORDER BY a.digest"""
-    ).fetchall()
-    return [ArtifactRef(row[0], row[1]) for row in rows]
+def _collect_files(home: Path) -> list[Path]:
+    files: list[Path] = []
+    sessions = home / "sessions"
+    if sessions.exists():
+        for path in sessions.rglob("*"):
+            if path.is_file() and not path.name.startswith("."):
+                files.append(path)
+    gateway = home / "gateway"
+    if gateway.exists():
+        for name in ("sessions.jsonl", "deliveries.jsonl"):
+            candidate = gateway / name
+            if candidate.is_file():
+                files.append(candidate)
+    collected = sorted(files)
+    for path in collected:
+        if path.name == "index.jsonl":
+            _assert_index_complete(path)
+    return collected
 
 
-async def create_backup(
-    database: SqliteDatabase, artifacts: ArtifactStore, destination: str | Path
-) -> Path:
-    """Publish only complete packages; never copy a live database file directly.
-
-    Artifact collection is append-only in this version. Before adding a garbage
-    collector, it must coordinate retention with backup creation.
-    """
+async def create_backup(home: str | Path, destination: str | Path) -> Path:
+    """Publish a complete copy of sessions/ and gateway JSONL files."""
+    home = Path(home).resolve()
     destination = Path(destination).resolve()
     if destination.exists():
         raise FileExistsError(f"Backup destination already exists: {destination}")
@@ -63,39 +73,23 @@ async def create_backup(
     staging = Path(tempfile.mkdtemp(prefix=".run-backup-", dir=destination.parent))
     try:
 
-        def snapshot(source: sqlite3.Connection) -> None:
-            target = sqlite3.connect(staging / "state.sqlite3")
-            try:
-                source.backup(target)
-                _verify_database(target)
-            finally:
-                target.close()
-
-        snapshot_work = asyncio.create_task(database.run(snapshot))
-        try:
-            await asyncio.shield(snapshot_work)
-        except asyncio.CancelledError:
-            await snapshot_work
-            raise
-
-        def collect() -> None:
-            path = staging / "state.sqlite3"
-            with closing(sqlite3.connect(path)) as connection:
-                refs = _references(connection)
-                watermarks = dict(connection.execute("SELECT session_id, last_seq FROM sessions"))
-            copied = ArtifactStore(staging / "artifacts")
-            for ref in refs:
-                actual = copied.put_sync(artifacts.read_sync(ref))
-                if actual != ref:
-                    raise ArtifactCorrupt("Backup artifact differs from its database reference")
+        def snapshot() -> None:
+            files = _collect_files(home)
+            if not files:
+                raise FileNotFoundError(f"No session or gateway JSONL files under {home}")
+            entries: list[dict[str, Any]] = []
+            for path in files:
+                relative = path.relative_to(home).as_posix()
+                target = staging / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, target)
+                entries.append(
+                    {"path": relative, "sha256": _digest(target), "size": target.stat().st_size}
+                )
             manifest = {
                 "schema": BACKUP_SCHEMA,
-                "database_schema": SCHEMA_VERSION,
-                "application_version": version("run-agent-harness"),
                 "created_at": time(),
-                "database_sha256": _digest(path),
-                "watermarks": watermarks,
-                "artifacts": [{"digest": ref.digest, "size": ref.size} for ref in refs],
+                "files": entries,
             }
             with (staging / "manifest.json").open("w", encoding="utf-8") as stream:
                 stream.write(canonical_json(manifest) + "\n")
@@ -103,8 +97,7 @@ async def create_backup(
                 os.fsync(stream.fileno())
             os.rename(staging, destination)
 
-        # Shield admitted filesystem work and drain on cancellation before cleanup.
-        work = asyncio.create_task(asyncio.to_thread(collect))
+        work = asyncio.create_task(asyncio.to_thread(snapshot))
         try:
             await asyncio.shield(work)
         except asyncio.CancelledError:
@@ -124,24 +117,19 @@ def _verify_backup(source: Path) -> dict[str, Any]:
     manifest = json.loads((source / "manifest.json").read_text(encoding="utf-8"))
     if not isinstance(manifest, dict) or manifest.get("schema") != BACKUP_SCHEMA:
         raise ValueError("Unsupported backup manifest")
-    database = source / "state.sqlite3"
-    if _digest(database) != manifest.get("database_sha256"):
-        raise ValueError("Backup database hash mismatch")
-    # mode=ro prevents an empty replacement database being created during verification.
-    with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as connection:
-        _verify_database(connection)
-        refs = _references(connection)
-    declared = [ArtifactRef(**item) for item in manifest.get("artifacts", [])]
-    if refs != declared:
-        raise ValueError("Backup manifest does not match the referenced artifacts")
-    artifacts = ArtifactStore(source / "artifacts")
-    for ref in refs:
-        artifacts.read_sync(ref)
+    declared = manifest.get("files")
+    if not isinstance(declared, list) or not declared:
+        raise ValueError("Backup manifest lists no files")
+    for item in declared:
+        path = source / str(item["path"])
+        if not path.is_file():
+            raise FileNotFoundError(f"Backup is missing {item['path']}")
+        if _digest(path) != item.get("sha256") or path.stat().st_size != item.get("size"):
+            raise ValueError(f"Backup file hash mismatch: {item['path']}")
     return manifest
 
 
 async def restore_backup(source: str | Path, destination: str | Path) -> Path:
-    """Restore to a new directory and fence old workers; never switch a live host."""
     source, destination = Path(source).resolve(), Path(destination).resolve()
 
     def restore() -> Path:
@@ -151,32 +139,12 @@ async def restore_backup(source: str | Path, destination: str | Path) -> Path:
         destination.parent.mkdir(parents=True, exist_ok=True)
         staging = Path(tempfile.mkdtemp(prefix=".run-restore-", dir=destination.parent))
         try:
-            shutil.copyfile(source / "state.sqlite3", staging / "state.sqlite3")
-            original, copied = (
-                ArtifactStore(source / "artifacts"),
-                ArtifactStore(staging / "artifacts"),
-            )
-            for entry in manifest["artifacts"]:
-                copied.put_sync(original.read_sync(ArtifactRef(**entry)))
-            with closing(sqlite3.connect(staging / "state.sqlite3")) as connection, connection:
-                connection.execute("PRAGMA foreign_keys=ON")
-                # External effects do not rewind with a database snapshot.
-                connection.execute("UPDATE sessions SET generation=generation+1, owner_active=0")
-                connection.execute("UPDATE extension_owners SET active=0")
-                connection.execute(
-                    "INSERT OR REPLACE INTO host_metadata VALUES ('restore_guard', ?)",
-                    (
-                        canonical_json(
-                            {
-                                "restore_id": uuid4().hex,
-                                "created_at": time(),
-                                "source_database_sha256": manifest["database_sha256"],
-                                "requires_reconciliation": True,
-                            }
-                        ),
-                    ),
-                )
-                _verify_database(connection)
+            shutil.copy2(source / "manifest.json", staging / "manifest.json")
+            for item in manifest["files"]:
+                relative = str(item["path"])
+                target = staging / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source / relative, target)
             os.rename(staging, destination)
         finally:
             if staging.exists():

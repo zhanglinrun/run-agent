@@ -1,6 +1,5 @@
 import json
 import os
-import sqlite3
 import subprocess
 import sys
 import threading
@@ -10,7 +9,7 @@ import pytest
 
 
 @pytest.mark.parametrize("truncated", [False, True])
-def test_print_pipeline_returns_one_json_and_resumes_sqlite(tmp_path, truncated):
+def test_print_pipeline_returns_one_json_and_resumes_jsonl(tmp_path, truncated):
     requests = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -100,17 +99,12 @@ def test_print_pipeline_returns_one_json_and_resumes_sqlite(tmp_path, truncated)
             env=env,
             timeout=15,
         )
-        assert not list(tmp_path.rglob("*.jsonl"))
+        assert not list(tmp_path.rglob("*.sqlite3"))
         if truncated:
             assert first.returncode == 1, first.stdout
             assert json.loads(first.stdout)["status"] == "failed"
-            with sqlite3.connect(tmp_path / "state/state.sqlite3") as connection:
-                assert (
-                    connection.execute(
-                        "SELECT count(*) FROM executions WHERE status='succeeded'"
-                    ).fetchone()[0]
-                    == 0
-                )
+            sessions = list((tmp_path / ".run" / "sessions").glob("*.jsonl"))
+            assert sessions
             return
         assert first.returncode == 0, first.stderr + first.stdout
         payload = json.loads(first.stdout)
@@ -131,18 +125,12 @@ def test_print_pipeline_returns_one_json_and_resumes_sqlite(tmp_path, truncated)
         resumed = json.loads(second.stdout)
         assert resumed["session_id"] == payload["session_id"]
         assert resumed["run_id"] != payload["run_id"]
-        with sqlite3.connect(tmp_path / "state/state.sqlite3") as connection:
-            assert connection.execute("SELECT count(*) FROM sessions").fetchone()[0] == 1
-            assert (
-                connection.execute(
-                    "SELECT count(*) FROM executions WHERE status='succeeded'"
-                ).fetchone()[0]
-                == 2
-            )
+        session_files = list((tmp_path / ".run" / "sessions").glob("*.jsonl"))
+        assert any(path.name == f"{payload['session_id']}.jsonl" for path in session_files)
+        assert list((tmp_path / "state").rglob("*.sqlite3")) == []
         assert any(
             "piped context" in json.dumps(request, ensure_ascii=False) for request in requests
         )
-        assert not list((tmp_path / "state").rglob("*.jsonl"))
     finally:
         server.shutdown()
         server.server_close()

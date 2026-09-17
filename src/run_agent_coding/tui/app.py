@@ -270,7 +270,7 @@ class RunAgentTui(App[None]):
             if text.startswith("/"):
                 result = await self.application.command(text)
                 if result.handled:
-                    if command in {"/new", "/resume", "/tree", "/branch"}:
+                    if command in {"/new", "/resume", "/tree", "/branch", "/rewind", "/fork"}:
                         await self.reload_transcript()
                     if result.message:
                         if command in {

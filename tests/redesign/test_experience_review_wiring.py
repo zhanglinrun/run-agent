@@ -44,7 +44,8 @@ async def review_request(app, run_id: str):
     return await state.get(f"review-request:{run_id}")
 
 
-async def test_a_failed_completion_leaves_one_durable_review_request(tmp_path):
+async def test_a_failed_completion_leaves_one_durable_review_request(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXPERIENCE_REVIEW_ON_SIGNALS", "true")
     async with await CodingApplication.open(
         experience_options(tmp_path), provider=FailingProvider()
     ) as app:

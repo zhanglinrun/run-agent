@@ -1,22 +1,34 @@
-"""Async session metadata and writer ownership over the shared SQLite database."""
+"""Create, index, list, and resume JSONL coding sessions."""
 
 from __future__ import annotations
 
 import asyncio
+import json
+import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from time import time
 from uuid import uuid4
 
+from run_agent_coding.jsonl_storage import SessionWriter
 from run_agent_coding.paths import RunAgentPaths
-from run_agent_coding.storage.artifacts import ArtifactStore
-from run_agent_coding.storage.handle import OutcomeCommitter, SqliteSessionHandle
-from run_agent_coding.storage.host import SqliteHostServices
-from run_agent_coding.storage.sessions import SessionRecord, SqliteSessionRepository
+from run_agent_coding.storage.host import MemoryHostServices
 from run_agent_coding.storage.settle import settle
 from run_agent_coding.storage.skill_packages import SkillPackageStore
-from run_agent_coding.storage.sqlite import SqliteDatabase
-from run_agent_coding.storage.telemetry import SqliteTelemetrySink
+from run_agent_coding.storage.telemetry import JsonlTelemetrySink
 from run_agent_core.session.contracts import SessionConflict
+from run_agent_core.session.entries import LeafEntry, SessionEntry
+from run_agent_core.session.storage import JsonlSessionStorage
+
+_MAX_SESSION_ID_BYTES = 128
+_RESERVED_SESSION_IDS = frozenset({"default", "index"})
+_WINDOWS_RESERVED_FILE_STEMS = frozenset(
+    {"aux", "con", "nul", "prn"}
+    | {f"com{index}" for index in range(1, 10)}
+    | {f"lpt{index}" for index in range(1, 10)}
+)
+_SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
 
 
 def normalize_session_name(value: str) -> str:
@@ -27,12 +39,18 @@ def normalize_session_name(value: str) -> str:
 
 
 def validate_session_id(session_id: str) -> None:
-    if (
-        not session_id
-        or len(session_id.encode("utf-8")) > 128
-        or any(ord(char) < 32 for char in session_id)
-    ):
+    if not _SESSION_ID_PATTERN.fullmatch(session_id):
+        raise ValueError(
+            "Session id must be non-empty, contain only alphanumeric characters, '-', '_', "
+            "and '.', and start and end with an alphanumeric character"
+        )
+    if len(session_id.encode("utf-8")) > _MAX_SESSION_ID_BYTES:
         raise ValueError("Session identity must be nonempty and at most 128 UTF-8 bytes")
+    normalized_id = session_id.casefold()
+    if normalized_id in _RESERVED_SESSION_IDS:
+        raise ValueError(f"Session id is reserved: {session_id}")
+    if normalized_id.partition(".")[0] in _WINDOWS_RESERVED_FILE_STEMS:
+        raise ValueError(f"Session id is not a portable file name: {session_id}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,21 +62,36 @@ class CodingSessionRecord:
     created_at: float
     updated_at: float
     provider_name: str | None = None
+    path: Path | None = None
     project_id: str = ""
     principal_id: str = "local"
 
+    def to_json(self) -> dict[str, object]:
+        path = self.path if self.path is not None else Path(f"{self.id}.jsonl")
+        return {
+            "id": self.id,
+            "path": str(path),
+            "cwd": str(self.cwd),
+            "model": self.model,
+            "provider_name": self.provider_name,
+            "title": self.title,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
     @classmethod
-    def from_record(cls, record: SessionRecord) -> CodingSessionRecord:
+    def from_json(cls, payload: dict[str, object]) -> CodingSessionRecord:
         return cls(
-            record.session_id,
-            Path(record.cwd),
-            record.model,
-            record.title,
-            record.created_at,
-            record.updated_at,
-            record.provider_name,
-            record.project_id,
-            record.principal_id,
+            id=str(payload["id"]),
+            cwd=Path(str(payload["cwd"])),
+            model=str(payload.get("model") or ""),
+            title=None if payload.get("title") is None else str(payload["title"]),
+            created_at=float(payload.get("created_at") or 0),
+            updated_at=float(payload.get("updated_at") or 0),
+            provider_name=(
+                None if payload.get("provider_name") is None else str(payload["provider_name"])
+            ),
+            path=Path(str(payload["path"])) if payload.get("path") else None,
         )
 
 
@@ -67,51 +100,45 @@ class SessionManager:
         self,
         paths: RunAgentPaths | None = None,
         *,
-        database: SqliteDatabase | None = None,
         principal_id: str = "local",
         owner_id: str | None = None,
     ) -> None:
         self.paths = paths or RunAgentPaths()
         self.principal_id = principal_id
         self.owner_id = owner_id or uuid4().hex
-        self._database = database
-        self._owns_database = database is None
         self._lock = asyncio.Lock()
         self._handle_lock = asyncio.Lock()
-        self._handles: dict[str, SqliteSessionHandle] = {}
+        self._handles: dict[str, SessionWriter] = {}
         self._closed = False
-        self._telemetry: SqliteTelemetrySink | None = None
-        self._services: SqliteHostServices | None = None
+        self._telemetry: JsonlTelemetrySink | None = None
+        self._services: MemoryHostServices | None = None
         self._skill_packages: SkillPackageStore | None = None
         self._close_task: asyncio.Task[None] | None = None
 
-    async def repository(self) -> SqliteSessionRepository:
-        async with self._lock:
-            if self._closed:
-                raise RuntimeError("Session manager is closed")
-            if self._database is None:
-                self._database = await SqliteDatabase.open(self.paths.database_path)
-            return SqliteSessionRepository(self._database)
+    def project_index_path(self, cwd: Path) -> Path:
+        return self.paths.project_session_dir(cwd) / "index.jsonl"
 
-    async def host_services(self) -> SqliteHostServices:
-        repository = await self.repository()
+    def _catalog_path(self) -> Path:
+        return self.paths.sessions_dir / "index.jsonl"
+
+    async def host_services(self) -> MemoryHostServices:
         if self._services is None:
-            self._services = SqliteHostServices(
-                repository.database,
-                ArtifactStore(self.paths.home / "artifacts"),
+            self._services = MemoryHostServices(
                 self.owner_id,
+                isolation_key=str(self.paths.home.resolve()),
+                principal_id=self.principal_id,
             )
         return self._services
 
     async def skill_packages(self) -> SkillPackageStore:
-        repository = await self.repository()
         if self._skill_packages is None:
-            self._skill_packages = SkillPackageStore(
-                repository.database,
-                ArtifactStore(self.paths.home / "artifacts"),
-                self.paths.home / "cache" / "skills",
-            )
+            self._skill_packages = SkillPackageStore(self.paths.home / "cache" / "skills")
         return self._skill_packages
+
+    async def telemetry(self) -> JsonlTelemetrySink:
+        if self._telemetry is None:
+            self._telemetry = JsonlTelemetrySink(self.paths.logs_dir / "observations.jsonl")
+        return self._telemetry
 
     async def create_session(
         self,
@@ -123,82 +150,83 @@ class SessionManager:
         session_id: str | None = None,
         project_id: str | None = None,
     ) -> CodingSessionRecord:
+        del project_id
         if session_id is not None:
             validate_session_id(session_id)
-        repository = await self.repository()
-        record = await repository.create_session(
-            cwd=cwd,
-            model=model,
-            principal_id=self.principal_id,
-            session_id=session_id,
-            project_id=project_id,
-            provider_name=provider_name,
-            title=title,
-            metadata={},
+        record = self._prepare_session(
+            cwd=cwd, model=model, provider_name=provider_name, title=title, session_id=session_id
         )
-        return CodingSessionRecord.from_record(record)
+        record.path.parent.mkdir(parents=True, exist_ok=True)
+        if record.path.exists() and record.path.stat().st_size:
+            raise RuntimeError(f"Session already exists with id '{record.id}'")
+        record.path.touch()
+        self._upsert(record)
+        return record
 
-    async def telemetry(self) -> SqliteTelemetrySink:
-        repository = await self.repository()
-        if self._telemetry is None:
-            self._telemetry = SqliteTelemetrySink(repository.database)
-        return self._telemetry
+    def _prepare_session(
+        self,
+        *,
+        cwd: Path,
+        model: str,
+        provider_name: str | None,
+        title: str | None,
+        session_id: str | None,
+    ) -> CodingSessionRecord:
+        now = time()
+        resolved_cwd = cwd.resolve()
+        record_id = uuid4().hex if session_id is None else session_id
+        validate_session_id(record_id)
+        path = self.paths.project_session_dir(resolved_cwd) / f"{record_id}.jsonl"
+        return CodingSessionRecord(
+            id=record_id,
+            cwd=resolved_cwd,
+            model=model,
+            title=title,
+            created_at=now,
+            updated_at=now,
+            provider_name=provider_name,
+            path=path,
+        )
 
     async def get_session(self, session_id: str) -> CodingSessionRecord | None:
-        repository = await self.repository()
-        try:
-            record = await repository.get_session(session_id)
-        except KeyError:
-            return None
-        if record.principal_id != self.principal_id:
-            return None
-        return CodingSessionRecord.from_record(record)
+        for record in self._read_all_records():
+            if record.id == session_id:
+                return record
+        return None
 
     async def list_sessions(self, cwd: Path | None = None) -> list[CodingSessionRecord]:
-        repository = await self.repository()
-        records = await repository.list_sessions(principal_id=self.principal_id, limit=1000)
-        canonical = str(cwd.resolve()) if cwd is not None else None
-        return [
-            CodingSessionRecord.from_record(record)
-            for record in records
-            if canonical is None or record.cwd == canonical
-        ]
+        records = (
+            self._read_project_records(cwd) if cwd is not None else self._read_all_records()
+        )
+        return sorted(records, key=lambda record: record.updated_at, reverse=True)
 
     async def open_storage(
-        self, session_id: str, *, committer: OutcomeCommitter | None = None
-    ) -> SqliteSessionHandle:
+        self, session_id: str, *, committer: object | None = None
+    ) -> SessionWriter:
+        del committer
         async with self._handle_lock:
             if self._closed:
                 raise RuntimeError("Session manager is closed")
             existing = self._handles.get(session_id)
             if existing is not None and not existing.closed:
                 raise SessionConflict("Session already has an open writer")
-            handle, cancelled = await settle(self._open_storage(session_id, committer=committer))
+            handle, cancelled = await settle(self._open_storage(session_id))
             if cancelled:
                 await settle(handle.aclose())
                 raise asyncio.CancelledError
             return handle
 
-    async def _open_storage(
-        self, session_id: str, *, committer: OutcomeCommitter | None
-    ) -> SqliteSessionHandle:
+    async def _open_storage(self, session_id: str) -> SessionWriter:
         record = await self.get_session(session_id)
         if record is None:
             raise ValueError(f"Unknown session: {session_id}")
-        repository = await self.repository()
-        token = await repository.claim(
-            session_id, owner_id=self.owner_id, run_id=f"initial-{uuid4().hex}", ttl_seconds=120
+        path = record.path or self.paths.project_session_dir(record.cwd) / f"{record.id}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = SessionWriter(
+            JsonlSessionStorage(path), session_id, owner_id=self.owner_id
         )
-        try:
-            branch_id = await repository.database.run(
-                lambda connection: connection.execute(
-                    "SELECT active_branch_id FROM sessions WHERE session_id=?", (session_id,)
-                ).fetchone()[0]
-            )
-        except BaseException:
-            await settle(repository.release(token))
-            raise
-        handle = SqliteSessionHandle(repository, token, branch_id, committer=committer)
+        services = await self.host_services()
+        services.attach_writer(handle, cwd=record.cwd)
         self._handles[session_id] = handle
         return handle
 
@@ -210,20 +238,86 @@ class SessionManager:
         provider_name: str | None = None,
         title: str | None = None,
     ) -> CodingSessionRecord:
-        handle = self._handles.get(session_id)
-        if handle is None:
-            raise SessionConflict("Metadata updates require an owned session writer")
-        repository = await self.repository()
-        record = await repository.get_session(session_id)
-        metadata = dict(record.metadata)
-        updated = await repository.update_metadata(
-            handle.token,
-            model=model or record.model,
-            provider_name=provider_name or record.provider_name,
-            title=title,
-            metadata=metadata,
+        existing = await self.get_session(session_id)
+        if existing is None:
+            raise SessionConflict("Metadata updates require a known session")
+        updated = CodingSessionRecord(
+            id=existing.id,
+            cwd=existing.cwd,
+            model=model or existing.model,
+            title=title if title is not None else existing.title,
+            created_at=existing.created_at,
+            updated_at=time(),
+            provider_name=provider_name if provider_name is not None else existing.provider_name,
+            path=existing.path,
+            project_id=existing.project_id,
+            principal_id=existing.principal_id,
         )
-        return CodingSessionRecord.from_record(updated)
+        self._upsert(updated)
+        return updated
+
+    async def fork_session(
+        self,
+        *,
+        cwd: Path,
+        model: str,
+        provider_name: str | None,
+        title: str | None,
+        entries: Sequence[SessionEntry],
+        current_id: str,
+    ) -> CodingSessionRecord:
+        record = await self.create_session(
+            cwd=cwd, model=model, provider_name=provider_name, title=title
+        )
+        assert record.path is not None
+        copied = tuple(entries)
+        if current_id is not None and (not copied or not isinstance(copied[-1], LeafEntry)):
+            copied = (*copied, LeafEntry(parent_id=current_id, entry_id=current_id))
+        await JsonlSessionStorage(record.path).append_batch(copied)
+        return record
+
+    def _read_index(self, path: Path) -> list[CodingSessionRecord]:
+        if not path.exists():
+            return []
+        records: list[CodingSessionRecord] = []
+        for line in path.read_text(encoding="utf-8").split("\n"):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                payload = json.loads(stripped)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                records.append(CodingSessionRecord.from_json(payload))
+        return records
+
+    def _read_project_records(self, cwd: Path) -> list[CodingSessionRecord]:
+        resolved = cwd.resolve()
+        return [
+            record
+            for record in self._read_index(self.project_index_path(resolved))
+            if record.cwd == resolved
+        ]
+
+    def _read_all_records(self) -> list[CodingSessionRecord]:
+        records = self._read_index(self._catalog_path())
+        for index_path in self.paths.sessions_dir.glob("*/index.jsonl"):
+            records.extend(self._read_index(index_path))
+        return _deduplicate_records(records)
+
+    def _upsert(self, record: CodingSessionRecord) -> None:
+        self._write_index(self.project_index_path(record.cwd), record)
+        self._write_index(self._catalog_path(), record)
+
+    def _write_index(self, path: Path, record: CodingSessionRecord) -> None:
+        records = [item for item in self._read_index(path) if item.id != record.id]
+        records.append(record)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        content = "\n".join(json.dumps(item.to_json(), ensure_ascii=False) for item in records)
+        if content:
+            content += "\n"
+        path.write_text(content, encoding="utf-8")
 
     async def aclose(self) -> None:
         if self._close_task is None:
@@ -257,9 +351,15 @@ class SessionManager:
             if errors:
                 raise errors[0]
         finally:
-            try:
-                if self._telemetry is not None:
-                    await self._telemetry.aclose()
-            finally:
-                if self._owns_database and self._database is not None:
-                    await self._database.aclose()
+            if self._telemetry is not None:
+                await self._telemetry.aclose()
+
+
+def _deduplicate_records(records: list[CodingSessionRecord]) -> list[CodingSessionRecord]:
+    by_id: dict[str, CodingSessionRecord] = {}
+    for record in records:
+        existing = by_id.get(record.id)
+        if existing is None or record.updated_at >= existing.updated_at:
+            by_id[record.id] = record
+    return list(by_id.values())
+

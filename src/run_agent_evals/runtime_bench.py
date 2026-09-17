@@ -15,8 +15,7 @@ from time import perf_counter
 from typing import Any
 
 from run_agent_ai.fake import FakeProvider
-from run_agent_coding.storage.sqlite import SqliteDatabase
-from run_agent_coding.storage.telemetry import SqliteTelemetrySink
+from run_agent_coding.storage.telemetry import JsonlTelemetrySink
 from run_agent_core.events import AgentEvent, MessageEndEvent
 from run_agent_core.loop import run_agent_loop
 from run_agent_core.messages import (
@@ -159,37 +158,35 @@ async def _trace_samples(
     root: Path,
     config: RuntimeBenchmarkConfig,
 ) -> tuple[dict[str, Any], tuple[Path, ...]]:
-    path = root / "traces.sqlite3"
+    path = root / "traces.jsonl"
     baselines: list[float] = []
     traced: list[float] = []
     span_counts: list[int] = []
     payload_bytes: list[int] = []
-    async with await SqliteDatabase.open(path) as database:
-        sink = SqliteTelemetrySink(database)
-        try:
-            for index in range(config.trace_repeats):
-                baseline = await _measure_tool_batch(config.tool_calls, 0.0, "parallel")
-                recorder = TraceRecorder(
-                    sink,
-                    stream=f"request:{index}",
-                    session_id=f"benchmark-{index}",
-                )
-                started = perf_counter()
-                await _measure_tool_batch(config.tool_calls, 0.0, "parallel", listener=recorder)
-                await sink.flush()
-                # Include the durable SQLite commit, not just queue admission.
-                traced.append((perf_counter() - started) * 1000)
-                baselines.append(float(baseline["duration_ms"]))
-                records = await recorder.read_all()
-                span_counts.append(len(records))
-                payload_bytes.append(sum(len(json.dumps(row).encode("utf-8")) for row in records))
-            if sink.dropped or sink.failed:
-                raise RuntimeError("Benchmark observation capture was incomplete")
-        finally:
-            await sink.aclose()
+    sink = JsonlTelemetrySink(path)
+    try:
+        for index in range(config.trace_repeats):
+            baseline = await _measure_tool_batch(config.tool_calls, 0.0, "parallel")
+            recorder = TraceRecorder(
+                sink,
+                stream=f"request:{index}",
+                session_id=f"benchmark-{index}",
+            )
+            started = perf_counter()
+            await _measure_tool_batch(config.tool_calls, 0.0, "parallel", listener=recorder)
+            await sink.flush()
+            traced.append((perf_counter() - started) * 1000)
+            baselines.append(float(baseline["duration_ms"]))
+            records = await recorder.read_all()
+            span_counts.append(len(records))
+            payload_bytes.append(sum(len(json.dumps(row).encode("utf-8")) for row in records))
+        if sink.dropped or sink.failed:
+            raise RuntimeError("Benchmark observation capture was incomplete")
+    finally:
+        await sink.aclose()
     return (
         {
-            "storage": "sqlite_wal_full",
+            "storage": "jsonl_append",
             "durable_flush_included": True,
             "baseline_duration_ms": baselines,
             "traced_duration_ms": traced,
@@ -358,7 +355,7 @@ def _manifest_payload(config: RuntimeBenchmarkConfig) -> dict[str, Any]:
         "config": asdict(config),
         "methodology": {
             "tools": "production agent loop with a synthetic fixed-delay async read tool",
-            "trace": "SQLite TraceRecorder including durable flush, paired with an untraced loop",
+            "trace": "JSONL TraceRecorder including durable flush, paired with an untraced loop",
         },
     }
     payload["manifest_digest"] = _canonical_digest(payload)

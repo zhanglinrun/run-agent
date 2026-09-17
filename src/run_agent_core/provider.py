@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -22,7 +23,43 @@ class ModelRequest:
     session_id: str | None = None
 
 
-BeforeModelRequest = Callable[[ModelRequest], Awaitable[None]]
+BeforeModelRequest = Callable[[ModelRequest], Awaitable["ModelRequest | None"]]
+
+
+class ProviderHttpHooks(Protocol):
+    """Optional HTTP-layer hooks applied around a physical provider call."""
+
+    async def prepare_provider_headers(self, headers: dict[str, str]) -> None: ...
+
+    async def observe_provider_response(
+        self, status: int, headers: Mapping[str, str]
+    ) -> None: ...
+
+
+_PROVIDER_HTTP_HOOKS: ContextVar[ProviderHttpHooks | None] = ContextVar(
+    "run_agent_provider_http_hooks", default=None
+)
+
+
+def bind_provider_http_hooks(hooks: ProviderHttpHooks | None) -> Token[ProviderHttpHooks | None]:
+    """Bind HTTP hooks for the current task; return a token to restore later."""
+    return _PROVIDER_HTTP_HOOKS.set(hooks)
+
+
+async def run_before_provider_headers(headers: dict[str, str]) -> None:
+    """Apply in-place header mutations from the bound extension runtime, if any."""
+    hooks = _PROVIDER_HTTP_HOOKS.get()
+    if hooks is None:
+        return
+    await hooks.prepare_provider_headers(headers)
+
+
+async def run_after_provider_response(status: int, headers: Mapping[str, str]) -> None:
+    """Notify observers of a provider HTTP response, if a runtime is bound."""
+    hooks = _PROVIDER_HTTP_HOOKS.get()
+    if hooks is None:
+        return
+    await hooks.observe_provider_response(status, headers)
 
 
 class CancellationToken(Protocol):

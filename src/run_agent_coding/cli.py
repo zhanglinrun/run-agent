@@ -47,7 +47,7 @@ def main(
     provider: Annotated[str | None, typer.Option(help="Provider name.")] = None,
     model: Annotated[str | None, typer.Option(help="Model ID.")] = None,
     resume: Annotated[
-        str | None, typer.Option("--session", help="Resume a SQLite session ID.")
+        str | None, typer.Option("--session", help="Resume a JSONL session ID.")
     ] = None,
     refresh_resources: Annotated[
         bool, typer.Option(help="Explicitly adopt current resources when resuming a session.")

@@ -66,8 +66,10 @@ class ReadingProvider(ReviewingProvider):
         )
 
 
-@pytest.mark.parametrize("iterations", [9, 10])
-async def test_successful_single_prompt_reviews_at_default_tool_cadence(tmp_path, iterations):
+@pytest.mark.parametrize("iterations", [8, 9])
+async def test_successful_single_prompt_reviews_at_default_model_round_cadence(
+    tmp_path, iterations
+):
     (tmp_path / "fixture.txt").write_text("settings\n", encoding="utf-8")
     provider = ReadingProvider(iterations)
     async with await CodingApplication.open(experience_options(tmp_path), provider=provider) as app:
@@ -75,9 +77,10 @@ async def test_successful_single_prompt_reviews_at_default_tool_cadence(tmp_path
         events = [event async for event in app.prompt("Inspect the project settings.")]
         receipt = events[-1]
         assert receipt.status == "succeeded"
-        assert sum(event.type == "tool_execution_start" for event in events) == iterations
+        # N tool rounds plus the final stop round; skill nudge counts each model round.
+        assert sum(event.type == "turn_start" for event in events) == iterations + 1
         services = context(app).services
-        if iterations < 10:
+        if iterations + 1 < 10:
             assert not await services.scope("session").state.get(
                 f"{REVIEW_TASK_PREFIX}{receipt.run_id}"
             )

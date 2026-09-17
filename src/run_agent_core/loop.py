@@ -249,7 +249,7 @@ async def run_agent_loop(
             assistant = None
             request_messages = _provider_context(request_messages, convert_to_llm)
             if before_model_request is not None:
-                await before_model_request(
+                replaced = await before_model_request(
                     ModelRequest(
                         current_model,
                         current_system,
@@ -258,6 +258,13 @@ async def run_agent_loop(
                         session_id,
                     )
                 )
+                if isinstance(replaced, ModelRequest):
+                    current_model = replaced.model
+                    current_system = replaced.system
+                    request_messages = list(replaced.messages)
+                    current_tools = list(replaced.tools)
+                    if replaced.session_id is not None:
+                        session_id = replaced.session_id
             async for event in _assistant_events(
                 provider=provider,
                 model=current_model,

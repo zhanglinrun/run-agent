@@ -18,7 +18,7 @@ from run_agent_coding.host.context_resources import (
     ResourceSelection,
     ResourceView,
 )
-from run_agent_coding.storage.sessions import canonical_json
+from run_agent_coding.storage.canonical import canonical_json
 from run_agent_coding.system_prompt import PromptSection
 from run_agent_core.types import JSONValue
 

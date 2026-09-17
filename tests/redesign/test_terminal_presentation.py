@@ -33,7 +33,7 @@ def make_terminal(app, width=80):
     output = StringIO()
     terminal = Terminal(
         app,
-        console=Console(file=output, width=width, color_system=None),
+        console=Console(file=output, width=width, height=25, color_system=None),
         terminal_input=DummyInput(),
         terminal_output=DummyOutput(),
     )

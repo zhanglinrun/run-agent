@@ -18,8 +18,9 @@ class RunAgentPaths:
     agents_home: Path = field(default_factory=lambda: Path.home() / ".agents")
 
     @property
-    def database_path(self) -> Path:
-        return self.home / "state.sqlite3"
+    def sessions_dir(self) -> Path:
+        """Return the user-level session directory."""
+        return self.home / "sessions"
 
     @property
     def logs_dir(self) -> Path:
@@ -88,3 +89,7 @@ class RunAgentPaths:
     def project_agents_prompts_dir(self, cwd: Path) -> Path:
         """Return the project-local `.agents/prompts` directory."""
         return self.project_agents_dir(cwd) / "prompts"
+
+    def project_session_dir(self, cwd: Path) -> Path:
+        """Return the workspace-local session directory for a project cwd."""
+        return self.project_run_agent_dir(cwd.resolve()) / "sessions"

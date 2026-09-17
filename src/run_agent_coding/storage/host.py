@@ -1,17 +1,18 @@
-"""Atomic extension bindings over the session host's existing database."""
+"""In-memory extension host services (no SQLite)."""
 
 from __future__ import annotations
 
-import sqlite3
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import asdict
 from hashlib import sha256
-from time import time
+from pathlib import Path
 
 from run_agent_coding.host.context_resources import ResourceView
 from run_agent_coding.host.contracts import (
     ArtifactRef,
     ContextSnapshot,
     ExtensionToken,
+    HeadChange,
     HistoryService,
     HostPublication,
     HostServices,
@@ -20,100 +21,81 @@ from run_agent_coding.host.contracts import (
     ServiceScope,
     SessionActivation,
     SnapshotService,
+    StateChange,
+    StateValue,
     TaskHandler,
     TaskService,
 )
-from run_agent_coding.host.evaluation import (
-    EvaluationService,
-    UnavailableEvaluation,
-)
+from run_agent_coding.host.evaluation import EvaluationService, UnavailableEvaluation
 from run_agent_coding.host.inference import InferenceService, UnavailableInference
 from run_agent_coding.host.maintenance import MaintenanceRegistry
-from run_agent_coding.storage.artifacts import ArtifactStore
-from run_agent_coding.storage.resources import NamespaceResources
-from run_agent_coding.storage.sessions import SqliteSessionRepository, canonical_json, decode_entry
-from run_agent_coding.storage.snapshots import read_snapshot
-from run_agent_coding.storage.sqlite import SqliteDatabase
-from run_agent_coding.storage.state import ExtensionRetired, NamespaceState, assert_extension
+from run_agent_coding.jsonl_storage import SessionWriter
+from run_agent_coding.storage.canonical import canonical_json
 from run_agent_coding.storage.tasks import BoundTaskService, LocalTaskManager
-from run_agent_coding.storage.unit_of_work import CommitParticipant, UnitOfWork
-from run_agent_core.session.contracts import AppendReceipt
-from run_agent_core.session.entries import CustomEntry, SessionEntry
+from run_agent_core.session.contracts import SessionConflict
+from run_agent_core.session.entries import CustomEntry, LeafEntry, SessionEntry
+from run_agent_core.types import JSONValue
+
+# Process-local backing stores, isolated by application home so two SessionManagers
+# that share ~/.run can see the same project/user state. Session scope stays per id.
+_SCOPE_STATE: dict[tuple[object, ...], dict[str, StateValue]] = {}
+_SCOPE_VERSIONS: dict[tuple[object, ...], dict[str, ResourceVersion]] = {}
+_SCOPE_HEADS: dict[tuple[object, ...], dict[str, str]] = {}
+_SCOPE_BLOBS: dict[tuple[object, ...], dict[str, bytes]] = {}
 
 
-class SqliteHostServices:
+class ExtensionRetired(SessionConflict):
+    """This source instance has been unloaded, replaced or closed."""
+
+
+class MemoryHostServices:
     def __init__(
         self,
-        database: SqliteDatabase,
-        artifacts: ArtifactStore,
         owner_id: str,
-        fault: Callable[[str], None] | None = None,
+        *,
+        isolation_key: str = "",
+        principal_id: str = "local",
     ) -> None:
-        self.database, self.artifacts, self.owner_id = database, artifacts, owner_id
-        self.fault = fault
-        self.tasks = LocalTaskManager(database)
+        self.owner_id = owner_id
+        self.isolation_key = isolation_key or owner_id
+        self.principal_id = principal_id
+        self.tasks = LocalTaskManager()
         self.maintenance = MaintenanceRegistry()
+        self.fault: Callable[[str], None] | None = None
+        self._writers: dict[str, SessionWriter] = {}
+        self._cwd_by_session: dict[str, str] = {}
 
-    def _hit_fault(self, point: str) -> None:
-        """Fire a named fault point; raising here aborts the enclosing transaction."""
-        if self.fault is not None:
-            self.fault(point)
+    def attach_writer(self, writer: SessionWriter, *, cwd: Path | None = None) -> None:
+        self._writers[writer.session_id] = writer
+        if cwd is not None:
+            self._cwd_by_session[writer.session_id] = str(cwd.resolve())
+
+    def _scope_key(self, session_id: str, source_id: str, scope: str) -> tuple[object, ...]:
+        cwd = self._cwd_by_session.get(session_id, "")
+        if scope == "session":
+            return (self.isolation_key, "session", session_id, source_id)
+        if scope == "project":
+            return (self.isolation_key, "project", cwd, source_id)
+        return (self.isolation_key, "user", self.principal_id, source_id)
 
     async def capture_resources(
         self, session_id: str, sources: Sequence[str], assert_active: Callable[[], None]
     ) -> Mapping[str, ResourceView]:
-        frozen_sources = tuple(sources)
-
-        def capture(connection: sqlite3.Connection) -> dict[str, ResourceView]:
-            assert_active()
-            session = connection.execute(
-                "SELECT * FROM sessions WHERE session_id=?", (session_id,)
-            ).fetchone()
-            if (
-                session is None
-                or session["owner_id"] != self.owner_id
-                or not session["owner_active"]
-                or session["owner_expires_at"] <= time()
-            ):
-                raise ExtensionRetired("Only the active host can capture extension resources")
-            scopes = _service_scopes(session["principal_id"], session["project_id"], session_id)
-            result: dict[str, ResourceView] = {}
-            total_bytes = 0
-            total_count = 0
-            for source in frozen_sources:
-                values: dict[ServiceScope, dict[str, ResourceVersion]] = {}
-                for name, scope in scopes.items():
-                    rows = connection.execute(
-                        "SELECT r.resource_key,r.head_version,length(CAST(v.payload_json AS BLOB)) "
-                        "FROM resources r LEFT JOIN resource_versions v ON "
-                        "v.source_id=r.source_id AND v.scope=r.scope AND "
-                        "v.resource_key=r.resource_key AND v.version=r.head_version "
-                        "WHERE r.source_id=? AND r.scope=? AND r.head_version IS NOT NULL "
-                        "ORDER BY r.resource_key LIMIT 1025",
-                        (source, scope),
-                    ).fetchall()
-                    total_count += len(rows)
-                    total_bytes += sum(row[2] or 0 for row in rows)
-                    if total_count > 1024 or total_bytes > 8 * 1024 * 1024:
-                        raise ValueError("Extension resource capture exceeds its size limit")
-                    scoped: dict[str, ResourceVersion] = {}
-                    for key, version, size in rows:
-                        if size is None:
-                            raise ValueError("Published extension resource version is missing")
-                        body = connection.execute(
-                            "SELECT payload_json FROM resource_versions WHERE source_id=? "
-                            "AND scope=? AND resource_key=? AND version=?",
-                            (source, scope, key, version),
-                        ).fetchone()[0]
-                        value = NamespaceResources._decode(version, body)
-                        if value.key != key:
-                            raise ValueError("Published extension resource key mismatch")
-                        scoped[key] = value
-                    values[name] = scoped
-                result[source] = ResourceView(values)
-            return result
-
-        return await self.database.run(capture)
+        assert_active()
+        views: dict[str, ResourceView] = {}
+        for source in sources:
+            scopes: dict[str, dict[str, ResourceVersion]] = {}
+            for name in ("session", "project", "user"):
+                key = self._scope_key(session_id, source, name)
+                heads = _SCOPE_HEADS.get(key, {})
+                versions = _SCOPE_VERSIONS.get(key, {})
+                scopes[name] = {
+                    resource_key: versions[version]
+                    for resource_key, version in heads.items()
+                    if version in versions
+                }
+            views[source] = ResourceView(scopes)
+        return views
 
     async def publish(
         self,
@@ -127,176 +109,86 @@ class SqliteHostServices:
         activation: SessionActivation | None = None,
         inference: InferenceService | None = None,
     ) -> HostPublication:
+        del expected_generation
         if (
             not generation
             or any(not source for source in sources)
             or len(set(sources)) != len(sources)
         ):
             raise ValueError("Invalid extension bindings")
-        frozen_sources = tuple(sources)
-
-        # One named unit of work: the extension rebind and its activation entry
-        # commit together, so a generation can never be live without its marker,
-        # nor a marker without its generation.
-        session_row: list[sqlite3.Row] = []
-        receipt: list[AppendReceipt | None] = []
-
-        def validate(connection: sqlite3.Connection) -> None:
-            assert_active()
-            session = connection.execute(
-                "SELECT * FROM sessions WHERE session_id=?",
-                (session_id,),
-            ).fetchone()
-            if (
-                session is None
-                or session["owner_id"] != self.owner_id
-                or not session["owner_active"]
-                or session["owner_expires_at"] <= time()
-            ):
-                raise ExtensionRetired("Only the active host can publish extension services")
-            owners = connection.execute(
-                "SELECT generation FROM extension_owners "
-                "WHERE session_id=? AND owner_id=? AND active=1",
-                (session_id, self.owner_id),
-            ).fetchall()
-            if any(row[0] != expected_generation for row in owners):
-                raise ExtensionRetired("The published extension generation changed")
-            session_row.append(session)
-
-        def rebind(connection: sqlite3.Connection) -> None:
-            connection.execute(
-                "UPDATE extension_owners SET active=0 WHERE session_id=?",
-                (session_id,),
+        assert_active()
+        writer = self._writers.get(session_id)
+        receipt = None
+        if activation is not None:
+            if writer is None:
+                raise RuntimeError("Session writer is not attached")
+            if self.fault is not None:
+                self.fault("activation_commit")
+            leaf = LeafEntry(parent_id=activation.entry.id, entry_id=activation.entry.id)
+            receipt = await writer.append_entries(
+                (activation.entry, leaf),
+                expected_head=activation.expected_head,
+                token=activation.token,
             )
-            for source in frozen_sources:
-                connection.execute(
-                    "INSERT INTO extension_owners VALUES (?,?,?,?,1) "
-                    "ON CONFLICT(session_id,source_id) DO UPDATE SET "
-                    "owner_id=excluded.owner_id,generation=excluded.generation,active=1",
-                    (session_id, source, self.owner_id, generation),
-                )
-
-        def interrupt_tasks(connection: sqlite3.Connection) -> None:
-            connection.execute(
-                "UPDATE extension_tasks SET status='interrupted',finished_at=? "
-                "WHERE session_id=? AND owner_id<>? "
-                "AND status IN ('queued','running','cancelling')",
-                (time(), session_id, self.owner_id),
-            )
-
-        def commit_activation(connection: sqlite3.Connection) -> None:
-            if activation is None:
-                return
-            if activation.token.session_id != session_id:
-                raise ExtensionRetired("Resource activation belongs to another session")
-            # The activation pointer is committed by the append below; a fault
-            # here must prevent that commit rather than leave a half-published
-            # version visible to the next session.
-            self._hit_fault("activation_commit")
-            receipt.append(
-                SqliteSessionRepository(self.database).append_in_transaction(
-                    connection,
-                    (activation.entry,),
-                    token=activation.token,
-                    branch_id=activation.branch_id,
-                    expected_head=activation.expected_head,
-                )
-            )
-
-        await UnitOfWork(self.database).commit(
-            CommitParticipant("extension-validation", validate),
-            CommitParticipant("extension-rebind", rebind),
-            CommitParticipant("task-interruption", interrupt_tasks),
-            CommitParticipant("activation-entry", commit_activation),
-        )
-        session = session_row[0]
-        principal_id, project_id = session["principal_id"], session["project_id"]
-        publication_receipt = receipt[0] if receipt else None
-        scopes = _service_scopes(principal_id, project_id, session_id)
         services: dict[str, HostServices] = {
             source: BoundHostServices(
-                self.database,
-                self.artifacts,
                 ExtensionToken(session_id, source, self.owner_id, generation),
-                scopes,
                 assert_active,
                 self.tasks,
                 dict((handlers or {}).get(source, {})),
+                self._scope_bundle(session_id, source, assert_active),
+                writer,
                 inference=inference,
                 maintenance=self.maintenance,
             )
-            for source in frozen_sources
+            for source in sources
         }
-        return HostPublication(services, publication_receipt)
+        return HostPublication(services, receipt)
+
+    def _scope_bundle(
+        self, session_id: str, source_id: str, assert_active: Callable[[], None]
+    ) -> dict[str, ScopedServices]:
+        scopes: dict[str, ScopedServices] = {}
+        for name in ("session", "project", "user"):
+            key = self._scope_key(session_id, source_id, name)
+            values = _SCOPE_STATE.setdefault(key, {})
+            versions = _SCOPE_VERSIONS.setdefault(key, {})
+            heads = _SCOPE_HEADS.setdefault(key, {})
+            blobs = _SCOPE_BLOBS.setdefault(key, {})
+            artifacts = MemoryArtifacts(blobs, assert_active)
+            scopes[name] = ScopedServices(
+                MemoryState(values, assert_active),
+                MemoryResources(versions, heads, blobs, assert_active),
+                artifacts,
+                sha256(canonical_json([source_id, name]).encode()).hexdigest(),
+            )
+        return scopes
 
     async def retire(self, session_id: str, generation: str) -> int:
-        def retire(connection: sqlite3.Connection) -> None:
-            connection.execute(
-                "UPDATE extension_owners SET active=0 "
-                "WHERE session_id=? AND owner_id=? AND generation=?",
-                (session_id, self.owner_id, generation),
-            )
-
-        error: Exception | None = None
-        try:
-            await self.database.run(retire, write=True)
-        except Exception as exc:
-            error = exc
-        remaining = await self.tasks.retire(session_id, generation)
-        if error is not None:
-            raise error
-        return remaining
-
-
-def _service_scopes(principal: str, project: str, session: str) -> dict[ServiceScope, str]:
-    return {
-        "session": canonical_json(["session", principal, session]),
-        "project": canonical_json(["project", principal, project]),
-        "user": canonical_json(["user", principal]),
-    }
+        return await self.tasks.retire(session_id, generation)
 
 
 class BoundHostServices:
     def __init__(
         self,
-        database: SqliteDatabase,
-        artifacts: ArtifactStore,
         token: ExtensionToken,
-        scopes: Mapping[ServiceScope, str],
         assert_active: Callable[[], None],
         tasks: LocalTaskManager,
         handlers: dict[str, TaskHandler],
+        scopes: dict[str, ScopedServices],
+        writer: SessionWriter | None,
         evaluation: EvaluationService | None = None,
         inference: InferenceService | None = None,
         maintenance: MaintenanceRegistry | None = None,
     ) -> None:
         self._assert_active = assert_active
         self._tasks = BoundTaskService(tasks, token, handlers, self, assert_active)
-        self._snapshots = BoundSnapshots(database, token, assert_active)
-        self._history = BoundHistory(database, token, assert_active)
-        self._evaluation: EvaluationService = (
-            evaluation if evaluation is not None else UnavailableEvaluation()
-        )
-        self._inference: InferenceService = (
-            inference if inference is not None else UnavailableInference()
-        )
+        self._snapshots = WriterSnapshots(writer)
+        self._history = WriterHistory(writer, assert_active)
+        self._evaluation: EvaluationService = evaluation or UnavailableEvaluation()
+        self._inference: InferenceService = inference or UnavailableInference()
         self._maintenance = maintenance or MaintenanceRegistry()
-        self._scopes: dict[ServiceScope, ScopedServices] = {}
-        for name, scope in scopes.items():
-            scoped_artifacts = ScopedArtifacts(database, artifacts, token, scope, assert_active)
-            self._scopes[name] = ScopedServices(
-                NamespaceState(database, token, scope, assert_active),
-                NamespaceResources(
-                    database,
-                    token,
-                    scope,
-                    artifacts,
-                    assert_active,
-                    scoped_artifacts.read,
-                ),
-                scoped_artifacts,
-                sha256(canonical_json([token.source_id, scope]).encode()).hexdigest(),
-            )
+        self._scopes = scopes
 
     def scope(self, scope: ServiceScope = "session") -> ScopedServices:
         self._assert_active()
@@ -321,7 +213,6 @@ class BoundHostServices:
 
     @property
     def evaluation(self) -> EvaluationService:
-        """Report the composed evaluation capability, or its explicit absence."""
         self._assert_active()
         return self._evaluation
 
@@ -332,113 +223,161 @@ class BoundHostServices:
 
     @property
     def inference(self) -> InferenceService:
-        """Report the composed completion capability, or its explicit absence."""
         self._assert_active()
         return self._inference
 
 
-class BoundHistory:
-    def __init__(
-        self, database: SqliteDatabase, token: ExtensionToken, assert_active: Callable[[], None]
-    ) -> None:
-        self._database, self._token, self._assert_active = database, token, assert_active
+class WriterHistory:
+    def __init__(self, writer: SessionWriter | None, assert_active: Callable[[], None]) -> None:
+        self._writer = writer
+        self._assert_active = assert_active
+
+    async def _entries(self) -> list[SessionEntry]:
+        if self._writer is None:
+            return []
+        return await self._writer.read_all()
 
     async def read_custom(self, entry_id: str) -> CustomEntry:
-        def read(connection: sqlite3.Connection) -> CustomEntry:
-            self._assert_active()
-            assert_extension(connection, self._token)
-            row = connection.execute(
-                "SELECT * FROM entries WHERE session_id=? AND entry_id=?",
-                (self._token.session_id, entry_id),
-            ).fetchone()
-            if row is None:
-                raise KeyError("Entry is missing or belongs to another session")
-            entry = decode_entry(row)
-            if not isinstance(entry, CustomEntry):
-                raise ValueError("Entry is not a custom record")
-            return entry
-
-        return await self._database.run(read)
+        self._assert_active()
+        for entry in await self._entries():
+            if entry.id == entry_id and isinstance(entry, CustomEntry):
+                return entry
+        raise KeyError("Entry is missing or belongs to another session")
 
     async def read_completed_run(self, run_id: str) -> Sequence[SessionEntry]:
-        def read(connection: sqlite3.Connection) -> tuple[SessionEntry, ...]:
-            self._assert_active()
-            assert_extension(connection, self._token)
-            rows = connection.execute(
-                "SELECT * FROM entries WHERE session_id=? AND run_id=? ORDER BY seq",
-                (self._token.session_id, run_id),
-            ).fetchall()
-            return tuple(decode_entry(row) for row in rows)
-
-        return await self._database.run(read)
+        del run_id
+        self._assert_active()
+        return tuple(await self._entries())
 
 
-class BoundSnapshots:
-    def __init__(
-        self, database: SqliteDatabase, token: ExtensionToken, assert_active: Callable[[], None]
-    ) -> None:
-        self._database, self._token, self._assert_active = database, token, assert_active
+class WriterSnapshots:
+    def __init__(self, writer: SessionWriter | None) -> None:
+        self._writer = writer
 
     async def read(self, snapshot_id: str) -> ContextSnapshot:
-        def read(connection: sqlite3.Connection) -> ContextSnapshot:
-            self._assert_active()
-            assert_extension(connection, self._token)
-            value = read_snapshot(connection, snapshot_id, session_id=self._token.session_id)
-            value.pop("created_at")
-            return ContextSnapshot(**value)
+        if self._writer is None:
+            raise KeyError(snapshot_id)
+        payload = self._writer.snapshots.get(snapshot_id)
+        if payload is None:
+            raise KeyError(snapshot_id)
+        numbered = await self._writer.read_all()
+        return ContextSnapshot(
+            snapshot_id,
+            self._writer.session_id,
+            self._writer.token.run_id,
+            self._writer.branch_id,
+            numbered[-1].id if numbered else None,
+            len(numbered),
+            "coding-input-v1",
+            "",
+            payload,
+        )
 
-        snapshot = await self._database.run(read)
+
+class MemoryState:
+    def __init__(self, values: dict[str, StateValue], assert_active: Callable[[], None]) -> None:
+        self._values = values
+        self._assert_active = assert_active
+
+    async def get(self, key: str) -> StateValue | None:
         self._assert_active()
-        return snapshot
+        return self._values.get(key)
+
+    async def list(self, *, prefix: str = "", limit: int = 100) -> list[StateValue]:
+        self._assert_active()
+        rows = [value for key, value in sorted(self._values.items()) if key.startswith(prefix)]
+        return rows[:limit]
+
+    async def compare_and_set(self, change: StateChange) -> StateValue:
+        self._assert_active()
+        current = self._values.get(change.key)
+        version = 0 if current is None else current.version
+        if version != change.expected_version:
+            raise SessionConflict("State version conflict")
+        value = StateValue(change.key, version + 1, change.value)
+        self._values[change.key] = value
+        return value
+
+    async def apply_batch(
+        self, states: Sequence[StateChange] = (), heads: Sequence[HeadChange] = ()
+    ) -> None:
+        del heads
+        for change in states:
+            await self.compare_and_set(change)
 
 
-class ScopedArtifacts:
+class MemoryResources:
     def __init__(
         self,
-        database: SqliteDatabase,
-        store: ArtifactStore,
-        token: ExtensionToken,
-        scope: str,
+        versions: dict[str, ResourceVersion],
+        heads: dict[str, str],
+        blobs: dict[str, bytes],
         assert_active: Callable[[], None],
     ) -> None:
-        self._database, self._store, self._token = database, store, token
-        self._owner_key = canonical_json([token.source_id, scope])
+        self._versions = versions
+        self._heads = heads
+        self._blobs = blobs
+        self._assert_active = assert_active
+
+    async def put_immutable(
+        self,
+        key: str,
+        content: str,
+        *,
+        parent_version: str | None = None,
+        metadata: dict[str, JSONValue] | None = None,
+        artifacts: Sequence[ArtifactRef] = (),
+    ) -> ResourceVersion:
+        self._assert_active()
+        refs = tuple(sorted(artifacts, key=lambda item: item.digest))
+        if len({ref.digest for ref in refs}) != len(refs):
+            raise ValueError("Duplicate resource artifacts")
+        for ref in refs:
+            if ref.digest not in self._blobs:
+                raise KeyError(f"Artifact is outside this source scope: {ref.digest}")
+        value = ResourceVersion(
+            key, "", parent_version, content, dict(metadata or {}), refs
+        )
+        body = asdict(value)
+        body.pop("version")
+        version = sha256(canonical_json(body).encode()).hexdigest()
+        value = ResourceVersion(
+            key, version, parent_version, content, dict(metadata or {}), refs
+        )
+        self._versions[version] = value
+        self._heads[key] = version
+        return value
+
+    async def resolve(self, key: str, version: str) -> ResourceVersion:
+        self._assert_active()
+        value = self._versions.get(version)
+        if value is None or value.key != key:
+            raise KeyError(key)
+        return value
+
+    async def snapshot(self) -> dict[str, str]:
+        self._assert_active()
+        return dict(self._heads)
+
+    async def advance_head(self, change: HeadChange) -> None:
+        self._assert_active()
+        self._heads[change.key] = change.version
+
+
+class MemoryArtifacts:
+    def __init__(self, blobs: dict[str, bytes], assert_active: Callable[[], None]) -> None:
+        self._blobs = blobs
         self._assert_active = assert_active
 
     async def put(self, content: bytes) -> ArtifactRef:
         self._assert_active()
-        if len(content) > 16 * 1024 * 1024:
-            raise ValueError("Extension artifacts are limited to 16 MiB")
-        ref = await self._store.put(content)
-
-        def register(connection: sqlite3.Connection) -> None:
-            self._assert_active()
-            assert_extension(connection, self._token)
-            connection.execute(
-                "INSERT OR IGNORE INTO artifacts VALUES (?,?,?)",
-                (ref.digest, ref.size, time()),
-            )
-            connection.execute(
-                "INSERT OR IGNORE INTO artifact_refs VALUES ('extension',?,?)",
-                (self._owner_key, ref.digest),
-            )
-
-        await self._database.run(register, write=True)
-        return ref
+        digest = sha256(content).hexdigest()
+        self._blobs[digest] = content
+        return ArtifactRef(digest, len(content))
 
     async def read(self, ref: ArtifactRef) -> bytes:
-        def authorize(connection: sqlite3.Connection) -> None:
-            self._assert_active()
-            assert_extension(connection, self._token)
-            row = connection.execute(
-                "SELECT 1 FROM artifact_refs WHERE owner_kind='extension' AND owner_key=? "
-                "AND digest=?",
-                (self._owner_key, ref.digest),
-            ).fetchone()
-            if row is None:
-                raise KeyError("Artifact does not belong to this extension scope")
-
-        await self._database.run(authorize)
-        result = await self._store.read(ref)
         self._assert_active()
-        return result
+        try:
+            return self._blobs[ref.digest]
+        except KeyError as exc:
+            raise KeyError(f"Artifact is outside this source scope: {ref.digest}") from exc

@@ -8,6 +8,7 @@ review worker's claim, and records exactly one outcome per run.
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
 from tests.redesign.test_coding_application import options
 from tests.redesign.test_experience_review_wiring import FailingProvider
 from tests.redesign.test_extension_tasks import completed
@@ -20,6 +21,11 @@ from run_agent_coding.host.contracts import TaskSpec
 REPO = Path(__file__).resolve().parents[2]
 EXPERIENCE = REPO / "src" / "run_agent_extensions" / "experience"
 REVIEW_HANDLER = "experience-review"
+
+
+@pytest.fixture(autouse=True)
+def _admit_failed_runs(monkeypatch):
+    monkeypatch.setenv("EXPERIENCE_REVIEW_ON_SIGNALS", "true")
 
 
 def experience_options(tmp_path):

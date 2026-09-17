@@ -5,8 +5,7 @@ import py_compile
 from dataclasses import replace
 
 import pytest
-from tests.redesign.test_coding_application import ReplyProvider, options
-from tests.redesign.test_context_snapshots import RecordingProvider
+from tests.redesign.test_coding_application import RecordingProvider, ReplyProvider, options
 from tests.redesign.test_host_services import context
 from tests.redesign.test_skill_packages import resource_events
 
@@ -71,7 +70,7 @@ async def test_explicit_refresh_resume_and_branch_use_exact_versions(tmp_path, r
         await app.command("/reload")
         assert "memory version one" in app.session.system_prompt
         first = [event async for event in app.prompt("first task")][-1]
-        snapshot = await app.session.storage.repository.get_snapshot(first.snapshot_id)
+        snapshot = await app.session.storage.get_snapshot(first.snapshot_id)
         resource = snapshot["payload"]["resource_inputs"]["extension_resources"]
         assert resource["contributions"][0]["resource"]["metadata"]["title"] == "MEMORY.md"
         await publish(app, "memory version two")

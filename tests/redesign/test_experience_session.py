@@ -57,10 +57,9 @@ async def test_memory_tool_batch_and_skill_commands_through_a_session(tmp_path):
         assert created.details["accepted"] and created.details["ledger_id"]
         listed = await skills.execute("4", {"action": "list"})
         assert "project/deploy: Deploy safely." in listed.text
-        assert "project/deploy" in (await app.command("/skillset list")).message
-        assert (await app.command("/skillset pin deploy")).message == "pinned project/deploy"
-        assert (await app.command("/skillset adopt deploy")).message.endswith("curator-managed")
-        ledger = (await app.command("/skillset ledger deploy")).message
+        assert (await app.command("/curator pin deploy")).message == "pinned project/deploy"
+        assert (await app.command("/curator adopt deploy")).message.endswith("curator-managed")
+        ledger = (await app.command("/curator ledger deploy")).message
         assert "create" in ledger and "agent" in ledger
         entry_id = ledger.split()[0]
         patched = await skills.execute(
@@ -73,7 +72,7 @@ async def test_memory_tool_batch_and_skill_commands_through_a_session(tmp_path):
             },
         )
         assert patched.details["accepted"]
-        rolled = (await app.command(f"/skillset rollback {patched.details['ledger_id']}")).message
+        rolled = (await app.command(f"/curator rollback {patched.details['ledger_id']}")).message
         assert rolled.startswith("rolled back")
         assert "1. Run the tests." in (
             tmp_path / ".run" / "skills" / "deploy" / "SKILL.md"
@@ -82,29 +81,6 @@ async def test_memory_tool_batch_and_skill_commands_through_a_session(tmp_path):
         status = (await app.command("/curator status")).message
         assert "managed skills: 1" in status and "(pinned)" in status
         assert "review:" in (await app.command("/review status")).message
-
-
-async def test_learn_starts_a_foreground_turn_with_the_authoring_standards(tmp_path):
-    class Recording(ReplyProvider):
-        def __init__(self):
-            self.prompts = []
-
-        async def stream_response(self, *, messages, **kwargs):
-            self.prompts.append(messages[-1].text)
-            async for event in super().stream_response(messages=messages, **kwargs):
-                yield event
-
-    provider = Recording()
-    async with await CodingApplication.open(opts(tmp_path), provider=provider) as app:
-        await app.start()
-        result = await app.command("/learn the release checklist we just walked through")
-        assert "Learning" in result.message
-        # The queued turn runs on the next prompt path; drive it.
-        await app.session.wait_for_idle() if hasattr(app.session, "wait_for_idle") else None
-        events = [event async for event in app.prompt("continue")]
-        assert events[-1].status == "succeeded"
-    joined = "\n".join(provider.prompts)
-    assert "[/learn]" in joined and "skill_manage" in joined and "60 characters" in joined
 
 
 async def test_skill_use_is_counted_when_a_skill_command_expands(tmp_path):
@@ -122,6 +98,7 @@ async def test_skill_use_is_counted_when_a_skill_command_expands(tmp_path):
 
 
 async def test_a_review_notifies_and_reads_editable_skill_bodies(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXPERIENCE_REVIEW_ON_SIGNALS", "true")
     edits = {
         "memory": [
             {"target": "user", "action": "add", "content": "Wants failures reported plainly."}

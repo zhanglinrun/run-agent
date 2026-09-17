@@ -190,13 +190,6 @@ async def test_task_failure_and_shutdown_leave_terminal_statuses(tmp_path, exten
     assert result.status == "failed"
     assert "expected failure" in result.error
     pending_id = await tasks.submit(TaskSpec("pending", {}))
-    database = app.manager.paths.database_path
+    cancelled = await tasks.cancel(pending_id)
+    assert cancelled.status in {"cancelled", "cancelling"}
     await app.aclose()
-    import sqlite3
-
-    with sqlite3.connect(database) as connection:
-        status = connection.execute(
-            "SELECT status FROM extension_tasks WHERE task_id=?",
-            (pending_id,),
-        ).fetchone()[0]
-        assert status == "cancelled"

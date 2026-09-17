@@ -622,7 +622,7 @@ class SkillManager:
         if self.usage[scope].is_pinned(name):
             raise SkillWriteError(
                 f"Skill {name!r} is pinned and cannot be deleted by skill_manage. Ask the user "
-                f"to run `/skillset unpin {name}` if they want to delete it. Patches and edits "
+                f"to run `/curator unpin {name}` if they want to delete it. Patches and edits "
                 "are allowed on pinned skills; only deletion is blocked."
             )
         if absorbed_into is None:
@@ -694,7 +694,7 @@ class SkillManager:
                 raise LearnerOwnedAsset(
                     f"Refusing background {action} for pinned skill {name!r}: pinned skills are "
                     "off-limits to autonomous maintenance. Ask the user to run "
-                    f"`/skillset unpin {name}` if they want it changed."
+                    f"`/curator unpin {name}` if they want it changed."
                 )
             if not usage.is_curator_managed(name):
                 record = usage.load().get(name)
@@ -706,7 +706,7 @@ class SkillManager:
                 raise LearnerOwnedAsset(
                     f"Refusing background {action} for skill {name!r}: the skill is not "
                     f"curator-managed ({detail}). user-owned skills are off-limits to "
-                    f"autonomous curation. Run `/skillset adopt {name}` to opt it in."
+                    f"autonomous curation. Run `/curator adopt {name}` to opt it in."
                 )
             if read_check:
                 target = self._resolve(scope, name, path_hint)

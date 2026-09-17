@@ -1,6 +1,5 @@
 import asyncio
 import json
-import sqlite3
 import sys
 from dataclasses import replace
 
@@ -73,7 +72,7 @@ class EvaluatedProvider:
 
 
 @pytest.mark.parametrize("mode", ["success", "error"])
-async def test_eval_uses_real_sqlite_application_and_failure_keeps_cost(
+async def test_eval_uses_real_application_and_failure_keeps_cost(
     tmp_path, monkeypatch, mode
 ):
     providers = []
@@ -99,19 +98,12 @@ async def test_eval_uses_real_sqlite_application_and_failure_keeps_cost(
     assert trial.metadata["cost"] > 0
     assert trial.metadata["calls"] >= 1
     assert reduce_trials([trial]).total_cost == trial.metadata["cost"]
-    with sqlite3.connect(trial.metadata["database"]) as connection:
-        status = connection.execute("SELECT status FROM executions").fetchone()[0]
-        assert status == ("succeeded" if mode == "success" else "failed")
-        assert connection.execute("SELECT count(*) FROM entries").fetchone()[0] > 0
-        assert (
-            connection.execute(
-                "SELECT count(*) FROM observations WHERE stream=?",
-                (trial.metadata["call_stream"],),
-            ).fetchone()[0]
-            >= 2
-        )
+    observations = tmp_path / "state" / "logs" / "observations.jsonl"
+    assert observations.is_file()
+    body = observations.read_text(encoding="utf-8")
+    assert trial.metadata["call_stream"] in body
+    assert trial.metadata["eval_input"].endswith("eval-input.json")
     assert all(provider.closed for provider in providers)
-    assert not list(tmp_path.rglob("*.jsonl"))
 
 
 async def test_cancelled_eval_archives_durable_partial_cost(tmp_path, monkeypatch):
@@ -176,7 +168,7 @@ async def test_switching_provider_preserves_ledger_and_closes_old_instance(tmp_p
         await manager.aclose()
 
 
-async def test_trace_benchmark_archives_closed_sqlite_and_durable_timings(tmp_path):
+async def test_trace_benchmark_archives_jsonl_and_durable_timings(tmp_path):
     samples, artifacts = await _trace_samples(
         tmp_path,
         RuntimeBenchmarkConfig(trace_repeats=2, tool_calls=2),
@@ -185,8 +177,5 @@ async def test_trace_benchmark_archives_closed_sqlite_and_durable_timings(tmp_pa
     assert len(samples["traced_duration_ms"]) == 2
     assert all(count > 0 for count in samples["span_counts"])
     assert samples["database_bytes"] == artifacts[0].stat().st_size
-    assert not artifacts[0].with_name(artifacts[0].name + "-wal").exists()
-    with sqlite3.connect(artifacts[0]) as connection:
-        assert connection.execute("SELECT count(*) FROM observations").fetchone()[0] == sum(
-            samples["span_counts"],
-        )
+    lines = [line for line in artifacts[0].read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(lines) == sum(samples["span_counts"])

@@ -57,8 +57,8 @@ def test_prepare_refuses_old_artifacts(tmp_path):
 
 def test_required_extension_policy_and_secret_redaction():
     assert set(runner.EXTENSIONS) == {"mcp", "experience", "permission_policy", "plan_mode"}
-    assert runner.POLICY["RUN_AGENT_PERMISSION_MODE"] == "guarded"
-    assert runner.POLICY["RUN_AGENT_MCP_SERVERS"] == "{}"
+    assert runner.POLICY["RUN_AGENT_PERMISSION_MODE"] == "yolo"
+    assert "RUN_AGENT_MCP_SERVERS" not in runner.POLICY
     assert runner.POLICY["EXPERIENCE_REVIEW_ENABLED"] == "true"
     assert (
         runner.redact("credential-secret", {"OPENAI_API_KEY": "credential-secret"}) == "[REDACTED]"

@@ -1,7 +1,7 @@
 """Run verification steps in order and stop at the first failure.
 
 Steps execute serially and stream their raw output. Serial execution is deliberate:
-the suite shares one SQLite state directory and its writer, so parallel steps would
+the suite shares one state directory, so parallel steps would
 race on real durable state rather than on isolated fixtures.
 """
 

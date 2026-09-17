@@ -102,6 +102,8 @@ class CommandResult:
     resume_picker_requested: bool = False
     prompts_picker_requested: bool = False
     tree_picker_requested: bool = False
+    rewind_entry_id: str | None = None
+    fork_entry_id: str | None = None
     model_picker_requested: bool = False
     model_selection_provider: str | None = None
     model_selection_model: str | None = None
@@ -310,6 +312,24 @@ def create_default_command_registry() -> CommandRegistry:
     )
     registry.register(
         SlashCommand(
+            name="rewind",
+            usage="/rewind <entry-id>",
+            description="Move the current pointer back; abandoned branches stay in the file.",
+            handler=_rewind_command,
+            search_terms=("back", "pointer", "history"),
+        )
+    )
+    registry.register(
+        SlashCommand(
+            name="fork",
+            usage="/fork <entry-id>",
+            description="Copy the path to an entry into a new session and switch to it.",
+            handler=_fork_command,
+            search_terms=("copy", "branch", "new session"),
+        )
+    )
+    registry.register(
+        SlashCommand(
             name="name",
             usage="/name <new name>",
             description="Rename the current session.",
@@ -396,7 +416,7 @@ def _trace_command(context: CommandContext) -> CommandResult:
             handled=True, message="Tracing is off. Start with --trace to record spans."
         )
     message = (
-        f"Trace database: {recorder.path}\nSession: {recorder.session_id}\n"
+        f"Trace log: {recorder.path}\nSession: {recorder.session_id}\n"
         f"Recorded spans: {recorder.span_count}; dropped spans: {recorder.dropped_count}"
     )
     return CommandResult(handled=True, message=message)
@@ -570,6 +590,20 @@ def _tree_command(context: CommandContext) -> CommandResult:
     if context.args:
         return CommandResult(handled=True, message="Usage: /tree")
     return CommandResult(handled=True, tree_picker_requested=True)
+
+
+def _rewind_command(context: CommandContext) -> CommandResult:
+    entry_id = context.args.strip()
+    if not entry_id:
+        return CommandResult(handled=True, message="Usage: /rewind <entry-id>")
+    return CommandResult(handled=True, rewind_entry_id=entry_id)
+
+
+def _fork_command(context: CommandContext) -> CommandResult:
+    entry_id = context.args.strip()
+    if not entry_id:
+        return CommandResult(handled=True, message="Usage: /fork <entry-id>")
+    return CommandResult(handled=True, fork_entry_id=entry_id)
 
 
 def _name_command(context: CommandContext) -> CommandResult:

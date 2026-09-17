@@ -45,11 +45,19 @@ from run_agent_coding.events import (
     AutoRetryStartEvent,
     CodingSessionEvent,
     CompactionEndEvent,
+    CompactionReason,
     CompactionStartEvent,
     QueueUpdateEvent,
     SessionAgentEndEvent,
     SessionInfoChangedEvent,
-    ThinkingLevelChangedEvent,
+    ThinkingLevelSelectEvent,
+)
+from run_agent_coding.extensions.api import (
+    ModelSelectEvent,
+    ResourcesDiscoverResult,
+    SessionCompactEvent,
+    SessionCompactFailedEvent,
+    SessionTreeEvent,
 )
 from run_agent_coding.extensions.provider_registry import DynamicProviderRegistry
 from run_agent_coding.extensions.providers import DynamicProvider, ProviderModel
@@ -66,6 +74,7 @@ from run_agent_coding.host.inference import (
 from run_agent_coding.host.inputs import CommittedInput, InputBoundary, InputSource
 from run_agent_coding.host.processes import ProcessRecorder, ProcessSupervisor
 from run_agent_coding.host.tool_versions import tool_manifest
+from run_agent_coding.jsonl_storage import SessionWriter
 from run_agent_coding.paths import RunAgentPaths
 from run_agent_coding.project_trust import (
     CanonicalProjectPath,
@@ -79,6 +88,7 @@ from run_agent_coding.project_trust import (
 )
 from run_agent_coding.prompt_templates import (
     PromptTemplate,
+    _load_prompt_templates_from_dir_with_diagnostics,
     expand_prompt_template_command,
     load_prompt_templates_with_diagnostics,
 )
@@ -118,9 +128,13 @@ from run_agent_coding.session_manager import (
     normalize_session_name,
 )
 from run_agent_coding.session_stats import SessionStats, calculate_session_stats
-from run_agent_coding.skills import Skill, expand_skill_command, load_skills_with_diagnostics
-from run_agent_coding.storage.processes import SqliteProcessJournal
-from run_agent_coding.storage.sessions import canonical_json
+from run_agent_coding.skills import (
+    Skill,
+    _load_skills_from_dir_with_diagnostics,
+    expand_skill_command,
+    load_skills_with_diagnostics,
+)
+from run_agent_coding.storage.canonical import canonical_json
 from run_agent_coding.storage.settle import settle
 from run_agent_coding.storage.skill_packages import SkillPackageStore
 from run_agent_coding.system_prompt import (
@@ -148,20 +162,26 @@ from run_agent_core.messages import (
     UserMessage,
     message_text,
 )
-from run_agent_core.provider import CancellationToken, ModelProvider, ModelRequest
+from run_agent_core.provider import (
+    CancellationToken,
+    ModelProvider,
+    ModelRequest,
+    bind_provider_http_hooks,
+)
 from run_agent_core.provider_events import AssistantDoneEvent, AssistantErrorEvent, TextDeltaEvent
 from run_agent_core.session import (
     BranchSummaryEntry,
     CompactionEntry,
     CustomEntry,
     LabelEntry,
+    LeafEntry,
     MessageEntry,
     ModelChangeEntry,
     SessionInfoEntry,
     SessionState,
-    SessionStorage,
     ThinkingLevelChangeEntry,
     load_session_entries,
+    resolve_active_leaf_id,
 )
 from run_agent_core.session.contracts import (
     AppendReceipt,
@@ -173,7 +193,7 @@ from run_agent_core.session.contracts import (
     StaleRunToken,
 )
 from run_agent_core.session.entries import SessionEntry
-from run_agent_core.session.tree import SessionTreeError, path_to_entry
+from run_agent_core.session.tree import SessionTree, SessionTreeError, path_to_entry
 from run_agent_core.tool_history import ToolHistoryRepair, repair_tool_history
 from run_agent_core.tools import AgentTool, AgentToolResult
 from run_agent_core.types import JSONValue
@@ -329,6 +349,7 @@ class _PendingMessageWrite:
 
     message: AgentMessage
     message_entry: MessageEntry
+    leaf_entry: LeafEntry
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,7 +358,7 @@ class CodingSessionConfig:
 
     provider: ModelProvider | None
     model: str
-    storage: SessionStorage
+    storage: SessionWriter
     cwd: Path
     telemetry: TelemetrySink
     host_services: HostServicesRegistry
@@ -467,7 +488,7 @@ class CodingSession:
     ) -> None:
         self._config = config
         self._state = state
-        self._entries: dict[str, SessionEntry] = {entry.id: entry for entry in state.entries}
+        self._tree = SessionTree(state.entries, current_id=last_parent_id)
         self._session_title: str | None = None
         self._write_context: ContextVar[RunToken | None] = ContextVar(
             "session_writer", default=None
@@ -488,7 +509,6 @@ class CodingSession:
         self._processes = processes or ProcessSupervisor()
         self._processes.recorder_factory = self._process_recorder
         self._session_start_pending = False
-        self._last_parent_id = last_parent_id
         self._pending_initial_entries = pending_initial_entries
         self._prepared_entries: list[SessionEntry] = list(pending_initial_entries)
         self._skills = skills
@@ -554,6 +574,22 @@ class CodingSession:
         self._attach_persistence_listener()
         self._attach_trace_listener()
 
+    @property
+    def _entries(self) -> dict[str, SessionEntry]:
+        return self._tree.entries
+
+    @_entries.setter
+    def _entries(self, value: dict[str, SessionEntry]) -> None:
+        self._tree.entries = value
+
+    @property
+    def _last_parent_id(self) -> str | None:
+        return self._tree.current_id
+
+    @_last_parent_id.setter
+    def _last_parent_id(self, value: str | None) -> None:
+        self._tree.current_id = value
+
     def _install_runtime_callbacks(self) -> None:
         if not isinstance(self._harness, AgentHarness):
             return
@@ -569,11 +605,11 @@ class CodingSession:
     async def _read_host_input(self) -> tuple[AgentMessage, ...]:
         source = self._config.input_source
         assert source is not None
-        prefix = tuple(entry.model_copy(deep=True) for entry in self._completion_entries)
+        prefix: tuple[SessionEntry, ...] = ()
         boundary = InputBoundary(
             self._writer_token(),
             self.storage.branch_id,
-            self._completion_expected_head if prefix else self._last_parent_id,
+            self._last_parent_id,
             prefix,
         )
 
@@ -601,9 +637,14 @@ class CodingSession:
             raise asyncio.CancelledError
         return tuple(messages)
 
-    async def _record_model_context(self, request: ModelRequest, *, purpose: str = "agent") -> None:
+    async def _record_model_context(
+        self, request: ModelRequest, *, purpose: str = "agent"
+    ) -> ModelRequest | None:
         """Commit the exact model input before handing it to a physical Provider."""
+        bind_provider_http_hooks(self._extension_runtime)
+        request = await self._extension_runtime.apply_before_provider_request(request)
         await self._record_context_snapshot(request, purpose=purpose)
+        return request
 
     async def _record_context_snapshot(
         self,
@@ -749,6 +790,14 @@ class CodingSession:
             return
         entry = activation.entry.model_copy(update={"seq": receipt.sequences[0]})
         self._entries[entry.id] = entry
+        if len(receipt.entry_ids) > 1:
+            leaf = LeafEntry(
+                id=receipt.entry_ids[1],
+                parent_id=entry.id,
+                entry_id=entry.id,
+                seq=receipt.sequences[1] if len(receipt.sequences) > 1 else None,
+            )
+            self._entries[leaf.id] = leaf
         self._resource_snapshot_id = entry.id
         self._last_parent_id = receipt.head_id
         self._state = SessionState.from_entries(
@@ -765,6 +814,34 @@ class CodingSession:
         self._append_system_prompt_paths = resources.append_system_prompt_paths
         self._resource_diagnostics = resources.diagnostics
         self._runtime_input_signature = ()
+        self._refresh_runtime_inputs()
+
+    def _ingest_discovered_resources(self, discovered: ResourcesDiscoverResult) -> None:
+        """Merge extension-contributed skill/prompt directories into this session."""
+        if not discovered.skill_paths and not discovered.prompt_paths:
+            return
+        diagnostics = list(self._resource_diagnostics)
+        if discovered.skill_paths:
+            skills_by_name = {skill.name: skill for skill in self._skills}
+            for raw_path in discovered.skill_paths:
+                extra, extra_diagnostics = _load_skills_from_dir_with_diagnostics(Path(raw_path))
+                diagnostics.extend(extra_diagnostics)
+                for skill in extra:
+                    skills_by_name[skill.name] = skill
+            self._skills = tuple(sorted(skills_by_name.values(), key=lambda skill: skill.name))
+        if discovered.prompt_paths:
+            templates_by_name = {template.name: template for template in self._prompt_templates}
+            for raw_path in discovered.prompt_paths:
+                extra_templates, extra_diagnostics = (
+                    _load_prompt_templates_from_dir_with_diagnostics(Path(raw_path))
+                )
+                diagnostics.extend(extra_diagnostics)
+                for template in extra_templates:
+                    templates_by_name[template.name] = template
+            self._prompt_templates = tuple(
+                sorted(templates_by_name.values(), key=lambda template: template.name)
+            )
+        self._resource_diagnostics = tuple(diagnostics)
         self._refresh_runtime_inputs()
 
     async def _before_tool_call(self, call: ToolCall) -> BeforeToolCallResult:
@@ -866,12 +943,18 @@ class CodingSession:
                 parent_id=model.id,
                 thinking_level=_initial_thinking_level_for_config(config, model=initial_model),
             )
-            entries = [info, model, thinking]
-            pending_initial_entries = (info, model, thinking)
+            entries = [
+                info,
+                model,
+                thinking,
+                LeafEntry(parent_id=thinking.id, entry_id=thinking.id),
+            ]
+            pending_initial_entries = tuple(entries)
 
-        state = SessionState.from_entries(
-            entries, leaf_id=(entries[-1].id if pending_initial_entries else head.entry_id)
-        )
+        leaf_id = resolve_active_leaf_id(entries)
+        if leaf_id is None:
+            leaf_id = head.entry_id
+        state = SessionState.from_entries(entries, leaf_id=leaf_id)
         unfiltered_resource_paths = resource_paths_with_cwd(config.resource_paths, config.cwd)
 
         # A runtime is cwd-bound because it may contain project registrations.
@@ -1413,6 +1496,13 @@ class CodingSession:
         """Move the active leaf to a previous entry, preserving existing history."""
         if self.is_running:
             raise RuntimeError(TREE_RUNNING_MESSAGE)
+        if await self._extension_runtime.emit_session_before_tree(
+            entry_id,
+            old_leaf_id=self._last_parent_id,
+            user_wants_summary=summarize,
+        ):
+            raise ValueError("Session tree navigation cancelled by extension")
+        old_leaf_id = self._last_parent_id
         await self._flush_pending_message_writes(context=self._diagnostic_context())
         entries = await self._read_session_entries()
         by_id = {entry.id: entry for entry in entries}
@@ -1481,8 +1571,9 @@ class CodingSession:
             extension_resources=extension_resources,
         )
         marker = activation.entry.model_copy(update={"parent_id": target_id})
+        leaf = LeafEntry(parent_id=marker.id, entry_id=marker.id)
         branch_entries: tuple[SessionEntry, ...] = (
-            (summary_entry, marker) if summary_entry is not None else (marker,)
+            (summary_entry, marker, leaf) if summary_entry is not None else (marker, leaf)
         )
         await self.storage.fork(branch_point, token=self.storage.token, entries=branch_entries)
         await settle(self._reload_entry_cache())
@@ -1507,11 +1598,66 @@ class CodingSession:
         if history_repair is not None:
             suffix += " and repaired malformed tool history"
         if input_prefill is not None:
-            return SessionTreeBranchResult(
+            result = SessionTreeBranchResult(
                 message=f"Branched session before {entry_id}{suffix}.",
                 input_prefill=input_prefill,
             )
-        return SessionTreeBranchResult(message=f"Branched session at {target_id}{suffix}.")
+        else:
+            result = SessionTreeBranchResult(message=f"Branched session at {target_id}{suffix}.")
+        await self._extension_runtime.emit_event(
+            SessionTreeEvent(new_leaf_id=target_id, old_leaf_id=old_leaf_id)
+        )
+        return result
+
+    async def rewind(self, entry_id: str) -> str:
+        """Move the current pointer; abandoned branches stay in the JSONL file."""
+        self._require_idle("rewind")
+        await self._flush_pending_message_writes(context=self._diagnostic_context())
+        if entry_id not in self._entries:
+            raise ValueError(f"Unknown session entry: {entry_id}")
+        if not self._tree.after_compaction_floor(entry_id):
+            raise ValueError(
+                f"Cannot rewind past compaction floor {self._tree.compaction_floor()}: "
+                f"entry {entry_id} is prior to compacted history"
+            )
+        old_leaf_id = self._last_parent_id
+        self._tree.rewind(entry_id)
+        await self._append_session_batch(
+            (LeafEntry(parent_id=entry_id, entry_id=entry_id),)
+        )
+        self._last_parent_id = entry_id
+        await self._refresh_persisted_state(leaf_id=entry_id)
+        history_repair = await self._persist_active_tool_history_repairs()
+        if history_repair is None:
+            self._harness.replace_messages(self._state.messages)
+        self._invalidate_context_usage_cache()
+        await self._extension_runtime.emit_event(
+            SessionTreeEvent(new_leaf_id=entry_id, old_leaf_id=old_leaf_id)
+        )
+        return f"Rewound to {entry_id}."
+
+    async def fork_session(self, entry_id: str) -> str:
+        """Copy root→entry into a new session file and switch to it."""
+        self._require_idle("fork")
+        await self._flush_pending_message_writes(context=self._diagnostic_context())
+        if entry_id not in self._entries:
+            raise ValueError(f"Unknown session entry: {entry_id}")
+        manager = self._config.session_manager
+        if manager is None:
+            raise ValueError("Session manager is not available")
+        path = list(self._tree.path(entry_id))
+        path = [entry for entry in path if not isinstance(entry, LeafEntry)]
+        if not any(isinstance(entry, SessionInfoEntry) for entry in path):
+            path.insert(0, SessionInfoEntry(cwd=str(self.cwd)))
+        record = await manager.fork_session(
+            cwd=self.cwd,
+            model=self.model,
+            provider_name=self._provider_name,
+            title=self._session_title,
+            entries=path,
+            current_id=entry_id,
+        )
+        return await self.resume(record.id)
 
     @property
     def thinking_level(self) -> ThinkingLevel:
@@ -1556,7 +1702,7 @@ class CodingSession:
         return provider_thinking_unavailable_reason(provider, model=self.model)
 
     @property
-    def storage(self) -> SessionStorage:
+    def storage(self) -> SessionWriter:
         """Return the backing session storage."""
         return self._config.storage
 
@@ -1566,7 +1712,7 @@ class CodingSession:
 
     async def export(self, destination: Path | None = None, *, format: str | None = None) -> Path:
         if format not in {None, "html"}:
-            raise ValueError("Session reports use HTML; use a database backup for recovery")
+            raise ValueError("Session reports use HTML; use a session backup for recovery")
         output = destination or self.cwd / f"session-{self.session_id}.html"
         return export_session_html(
             await self._read_session_entries(),
@@ -1761,6 +1907,12 @@ class CodingSession:
         await self._extension_runtime.emit_session_start(
             "resume" if self._resource_start_reason == "resume" else "startup"
         )
+        self._ingest_discovered_resources(
+            await self._extension_runtime.discover_resources(
+                self.cwd,
+                "startup",
+            )
+        )
         self._commit_project_trust_resolution()
         self._session_start_pending = False
 
@@ -1931,6 +2083,7 @@ class CodingSession:
         if self.model == model:
             return
 
+        previous_model = self.model
         self._harness.config.model = model
         self._sync_thinking_level_to_active_model()
         self._refresh_runtime_provider()
@@ -1943,6 +2096,9 @@ class CodingSession:
         await self._append_session_batch((entry,))
         self._last_parent_id = entry.id
         await self._refresh_persisted_state(leaf_id=entry.id)
+        await self._extension_runtime.emit_event(
+            ModelSelectEvent(model=model, previous_model=previous_model, source="restore")
+        )
 
     async def select_provider_model(self, choice: ModelChoice) -> ModelSelectionResult:
         """Switch provider/model with candidate-first durable publication.
@@ -1957,6 +2113,7 @@ class CodingSession:
         if choice.provider_name == self.provider_name and choice.model == self.model:
             return ModelSelectionResult(choice, changed=False)
 
+        previous_model = self.model
         candidate: ClosableModelProvider | None = None
         selected_dynamic: DynamicProvider | None = None
         selected_config: ProviderConfig | None = None
@@ -2064,6 +2221,13 @@ class CodingSession:
         if old_provider is not candidate:
             with suppress(Exception):
                 await self._close_replaced_provider(old_provider)
+        await self._extension_runtime.emit_event(
+            ModelSelectEvent(
+                model=choice.model,
+                previous_model=previous_model,
+                source="set",
+            )
+        )
         return ModelSelectionResult(choice, changed=True)
 
     def set_model_choice(self, choice: ModelChoice) -> None:
@@ -2155,7 +2319,9 @@ class CodingSession:
         self._last_parent_id = entry.id
 
         await self._refresh_persisted_state(leaf_id=entry.id)
-        await self._extension_runtime.emit_event(ThinkingLevelChangedEvent(level=normalized))
+        await self._extension_runtime.emit_event(
+            ThinkingLevelSelectEvent(level=normalized, previous_level=previous)
+        )
         return f"Thinking mode: {normalized}"
 
     async def cycle_thinking_level(self) -> str:
@@ -2520,6 +2686,9 @@ class CodingSession:
             previous_ui.notify(cleanup_notice, level="warning")
 
         await settle(staged_runtime.emit_session_start("reload"))
+        self._ingest_discovered_resources(
+            await staged_runtime.discover_resources(self.cwd, "reload")
+        )
 
         return CodingReloadSummary(
             skills=_category_summary(before_skills, _skill_signatures(resources.skills)),
@@ -2564,6 +2733,10 @@ class CodingSession:
         record = await manager.get_session(session_id)
         if record is None:
             raise ValueError(f"Unknown session: {session_id}")
+        if await self._extension_runtime.emit_session_before_switch(
+            "resume", target_session_id=session_id
+        ):
+            raise ValueError("Session switch cancelled by extension")
 
         provider_name = self._provider_name
         runtime_provider_config = self._runtime_provider_config
@@ -2694,6 +2867,8 @@ class CodingSession:
     async def new_session(self) -> str:
         """Replace this session's active state with a pending unindexed session."""
         self._require_idle("start a new session")
+        if await self._extension_runtime.emit_session_before_switch("new"):
+            raise ValueError("Session switch cancelled by extension")
         await self._flush_pending_message_writes(context=self._diagnostic_context())
         manager = self._config.session_manager
         if manager is None:
@@ -2809,7 +2984,7 @@ class CodingSession:
         old_runtime.retire()
         self._config = replacement._config
         self._state = replacement._state
-        self._entries = replacement._entries
+        self._tree = replacement._tree
         self._session_title = replacement._session_title
         self._completion_entries = replacement._completion_entries
         self._last_snapshot_id = replacement._last_snapshot_id
@@ -2883,26 +3058,43 @@ class CodingSession:
             self._extension_runtime.ui.notify(cleanup_notice, level="warning")
         await old_storage.aclose()
         await settle(self._extension_runtime.emit_session_start(reason))
+        self._ingest_discovered_resources(
+            await self._extension_runtime.discover_resources(
+                self.cwd,
+                "startup",
+            )
+        )
 
     async def compact_detailed(self, instructions: str | None = None) -> ManualCompactionResult:
         """Compact older context while preserving a real recent-entry boundary."""
         await self._flush_pending_message_writes(context=self._diagnostic_context())
+        if await self._extension_runtime.emit_session_before_compact(
+            "manual", custom_instructions=instructions
+        ):
+            raise ValueError("Compaction cancelled by extension")
         rows = self._active_context_rows()
         plan = self._recent_preserving_compaction_plan()
         if plan is None:
             raise ValueError("Not enough context to compact while preserving recent entries")
         first_kept_entry_id = rows[len(plan.replace_entry_ids)][0]
         tokens_before = self.context_token_estimate
-        summary = await self._generate_compaction_summary(
-            plan.messages_to_summarize,
-            custom_instructions=instructions,
-        )
-        compaction = await self._append_compaction(
-            summary,
-            replace_entry_ids=plan.replace_entry_ids,
-            first_kept_entry_id=first_kept_entry_id,
-            tokens_before=tokens_before,
-        )
+        try:
+            summary = await self._generate_compaction_summary(
+                plan.messages_to_summarize,
+                custom_instructions=instructions,
+            )
+            compaction = await self._append_compaction(
+                summary,
+                replace_entry_ids=plan.replace_entry_ids,
+                first_kept_entry_id=first_kept_entry_id,
+                tokens_before=tokens_before,
+                compact_reason="manual",
+            )
+        except Exception as exc:
+            await self._notify_compaction_failure(
+                "manual", error_message=str(exc) or type(exc).__name__
+            )
+            raise
         return ManualCompactionResult(
             summary=summary,
             first_kept_entry_id=first_kept_entry_id,
@@ -2914,16 +3106,27 @@ class CodingSession:
     async def compact(self, instructions: str | None = None) -> str:
         """Generate a manual compaction summary and rebuild active context."""
         await self._flush_pending_message_writes(context=self._diagnostic_context())
+        if await self._extension_runtime.emit_session_before_compact(
+            "manual", custom_instructions=instructions
+        ):
+            raise ValueError("Compaction cancelled by extension")
         plan = self._manual_compaction_plan()
-        summary = await self._generate_compaction_summary(
-            plan.messages_to_summarize,
-            custom_instructions=instructions,
-        )
-        compaction = await self._append_compaction(
-            summary,
-            replace_entry_ids=plan.replace_entry_ids,
-            tokens_before=self.context_token_estimate,
-        )
+        try:
+            summary = await self._generate_compaction_summary(
+                plan.messages_to_summarize,
+                custom_instructions=instructions,
+            )
+            compaction = await self._append_compaction(
+                summary,
+                replace_entry_ids=plan.replace_entry_ids,
+                tokens_before=self.context_token_estimate,
+                compact_reason="manual",
+            )
+        except Exception as exc:
+            await self._notify_compaction_failure(
+                "manual", error_message=str(exc) or type(exc).__name__
+            )
+            raise
         return f"Compacted {len(compaction.replaces_entry_ids)} context entries."
 
     async def aclose(self) -> None:
@@ -3036,6 +3239,16 @@ class CodingSession:
         normalized_command = command.strip()
         if not normalized_command:
             raise ValueError("Terminal command cannot be empty")
+        bash_outcome = await self._extension_runtime.run_user_bash(
+            normalized_command,
+            exclude_from_context=not add_to_context,
+            cwd=self.cwd,
+        )
+        if bash_outcome.block:
+            raise ValueError(bash_outcome.reason or "Terminal command blocked by extension")
+        normalized_command = bash_outcome.command.strip()
+        if not normalized_command:
+            raise ValueError("Terminal command cannot be empty")
 
         bash_tool = create_bash_tool(
             cwd=self.cwd,
@@ -3111,21 +3324,17 @@ class CodingSession:
             if streaming_behavior == "steer":
                 self._harness.steer(expanded_content)
                 session_event_0 = self.queue_update_event()
-                await self._extension_runtime.emit_event(session_event_0)
                 yield session_event_0
                 return
             if streaming_behavior == "follow_up":
                 self._harness.follow_up(expanded_content)
                 session_event_0 = self.queue_update_event()
-                await self._extension_runtime.emit_event(session_event_0)
                 yield session_event_0
                 return
             raise RuntimeError(
                 "CodingSession is already running; pass streaming_behavior to queue a message."
             )
 
-        if self._completion_entries:
-            raise RuntimeError("Previous run completion must be reconciled before continuing")
         self._run_active = True
         self._run_status = "succeeded"
         self._run_error = None
@@ -3205,7 +3414,6 @@ class CodingSession:
                     await self._try_auto_name_session(auto_name_message, context=context)
             if overflow_message is not None:
                 session_event_1 = CompactionStartEvent(reason="overflow")
-                await self._extension_runtime.emit_event(session_event_1)
                 yield session_event_1
                 compacted = await self._try_overflow_compact(context=context)
                 compaction_end = CompactionEndEvent(
@@ -3215,7 +3423,6 @@ class CodingSession:
                     will_retry=compacted,
                     error_message=None if compacted else "Overflow compaction failed",
                 )
-                await self._extension_runtime.emit_event(compaction_end)
                 yield compaction_end
                 if compacted:
                     retry_start = AutoRetryStartEvent(
@@ -3224,7 +3431,6 @@ class CodingSession:
                         delay_ms=0,
                         error_message=overflow_message.error_message or "Context overflow",
                     )
-                    await self._extension_runtime.emit_event(retry_start)
                     yield retry_start
                     events = self._harness.continue_()
                     self._invalidate_context_usage_cache()
@@ -3260,7 +3466,6 @@ class CodingSession:
                         attempt=1,
                         final_error=overflow_retry_error,
                     )
-                    await self._extension_runtime.emit_event(session_event_4)
                     yield session_event_4
             else:
                 await self._try_auto_compact(context=context, phase="auto_compact_after_prompt")
@@ -3295,8 +3500,6 @@ class CodingSession:
         """Continue the agent from restored state and persist new messages."""
         self._require_idle("continue")
         context = self._diagnostic_context()
-        if self._completion_entries:
-            raise RuntimeError("Previous run completion must be reconciled before continuing")
         self._run_active = True
         self._run_status = "succeeded"
         self._run_error = None
@@ -3401,9 +3604,9 @@ class CodingSession:
         status = self._run_status
         final = next(
             (
-                entry.message
-                for entry in reversed(self._completion_entries)
-                if isinstance(entry, MessageEntry) and isinstance(entry.message, AssistantMessage)
+                message
+                for message in reversed(self._harness.messages)
+                if isinstance(message, AssistantMessage) and not message.tool_calls
             ),
             None,
         )
@@ -3418,8 +3621,8 @@ class CodingSession:
             token,
             self.storage.branch_id,
             status,
-            self._completion_expected_head if self._completion_entries else head.entry_id,
-            tuple(self._completion_entries),
+            head.entry_id,
+            (),
             self._run_error or (final.error_message if final is not None else None),
             self._last_snapshot_id,
         )
@@ -3434,12 +3637,6 @@ class CodingSession:
                 provider_name=self.provider_name,
             )
         receipt = await self.storage.complete_run(outcome)
-        for entry, seq in zip(
-            self._completion_entries,
-            range(receipt.watermark - len(self._completion_entries) + 1, receipt.watermark + 1),
-            strict=True,
-        ):
-            self._entries[entry.id] = entry.model_copy(deep=True, update={"seq": seq})
         self._completion_entries.clear()
         self._completion_expected_head = None
         self._last_completion = receipt
@@ -3463,9 +3660,6 @@ class CodingSession:
         token = self.storage.token
 
         async def record(payload: dict[str, JSONValue]) -> None:
-            if self._config.session_manager is not None:
-                repository = await self._config.session_manager.repository()
-                await SqliteProcessJournal(repository.database).record(token, payload)
             await self._config.telemetry.append(
                 "process.lifecycle",
                 {
@@ -3552,6 +3746,7 @@ class CodingSession:
             )
             staged.append(copied_entry)
             parent_id = copied_entry.id
+        staged.append(LeafEntry(parent_id=parent_id, entry_id=parent_id))
 
         if self._config.defer_authoritative_writes:
             self._prepared_entries.extend(staged)
@@ -3601,33 +3796,30 @@ class CodingSession:
         message_id = id(message)
         if message_id in self._persisted_message_ids:
             return
-        # A subsequent message proves that the previous final-looking reply was intermediate.
-        if self._completion_entries:
-            pending_entries = tuple(self._completion_entries)
-            receipt = await self.storage.append_entries(
-                pending_entries,
-                expected_head=self._completion_expected_head,
-                token=self._writer_token(),
-            )
-            for entry, seq in zip(pending_entries, receipt.sequences, strict=True):
-                self._entries[entry.id] = entry.model_copy(deep=True, update={"seq": seq})
-            self._completion_entries.clear()
         pending = self._pending_message_writes.get(message_id)
         if pending is None:
+            message_entry = MessageEntry(parent_id=self._last_parent_id, message=message)
             pending = _PendingMessageWrite(
-                message, MessageEntry(parent_id=self._last_parent_id, message=message)
+                message,
+                message_entry,
+                LeafEntry(parent_id=message_entry.id, entry_id=message_entry.id),
             )
             self._pending_message_writes[message_id] = pending
-        entry = pending.message_entry
-        await self._ensure_session_initialized()
-        if self._run_active and isinstance(message, AssistantMessage) and not message.tool_calls:
-            self._completion_expected_head = entry.parent_id
-            self._completion_entries.append(entry.model_copy(deep=True))
-            self._entries[entry.id] = entry
-        else:
-            await self._append_session_batch((entry,))
-        self._last_parent_id = entry.id
-        await self._refresh_persisted_state(leaf_id=entry.id)
+        durable_ids = (
+            {entry.id for entry in self._entries.values()}
+            if message_id in self._pending_message_writes
+            else frozenset()
+        )
+        batch: list[SessionEntry] = []
+        if pending.message_entry.id not in durable_ids:
+            batch.append(pending.message_entry)
+        if pending.leaf_entry.id not in durable_ids:
+            batch.append(pending.leaf_entry)
+        if batch:
+            await self._ensure_session_initialized()
+            await self._append_session_batch(tuple(batch))
+        self._last_parent_id = pending.message_entry.id
+        await self._refresh_persisted_state(leaf_id=pending.message_entry.id)
         self._persisted_message_ids.add(message_id)
         self._pending_message_writes.pop(message_id, None)
 
@@ -3713,6 +3905,7 @@ class CodingSession:
             return
         entries = tuple(self._prepared_entries)
         if entries:
+            entries = _with_tip_leaf(entries)
             head = await self.storage.get_head()
             if head.entry_id != entries[0].parent_id:
                 await self.storage.fork(
@@ -3721,7 +3914,7 @@ class CodingSession:
                 await self._reload_entry_cache()
             else:
                 receipt = await self.storage.append_entries(
-                    entries, expected_head=entries[0].parent_id, token=self.storage.token
+                    entries, expected_head=head.entry_id, token=self.storage.token
                 )
                 for entry, seq in zip(entries, receipt.sequences, strict=True):
                     self._entries[entry.id] = entry.model_copy(deep=True, update={"seq": seq})
@@ -3734,20 +3927,17 @@ class CodingSession:
 
     async def _append_session_batch(self, entries: Sequence[SessionEntry]) -> None:
         self._writer_token()
-        if not entries:
+        batch = _with_tip_leaf(entries)
+        if not batch:
             return
         await self._ensure_session_initialized()
-        if self._completion_entries:
-            self._completion_entries.extend(entry.model_copy(deep=True) for entry in entries)
-            for entry in entries:
-                self._entries[entry.id] = entry
-            return
+        head = await self.storage.get_head()
         receipt = await self.storage.append_entries(
-            entries,
-            expected_head=entries[0].parent_id,
+            batch,
+            expected_head=head.entry_id,
             token=self._writer_token(),
         )
-        for entry, seq in zip(entries, receipt.sequences, strict=True):
+        for entry, seq in zip(batch, receipt.sequences, strict=True):
             self._entries[entry.id] = entry.model_copy(deep=True, update={"seq": seq})
 
     async def _close_replaced_provider(self, provider: ModelProvider) -> None:
@@ -3763,7 +3953,7 @@ class CodingSession:
         if self._config.defer_authoritative_writes:
             await self._commit_prepared_entries()
         elif self._pending_initial_entries:
-            entries = self._pending_initial_entries
+            entries = _with_tip_leaf(self._pending_initial_entries)
             receipt = await self.storage.append_entries(
                 entries,
                 expected_head=entries[0].parent_id,
@@ -3795,18 +3985,41 @@ class CodingSession:
         *,
         context: AgentCallDiagnosticContext,
     ) -> bool:
+        if await self._extension_runtime.emit_session_before_compact(
+            "overflow", will_retry=True
+        ):
+            await self._notify_compaction_failure(
+                "overflow", aborted=True, will_retry=True
+            )
+            return False
         try:
             plan = self._recent_preserving_compaction_plan()
             if plan is None:
+                await self._notify_compaction_failure(
+                    "overflow",
+                    aborted=True,
+                    will_retry=True,
+                    error_message="Overflow compaction failed",
+                )
                 return False
             summary = await self._generate_compaction_summary(plan.messages_to_summarize)
-            await self._append_compaction(summary, replace_entry_ids=plan.replace_entry_ids)
+            await self._append_compaction(
+                summary,
+                replace_entry_ids=plan.replace_entry_ids,
+                compact_reason="overflow",
+                will_retry=True,
+            )
             return True
         except Exception as exc:  # the original overflow remains visible
             self._last_diagnostic_log_path = self._diagnostic_logger.log_exception(
                 context=context,
                 phase="overflow_compact",
                 exc=exc,
+            )
+            await self._notify_compaction_failure(
+                "overflow",
+                will_retry=True,
+                error_message=str(exc) or type(exc).__name__,
             )
             return False
 
@@ -3855,15 +4068,21 @@ class CodingSession:
         text_parts: list[str] = []
         final_text: str | None = None
         request_messages: list[AgentMessage] = [UserMessage(content=prompt)]
-        await self._record_model_context(
+        named = await self._record_model_context(
             ModelRequest(
                 self.model, SESSION_NAME_SYSTEM_PROMPT, request_messages, (), self.session_id
             ),
             purpose="session_name",
         )
+        name_model = self.model
+        name_system = SESSION_NAME_SYSTEM_PROMPT
+        if isinstance(named, ModelRequest):
+            name_model = named.model
+            name_system = named.system
+            request_messages = list(named.messages)
         async for event in self._harness.config.provider.stream_response(
-            model=self.model,
-            system=SESSION_NAME_SYSTEM_PROMPT,
+            model=name_model,
+            system=name_system,
             messages=request_messages,
             tools=[],
         ):
@@ -3903,8 +4122,23 @@ class CodingSession:
         plan = self._recent_preserving_compaction_plan()
         if plan is None:
             return False
-        summary = await self._generate_compaction_summary(plan.messages_to_summarize)
-        await self._append_compaction(summary, replace_entry_ids=plan.replace_entry_ids)
+        if await self._extension_runtime.emit_session_before_compact("threshold"):
+            await self._notify_compaction_failure(
+                "threshold", aborted=True, will_retry=False
+            )
+            return False
+        try:
+            summary = await self._generate_compaction_summary(plan.messages_to_summarize)
+            await self._append_compaction(
+                summary,
+                replace_entry_ids=plan.replace_entry_ids,
+                compact_reason="threshold",
+            )
+        except Exception as exc:
+            await self._notify_compaction_failure(
+                "threshold", error_message=str(exc) or type(exc).__name__
+            )
+            raise
         return True
 
     async def _generate_compaction_summary(
@@ -3920,15 +4154,21 @@ class CodingSession:
         text_parts: list[str] = []
         final_text: str | None = None
         summary_messages: list[AgentMessage] = [UserMessage(content=prompt)]
-        await self._record_model_context(
+        compacted = await self._record_model_context(
             ModelRequest(
                 self.model, SUMMARIZATION_SYSTEM_PROMPT, summary_messages, (), self.session_id
             ),
             purpose="compaction",
         )
+        summary_model = self.model
+        summary_system = SUMMARIZATION_SYSTEM_PROMPT
+        if isinstance(compacted, ModelRequest):
+            summary_model = compacted.model
+            summary_system = compacted.system
+            summary_messages = list(compacted.messages)
         async for event in self._harness.config.provider.stream_response(
-            model=self.model,
-            system=SUMMARIZATION_SYSTEM_PROMPT,
+            model=summary_model,
+            system=summary_system,
             messages=summary_messages,
             tools=[],
         ):
@@ -4006,6 +4246,8 @@ class CodingSession:
         replace_entry_ids: tuple[str, ...],
         first_kept_entry_id: str | None = None,
         tokens_before: int | None = None,
+        compact_reason: CompactionReason = "manual",
+        will_retry: bool = False,
     ) -> CompactionEntry:
         if not replace_entry_ids:
             raise ValueError("No active context messages to compact")
@@ -4023,7 +4265,27 @@ class CodingSession:
         await self._refresh_persisted_state(leaf_id=compaction.id)
         self._harness.replace_messages(self._state.messages)
         self._invalidate_context_usage_cache()
+        await self._extension_runtime.emit_event(
+            SessionCompactEvent(reason=compact_reason, will_retry=will_retry)
+        )
         return compaction
+
+    async def _notify_compaction_failure(
+        self,
+        reason: CompactionReason,
+        *,
+        aborted: bool = False,
+        will_retry: bool = False,
+        error_message: str | None = None,
+    ) -> None:
+        await self._extension_runtime.emit_event(
+            SessionCompactFailedEvent(
+                reason=reason,
+                aborted=aborted,
+                will_retry=will_retry,
+                error_message=error_message,
+            )
+        )
 
 
 def _first_recent_context_index(
@@ -4095,11 +4357,20 @@ def is_context_overflow_error(message: AssistantMessage) -> bool:
     return any(marker in normalized for marker in markers)
 
 
+def _with_tip_leaf(entries: Sequence[SessionEntry]) -> tuple[SessionEntry, ...]:
+    batch = tuple(entries)
+    if not batch or isinstance(batch[-1], LeafEntry):
+        return batch
+    tip = batch[-1].id
+    return (*batch, LeafEntry(parent_id=tip, entry_id=tip))
+
+
 def _last_parent_id_from_state(state: SessionState) -> str | None:
     if state.active_leaf_id is not None:
         return state.active_leaf_id
-    if state.entries:
-        return state.entries[-1].id
+    for entry in reversed(state.entries):
+        if not isinstance(entry, LeafEntry):
+            return entry.id
     return None
 
 
@@ -4119,7 +4390,8 @@ def _tree_choice_label(entry: SessionEntry, *, branch_indent: int = 0) -> str:
 def _tree_branch_indents(entries: list[SessionEntry]) -> dict[str, int]:
     children_by_parent: dict[str | None, list[str]] = {}
     for entry in entries:
-        children_by_parent.setdefault(entry.parent_id, []).append(entry.id)
+        if entry.type != "leaf":
+            children_by_parent.setdefault(entry.parent_id, []).append(entry.id)
 
     sibling_indexes = {
         child_id: index
@@ -4128,6 +4400,8 @@ def _tree_branch_indents(entries: list[SessionEntry]) -> dict[str, int]:
     }
     indents: dict[str, int] = {}
     for entry in entries:
+        if entry.type == "leaf":
+            continue
         parent_indent = indents.get(entry.parent_id, 0) if entry.parent_id is not None else 0
         sibling_index = sibling_indexes.get(entry.id, 0)
         indents[entry.id] = parent_indent + (1 if sibling_index > 0 else 0)
@@ -4137,7 +4411,8 @@ def _tree_branch_indents(entries: list[SessionEntry]) -> dict[str, int]:
 def _ordered_tree_entries(entries: list[SessionEntry]) -> tuple[SessionEntry, ...]:
     children_by_parent: dict[str | None, list[SessionEntry]] = {}
     for entry in entries:
-        children_by_parent.setdefault(entry.parent_id, []).append(entry)
+        if entry.type != "leaf":
+            children_by_parent.setdefault(entry.parent_id, []).append(entry)
 
     ordered: list[SessionEntry] = []
     seen: set[str] = set()
@@ -4166,6 +4441,8 @@ def _ordered_tree_entries(entries: list[SessionEntry]) -> tuple[SessionEntry, ..
 
     append_descendants(None)
     for entry in entries:
+        if entry.type == "leaf":
+            continue
         if entry.id not in seen:
             ordered.append(entry)
             seen.add(entry.id)

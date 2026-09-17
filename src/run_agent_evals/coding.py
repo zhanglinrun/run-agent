@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -108,6 +109,15 @@ class CodingTaskExecutor:
                 raise RuntimeError(
                     final.error_message or f"assistant stopped with {final.stop_reason}"
                 )
+            messages = [
+                entry.message.model_dump(mode="json")
+                for entry in await application.session.storage.read_all()
+                if hasattr(entry, "message")
+            ]
+            eval_input = workspace / "eval-input.json"
+            eval_input.write_text(
+                json.dumps(messages, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
         except (Exception, asyncio.CancelledError) as exc:
             failure = exc
         finally:
@@ -164,8 +174,8 @@ class CodingTaskExecutor:
                 "model": model,
                 "session_id": session_id,
                 "root_id": call_id,
-                "database": str(self.paths.database_path),
-                "call_ledger": str(self.paths.database_path),
+                "observations": str(self.paths.logs_dir / "observations.jsonl"),
+                "eval_input": str(workspace / "eval-input.json"),
                 "call_stream": f"calls:{call_id}",
                 "cleanup_errors": list(cleanup_errors),
             },

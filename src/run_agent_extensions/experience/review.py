@@ -1,11 +1,11 @@
 """Decide which finished runs deserve a review, and then actually review them.
 
 Admission follows hermes-agent: the host keeps two nudge counters (user turns since the
-last memory write, tool iterations since the last skill write), and a run whose counter
-reached its interval ends with a memory review, a skill review, or both. As this
-extension's addition, a failed run or a user correction also admits a combined review
-(``EXPERIENCE_REVIEW_ON_SIGNALS``). Each admitted run gets a stable idempotency key so a
-duplicate receipt cannot start a second review, auxiliary tasks are refused so a review
+last memory write, model rounds since the last skill write), and a run whose counter
+reached its interval ends with a memory review, a skill review, or both. A failed run or
+a user correction also admits a combined review when ``EXPERIENCE_REVIEW_ON_SIGNALS`` is
+on. Each admitted run gets a stable idempotency key so a duplicate receipt cannot start a
+second review, auxiliary tasks are refused so a review
 can never trigger another review, and hermes' one-at-a-time rule applies: a review
 that arrives while another is in its request phase is skipped, not queued.
 
@@ -125,12 +125,12 @@ class ReviewTrigger:
         return f"{request.source_run_id}:{self._policy.policy_version}"
 
     def _worth_reviewing(self, request: ReviewRequest) -> bool:
-        """A nudge is the reason hermes reviews; a correction or failure is ours."""
+        """A nudge is the reason hermes reviews; a correction or failure is opt-in."""
         if self._nudged(request):
             return True
-        if self._policy.review_on_signals and (request.corrections or request.failures):
-            return True
-        return request.assistant_turns >= self._policy.min_assistant_turns
+        return bool(
+            self._policy.review_on_signals and (request.corrections or request.failures)
+        )
 
     def _nudged(self, request: ReviewRequest) -> bool:
         if request.memory_due or request.skills_due:
@@ -195,10 +195,11 @@ class ReviewCoordinator:
             return
         self._runs_since_review = 0
         self._last_reviewed_transcript = len(self._transcript())
-        review_memory = flags.review_memory or (
-            not flags.review_skills and bool(request.corrections or request.failures)
+        signaled = self._policy.review_on_signals and bool(
+            request.corrections or request.failures
         )
-        review_skills = flags.review_skills or bool(request.corrections or request.failures)
+        review_memory = flags.review_memory or (not flags.review_skills and signaled)
+        review_skills = flags.review_skills or signaled
         if not flags.any:
             # Cadence fallback or a signal: hermes' combined review covers both stores.
             review_memory = True
@@ -449,9 +450,6 @@ class ReviewCoordinator:
         }
         snapshot_id = fields.get("snapshot_id")
         manual = fields.get("status") == "manual"
-        if not manual and (not isinstance(snapshot_id, str) or not snapshot_id):
-            outcome["error"] = "unparseable review: the run recorded no model input"
-            return outcome
         stores = self._stores()
         stores.skills.read_marks.reset()
         try:
@@ -616,20 +614,18 @@ class ReviewCoordinator:
         """
         messages: list[object] = []
         if source_run_id:
-            entries = await self._api.context.services.history.read_completed_run(source_run_id)
-            messages.extend(
-                entry.message.model_dump(mode="json")
-                for entry in entries
-                if hasattr(entry, "message")
-            )
+            try:
+                entries = await self._api.context.services.history.read_completed_run(source_run_id)
+                messages.extend(
+                    entry.message.model_dump(mode="json")
+                    for entry in entries
+                    if hasattr(entry, "message")
+                )
+            except Exception:
+                messages = []
             if messages:
                 return render_transcript(messages, char_budget=self._policy.evidence_chars)
-        if snapshot_id:
-            snapshot = await self._api.context.services.snapshots.read(snapshot_id)
-            recorded = snapshot.payload.get("messages")
-            if isinstance(recorded, list):
-                messages.extend(recorded)
-            return render_transcript(messages, char_budget=self._policy.evidence_chars)
+        del snapshot_id
         for message in self._transcript():
             messages.append(message.model_dump(mode="json"))
         return render_transcript(messages, char_budget=self._policy.evidence_chars)

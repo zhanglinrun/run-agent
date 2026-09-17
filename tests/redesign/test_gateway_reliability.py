@@ -103,7 +103,7 @@ async def test_lease_timeout_tells_the_user_to_resend(tmp_path):
 
 
 def test_ledger_checkpoints_and_recovers_only_dead_owners(tmp_path):
-    ledger = DeliveryLedger(tmp_path / "d.sqlite3")
+    ledger = DeliveryLedger(tmp_path / "d.jsonl")
     one = ledger.record("k", "chat", "hello", reply_to="m1")
     ledger.mark_attempting(one.obligation_id)
     two = ledger.record("k", "chat", "bye")
@@ -118,7 +118,7 @@ def test_ledger_checkpoints_and_recovers_only_dead_owners(tmp_path):
 async def test_gateway_ledger_tracks_each_reply_chunk(tmp_path):
     adapter = FakeAdapter()
     adapter.max_message_length = 8
-    ledger = DeliveryLedger(tmp_path / "chunks.sqlite3")
+    ledger = DeliveryLedger(tmp_path / "chunks.jsonl")
     adapter.ledger = ledger
     result = await adapter.deliver_reply("session", "chat", "one two three four", reply_to="input")
     assert result.success
@@ -136,7 +136,7 @@ async def test_gateway_ledger_tracks_each_reply_chunk(tmp_path):
 
 
 def test_ledger_redelivers_after_a_real_process_crash(tmp_path):
-    path = tmp_path / "d.sqlite3"
+    path = tmp_path / "d.jsonl"
     code = f"""
 from pathlib import Path
 from run_agent_gateway.ledger import DeliveryLedger
@@ -177,11 +177,20 @@ async def test_runner_records_deliveries_and_resends_on_startup(tmp_path):
         gateway.ledger.mark_attempting(stale.obligation_id)
     finally:
         await gateway.stop()
-    # A "new process": rewrite the owner stamp so the sweep treats it as dead.
-    import sqlite3
+    # A "new process": append a dead-owner stamp so the sweep treats it as gone.
+    import json
 
-    with sqlite3.connect(tmp_path / "state" / "gateway" / "deliveries.sqlite3") as c:
-        c.execute("UPDATE delivery_obligations SET owner_pid=999999, owner_identity='gone'")
+    ledger_path = tmp_path / "state" / "gateway" / "deliveries.jsonl"
+    rows = [
+        json.loads(line)
+        for line in ledger_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    stale_row = next(row for row in reversed(rows) if row.get("content") == "lost reply")
+    stale_row["owner_pid"] = 999999
+    stale_row["owner_identity"] = "gone"
+    with ledger_path.open("a", encoding="utf-8") as file:
+        file.write(json.dumps(stale_row, ensure_ascii=False) + "\n")
     adapter2 = FakeAdapter()
     gateway2 = GatewayRunner(config(), options(tmp_path), adapter2, provider_factory=ReplyProvider)
     await gateway2.start()

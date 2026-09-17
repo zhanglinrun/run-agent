@@ -5,7 +5,6 @@ convergence are all inspectable: a task declares its ceilings, the declaration
 survives storage, and it reads back with the task's terminal status.
 """
 
-import json
 from dataclasses import replace
 
 from tests.redesign.test_coding_application import ReplyProvider, options
@@ -89,11 +88,8 @@ async def test_a_closed_extension_still_reports_status_budget_and_convergence(tm
     assert result.drained is True
     assert result.contained_managed_tasks == 0
     assert result.cleanup_errors == ()
-    row = await app.session.storage.repository.database.run(
-        lambda connection: connection.execute(
-            "SELECT status, budget_json FROM extension_tasks WHERE task_id=?", (task_id,)
-        ).fetchone()
-    )
-    assert row[0] == "succeeded"
-    assert TaskBudget.from_json(json.loads(row[1])) == declared
+    host = await app.manager.host_services()
+    info = next(item for key, item in host.tasks._records.items() if key[2] == task_id)
+    assert info.status == "succeeded"
+    assert info.budget == declared
     await app.aclose()

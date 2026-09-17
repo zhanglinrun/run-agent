@@ -49,19 +49,26 @@ async def summarize_branch_messages_with_model(
             )
         )
     ]
+    system_prompt = BRANCH_SUMMARY_SYSTEM_PROMPT
     if before_model_request is not None:
-        await before_model_request(
+        replaced = await before_model_request(
             ModelRequest(
                 model,
-                BRANCH_SUMMARY_SYSTEM_PROMPT,
+                system_prompt,
                 request_messages,
                 (),
                 session_id,
             )
         )
+        if isinstance(replaced, ModelRequest):
+            model = replaced.model
+            system_prompt = replaced.system
+            request_messages = list(replaced.messages)
+            if replaced.session_id is not None:
+                session_id = replaced.session_id
     async for event in provider.stream_response(
         model=model,
-        system=BRANCH_SUMMARY_SYSTEM_PROMPT,
+        system=system_prompt,
         messages=request_messages,
         tools=[],
         session_id=session_id,

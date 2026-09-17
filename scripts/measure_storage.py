@@ -1,4 +1,4 @@
-"""Measure SQLite session storage and write the result as a JSON artifact.
+"""Measure JSONL session storage and write the result as a JSON artifact.
 
 Run: ``python scripts/measure_storage.py [--sizes 1000,10000] [--output PATH]``
 

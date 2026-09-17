@@ -50,6 +50,7 @@ from run_agent_core.messages import (
     assistant_content,
     message_to_user,
 )
+from run_agent_core.provider import run_after_provider_response, run_before_provider_headers
 from run_agent_core.tools import AgentTool, ToolCall
 from run_agent_core.types import JSONValue
 
@@ -243,6 +244,7 @@ class OpenAICompatibleProvider:
                 if not has_authorization:
                     headers["Authorization"] = f"Bearer {self._config.api_key}"
             _apply_session_affinity_headers(headers, session_id, session_affinity_format)
+            await run_before_provider_headers(headers)
 
             attempt = 0
             while True:
@@ -251,6 +253,9 @@ class OpenAICompatibleProvider:
                     async with client.stream(
                         "POST", request_url, json=payload, headers=headers
                     ) as response:
+                        await run_after_provider_response(
+                            response.status_code, dict(response.headers)
+                        )
                         if response.status_code >= 400:
                             body = await response.aread()
                             body_text = body.decode(errors="replace")

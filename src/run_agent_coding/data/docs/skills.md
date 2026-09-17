@@ -23,7 +23,7 @@ A higher-precedence skill with the same name overrides the lower one. Run Agent 
 
 Project Skills require project trust. Loaded Skill packages are frozen in the session's
 resource snapshot; edits become available after `/reload` or a new session. The default
-experience extension exposes `skill_manage` for creation and maintenance, plus `/skillset`
+experience extension exposes `skill_manage` for creation and maintenance, plus `/curator`
 for pinning, adoption, recoverable restore and ledger rollback. Autonomous review cannot
 modify pinned or user-owned Skills. Ownership checks always apply; optional content
 scanning requires `EXPERIENCE_SKILL_GUARD=true`.

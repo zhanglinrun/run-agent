@@ -77,8 +77,8 @@ Next to the skills live three sidecars the tool maintains:
 | File | Purpose |
 | --- | --- |
 | `.usage.json` | Per-skill telemetry and lifecycle: view, use and patch counts, patch generation and reuse-after-patch, `state` (active, stale, archived), `pinned`, and `created_by: agent` which marks a skill as curator-managed. |
-| `.ledger.jsonl` + `.blobs/` | Append-only audit trail of every mutation by every actor (`agent`, `review`, `curator`, `user`) with before/after manifests; file contents are stored content-addressed. `/skillset rollback <id>` restores one edit, after capturing a safety entry so the rollback is itself undoable. |
-| `.archive/` | Where the review and the curator move skills instead of deleting them; `/skillset restore <name>` brings one back. |
+| `.ledger.jsonl` + `.blobs/` | Append-only audit trail of every mutation by every actor (`agent`, `review`, `curator`, `user`) with before/after manifests; file contents are stored content-addressed. `/curator rollback <id>` restores one edit, after capturing a safety entry so the rollback is itself undoable. |
+| `.archive/` | Where the review and the curator move skills instead of deleting them; `/curator restore <name>` brings one back. |
 
 Every write goes through the same validation, ownership and ledger paths. When
 `EXPERIENCE_SKILL_GUARD=true`, the resulting Skill directory is also scanned for threats,
@@ -87,7 +87,7 @@ the write back. Advisory lint is returned with the result and never blocking: ma
 words, a missing "When to Use" section, shell utilities named in prose instead of native
 tools, dangling `references/` links, scaffolding files.
 - Ownership: a skill is user-owned unless the review created it or the user ran
-  `/skillset adopt <name>`. Autonomous writers (the review, the curator) refuse user-owned
+  `/curator adopt <name>`. Autonomous writers (the review, the curator) refuse user-owned
   and pinned skills, must have viewed a file in the same pass before patching it, and may
   archive only while naming the umbrella that absorbed the content.
 
@@ -98,10 +98,9 @@ tools, dangling `references/` links, scaffolding files.
 | `memory` tool | `add`, `replace`, `remove` or `batch` (a list of those) on `USER.md` or `MEMORY.md`. |
 | `skill_manage` tool | `list`, `view`, `create`, `edit`, `patch`, `write_file`, `remove_file`, `delete` (with `absorbed_into`). |
 | `/memory show\|add\|replace\|remove ...` | Read or edit memory by hand. |
-| `/skillset list\|view\|pin\|unpin\|adopt\|restore\|ledger\|rollback\|archived` | Manage the Skill library. |
-| `/learn <sources and requirements>` | Author a Skill in the foreground from files, URLs, the conversation or pasted notes, following the authoring standards. |
 | `/review now [focus]`, `/review status` | Run the background review on demand, or see the last outcome. |
 | `/curator status\|run\|dry-run\|pause\|resume` | Inspect or drive the curator. |
+| `/curator pin\|unpin\|adopt\|restore\|ledger\|rollback\|archived` | Pin, adopt, restore and roll back the Skill library. |
 
 `/skill:<name>` expands the selected Skill into the prompt and counts one use in its
 source library; a shadowed user Skill is not counted when the project Skill was selected.
@@ -126,18 +125,19 @@ not consume the pending review flags. The current triggers are:
 
 - Memory cadence: 10 user inputs (`EXPERIENCE_MEMORY_NUDGE_INTERVAL`; the older
   `EXPERIENCE_REVIEW_EVERY_TURNS` name remains an alias).
-- Skill cadence: 10 `tool_execution_start` events (`EXPERIENCE_SKILL_NUDGE_INTERVAL`),
-  not 10 model requests. Accepted `memory` / `skill_manage` calls reset their respective
-  counters; a due memory flag stays latched until settlement.
-- With `EXPERIENCE_REVIEW_ON_SIGNALS=true` (default), a recognized user correction or
-  a non-successful settled run admits review. Recovered tool errors and failed tests are
-  not separately counted, and external benchmark grading is not fed back into this trigger.
-- Fallback admission after 10 settled runs, or at least two user messages in the transcript
-  since the last admitted review.
+- Skill cadence: 10 model rounds (`turn_start` / `EXPERIENCE_SKILL_NUDGE_INTERVAL`),
+  including the final no-tool round. Accepted `memory` / `skill_manage` calls reset
+  their respective counters; a due memory flag stays latched until settlement.
+- With `EXPERIENCE_REVIEW_ON_SIGNALS=true` (off by default), a recognized user
+  correction or a non-successful settled run admits review. Recovered tool errors and
+  failed tests are not separately counted, and external benchmark grading is not fed
+  back into this trigger.
+- Fallback admission after 10 settled runs. One-turn chitchat is skipped unless a
+  cadence nudge or opt-in signal admits it.
 
 The cooldown defaults to zero; cadence nudges bypass it. Auxiliary review/evaluation origins
 are excluded. A review already in flight prevents another one from being admitted.
-The local regression test covers 9 tool calls without review and 10 calls with review and
+The local regression test covers 9 model rounds without review and 10 rounds with review and
 a Skill write; this verifies wiring, not improved performance on future tasks.
 
 1. The completion records one durable `review-request:<run_id>` in session state and submits

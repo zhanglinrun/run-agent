@@ -184,12 +184,14 @@ async def test_curator_refuses_autonomous_writes_when_approval_is_required(manag
 
 
 def test_review_cadence_and_corrections_admit_a_review():
-    trigger = ReviewTrigger(policy=ReviewPolicy(review_every_turns=3, cooldown_seconds=0))
+    trigger = ReviewTrigger(
+        policy=ReviewPolicy(review_every_turns=3, cooldown_seconds=0, review_on_signals=True)
+    )
     base = dict(
         source_run_id="r",
         session_id="s",
         status="succeeded",
-        assistant_turns=1,
+        assistant_turns=2,
         corrections=0,
         failures=0,
     )
@@ -198,7 +200,7 @@ def test_review_cadence_and_corrections_admit_a_review():
         ReviewRequest(**{**base, "source_run_id": "r2"}, runs_since_review=3)
     ).admitted
     assert trigger.consider(
-        ReviewRequest(**{**base, "source_run_id": "r3", "corrections": 1})
+        ReviewRequest(**{**base, "source_run_id": "r3", "corrections": 1, "assistant_turns": 1})
     ).admitted
     assert looks_like_correction("stop doing that, just give me the answer")
     assert looks_like_correction("不要再解释了，直接给我结果")
@@ -219,6 +221,7 @@ def test_experience_config_reads_the_environment():
     )
     assert cfg.memory_char_limit == 3000 and cfg.review_every_turns == 5
     assert cfg.curator_consolidate and cfg.review_notify == "verbose"
+    assert load_experience_config({}).review_on_signals is False
     with pytest.raises(ValueError):
         load_experience_config(
             {"EXPERIENCE_CURATOR_ARCHIVE_DAYS": "5", "EXPERIENCE_CURATOR_STALE_DAYS": "30"}

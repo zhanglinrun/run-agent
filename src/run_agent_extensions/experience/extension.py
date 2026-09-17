@@ -4,14 +4,13 @@ The extension is the one place the host learns across sessions. The pieces:
 
 - ``memory`` tool and ``/memory``: USER.md and MEMORY.md as budgeted entry lists, with
   single and batch operations, threat scanning and a frozen prompt snapshot.
-- ``skill_manage`` tool and ``/skillset``: create, view, edit, patch, delete and support
-  files, guarded, ledgered and counted; pin, adopt, restore, ledger and rollback for the
-  user.
-- ``/learn``: author a Skill from sources the user names, in the foreground.
+- ``skill_manage``: create, view, edit, patch, delete and support files, guarded,
+  ledgered and counted.
 - A background review of finished runs (``/review``) that writes what it learned to
   memory and to the Skills it owns.
 - A curator (``/curator``) that ages, archives and, when enabled, consolidates the
-  Skills the agent created, on an interval when the agent is idle.
+  Skills the agent created, and that pin, adopt, restore, ledger and rollback for the
+  user.
 
 This module is the wiring: lifecycle hooks and registration. The tools live in
 ``tools.py``, the commands in ``commands_store.py`` and ``commands_learning.py``.
@@ -164,18 +163,23 @@ def setup(api: ExtensionAPI) -> None:
         )
 
     async def turn_start(event: object, context: ExtensionContext) -> None:
+        del event, context
         activity["last_activity"] = time.monotonic()
-        current = holder["stores"]
-        if isinstance(current, ExperienceStores):
-            current.reset_turn()
+        counters = holder["nudges"]
+        if isinstance(counters, NudgeCounters):
+            counters.on_iteration()
 
     async def on_input(event: object, context: ExtensionContext) -> InputHookResult | None:
-        """Count a used skill, and turn ``/learn`` into a foreground authoring turn."""
+        """Cancel an in-flight review, count the user turn, and note an explicit skill use."""
+        del context
         if not isinstance(event, InputEvent):
             return None
         activity["last_activity"] = time.monotonic()
         text = event.text.strip()
         await coordinator.cancel_for_live_turn()
+        current = holder["stores"]
+        if isinstance(current, ExperienceStores):
+            current.reset_turn()
         counters = holder["nudges"]
         if isinstance(counters, NudgeCounters):
             counters.on_user_turn()
@@ -201,9 +205,6 @@ def setup(api: ExtensionAPI) -> None:
                 path if path.is_absolute() else context.cwd / path,
                 context.skills,
             )
-        counters = holder["nudges"]
-        if isinstance(counters, NudgeCounters):
-            counters.on_iteration()
 
     async def tool_end(event: object, context: ExtensionContext) -> None:
         del context
@@ -278,9 +279,14 @@ def setup(api: ExtensionAPI) -> None:
     api.on("tool_execution_end", cast(ExtensionHandler, tool_end))
     api.on("agent_settled", cast(ExtensionHandler, settled))
     api.register_task_handler("experience-review", coordinator.consume)
-    register_store_commands(api, stores, curator)
+    register_store_commands(api, stores)
     register_learning_commands(
-        api, config=config, curator=curator, coordinator=coordinator, ask=ask
+        api,
+        config=config,
+        stores=stores,
+        curator=curator,
+        coordinator=coordinator,
+        ask=ask,
     )
     register_tools(api, stores, config)
     api.add_prompt_guideline(PROMPT_GUIDELINE)

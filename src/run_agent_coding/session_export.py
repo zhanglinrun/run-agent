@@ -1,4 +1,4 @@
-"""Portable HTML reports; SQLite backups are the recovery format."""
+"""Portable HTML reports; JSONL session trees are the recovery format."""
 
 from __future__ import annotations
 

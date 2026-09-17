@@ -50,6 +50,7 @@ from run_agent_core.messages import (
     assistant_content,
     message_to_user,
 )
+from run_agent_core.provider import run_after_provider_response, run_before_provider_headers
 from run_agent_core.tools import AgentTool, ToolCall
 from run_agent_core.types import JSONValue
 
@@ -176,6 +177,7 @@ class AnthropicProvider:
         signal: CancellationToken | None,
     ) -> AsyncIterator[ProviderEvent]:
         """Retry one prepared request until it completes, fails, or is cancelled."""
+        await run_before_provider_headers(request.headers)
         attempt = 0
         while True:
             state = _StreamState(attempt=attempt)
@@ -209,6 +211,9 @@ class AnthropicProvider:
             async with request.client.stream(
                 "POST", request.url, json=request.payload, headers=request.headers
             ) as response:
+                await run_after_provider_response(
+                    response.status_code, dict(response.headers)
+                )
                 if response.status_code >= 400:
                     state.result = await self._http_error_outcome(response, model, state.attempt)
                     return

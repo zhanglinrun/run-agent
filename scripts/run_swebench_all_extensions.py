@@ -24,8 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 EXTENSIONS = ("experience", "mcp", "permission_policy", "plan_mode")
 SAFE_FIELDS = ("instance_id", "repo", "base_commit", "problem_statement")
 POLICY = {
-    "RUN_AGENT_PERMISSION_MODE": "guarded",
-    "RUN_AGENT_MCP_SERVERS": "{}",
+    "RUN_AGENT_PERMISSION_MODE": "yolo",
     "EXPERIENCE_REVIEW_ENABLED": "true",
     "EXPERIENCE_MEMORY_ENABLED": "true",
     "EXPERIENCE_USER_PROFILE_ENABLED": "true",
@@ -151,7 +150,7 @@ def prepare(args):
         "subset": "HAL Verified Mini (local all50.json)",
         "cost_usd": None,
         "isolation": "independent shallow base-only Git repositories and private homes; "
-        "no shared Git objects/refs; guarded policy is not an OS sandbox",
+        "no shared Git objects/refs; yolo permission is not an OS sandbox",
     }
     ambient = {**os.environ, **dotenv_values(ROOT / ".env")}
     safe_names = {
@@ -210,7 +209,7 @@ def environment(config, trial=None):
         }
     )
     for key in list(env):
-        if key.startswith(("EXPERIENCE_", "RUN_AGENT_MCP_", "RUN_AGENT_PERMISSION_")):
+        if key.startswith(("EXPERIENCE_", "RUN_AGENT_PERMISSION_")):
             env.pop(key)
     env.update(config["environment"])
     env.update(PYTHONUTF8="1", PYTHONIOENCODING="utf-8", PYTHONDONTWRITEBYTECODE="1")
@@ -313,13 +312,13 @@ async def application_child(campaign, trial, *, probe=False):
                 arguments={"path": str(trial / "outside.txt"), "content": "x"},
             )
         )
-        if not blocked.block:
-            raise RuntimeError("Guarded permission policy not active")
+        if blocked.block:
+            raise RuntimeError("Eval permission mode must allow writes")
         manifest = {
             "sources": sources,
             "tools": tools,
             "plan": plan,
-            "permission": "guarded",
+            "permission": "yolo",
             "outside_write_blocked": blocked.block,
             "mcp_service_count": 0,
             "experience_config": dataclasses.asdict(load_experience_config(runtime.environment)),

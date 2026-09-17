@@ -172,7 +172,7 @@ SKILL_REVIEW_PROMPT = (
     "If you notice two existing skills that overlap, note it in your "
     "reply — the background curator handles consolidation at scale.\n\n"
     "Protected skills (DO NOT edit these):\n"
-    "  • PINNED skills (marked via '/skillset pin'). You are an "
+    "  • PINNED skills (marked via '/curator pin'). You are an "
     "autonomous no-user-present actor, so pin blocks your writes too — "
     "content updates included. Only the user, in a foreground session, "
     "can change a pinned skill.\n"
@@ -183,7 +183,7 @@ SKILL_REVIEW_PROMPT = (
     "being in play does not make one yours to edit. Mark these as "
     "'[user-owned, do not patch]' in your reasoning and do not call patch on them. "
     "If such a skill is wrong or outdated, say so in your reply and recommend "
-    "'/skillset adopt <name>' — do not try to patch it.\n"
+    "'/curator adopt <name>' — do not try to patch it.\n"
     "If the only skills that need updating are protected, say\n"
     "'Nothing to save.' and stop.\n\n"
     "Do NOT capture (these become persistent self-imposed constraints "
@@ -275,14 +275,14 @@ COMBINED_REVIEW_PROMPT = (
     "If you notice overlapping existing skills, mention it — the "
     "background curator handles consolidation.\n\n"
     "Protected skills (DO NOT edit these):\n"
-    "  • PINNED skills (marked via '/skillset pin'). Pin blocks "
+    "  • PINNED skills (marked via '/curator pin'). Pin blocks "
     "autonomous writes entirely — content updates included — because no "
     "user is present to consent. Only a foreground session can change one.\n"
     "  • USER-OWNED skills — anything not curator-managed (hand-written, "
     "URL-installed, or created by a foreground agent at the user's "
     "request). Your writes to these WILL be refused, including to skills "
     "loaded or consulted this session. If one is wrong, say so in your "
-    "reply and recommend '/skillset adopt <name>' instead.\n"
+    "reply and recommend '/curator adopt <name>' instead.\n"
     "If the only skills that need updating are protected, say\n"
     "'Nothing to save.' and stop.\n\n"
     "Do NOT capture as skills (these become persistent self-imposed "
@@ -388,8 +388,8 @@ class ReviewPolicy:
     # nudge flags instead. 0 switches the cadence off.
     review_every_turns: int = 10
     # A failed run or a user correction admits a review on its own (this extension's
-    # addition to hermes' cadence-only trigger).
-    review_on_signals: bool = True
+    # addition to hermes' cadence-only trigger; off by default).
+    review_on_signals: bool = False
     # A completion event arrives while its own session is still unwinding, so a review
     # submitted there always finds the foreground busy. Waiting a bounded time is what
     # turns that race into a short delay, and the request's own retry covers the rest, so

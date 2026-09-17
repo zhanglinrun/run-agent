@@ -93,6 +93,17 @@ class LabelEntry(BaseSessionEntry):
     label: str
 
 
+class LeafEntry(BaseSessionEntry):
+    """The active branch leaf pointer entry."""
+
+    type: Literal["leaf"] = "leaf"
+    entry_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("entry_id", "entryId"),
+        serialization_alias="entryId",
+    )
+
+
 class SessionInfoEntry(BaseSessionEntry):
     """Basic session metadata entry."""
 
@@ -100,6 +111,11 @@ class SessionInfoEntry(BaseSessionEntry):
     created_at: float = Field(default_factory=current_timestamp)
     cwd: str | None = None
     title: str | None = None
+    current_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("current_id", "currentId"),
+        serialization_alias="currentId",
+    )
 
 
 class CustomEntry(BaseSessionEntry):
@@ -117,6 +133,7 @@ type SessionEntry = Annotated[
     | CompactionEntry
     | BranchSummaryEntry
     | LabelEntry
+    | LeafEntry
     | SessionInfoEntry
     | CustomEntry,
     Field(discriminator="type"),

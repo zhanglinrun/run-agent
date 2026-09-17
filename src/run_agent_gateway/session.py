@@ -1,16 +1,15 @@
 """Where a message came from, and which coding session answers it.
 
 A ``SessionSource`` describes the chat a message arrived in. ``build_session_key`` turns
-that into a stable key, and ``SessionStore`` maps keys to coding session IDs in a small
-JSON file so the mapping survives a restart. The store also applies the reset policy:
-when a chat has been quiet for long enough, or a daily boundary has passed, the next
-message starts a fresh session.
+that into a stable key, and ``SessionStore`` maps keys to coding session IDs in JSONL so
+the mapping survives a restart. The store also applies the reset policy: when a chat has
+been quiet for long enough, or a daily boundary has passed, the next message starts a
+fresh session.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
@@ -119,8 +118,53 @@ class SessionEntry:
         )
 
 
+def _store_paths(path: Path) -> tuple[Path, Path]:
+    """Resolve the JSONL file and the legacy JSON import path."""
+    if path.suffix.lower() == ".jsonl":
+        return path, path.with_name("sessions.json")
+    if path.suffix.lower() in {".json", ".sqlite3"}:
+        return path.with_suffix(".jsonl"), path.with_name("sessions.json")
+    return path.with_name(f"{path.name}.jsonl") if path.suffix else path.with_suffix(".jsonl"), (
+        path.with_name("sessions.json")
+    )
+
+
+def _append_jsonl(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(payload, ensure_ascii=False) + "\n"
+    with path.open("a", encoding="utf-8") as file:
+        file.write(line)
+        file.flush()
+
+
+def _read_jsonl_entries(path: Path) -> dict[str, SessionEntry]:
+    entries: dict[str, SessionEntry] = {}
+    if not path.is_file():
+        return entries
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return entries
+    for raw_line in text.split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        try:
+            entry = SessionEntry.from_dict(payload)
+        except (KeyError, TypeError, ValueError):
+            continue
+        entries[entry.session_key] = entry
+    return entries
+
+
 class SessionStore:
-    """Chat-key to coding-session mapping persisted as one JSON document."""
+    """Chat-key to coding-session mapping persisted as append-only JSONL."""
 
     def __init__(
         self,
@@ -129,30 +173,52 @@ class SessionStore:
         *,
         now: Callable[[], datetime] | None = None,
     ) -> None:
-        self.path = path
+        self.path, self._legacy_json = _store_paths(path)
         self.policy = policy
         self._now = now or datetime.now
         self._entries: dict[str, SessionEntry] = {}
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         self._load()
 
     def _load(self) -> None:
-        if not self.path.is_file():
-            return
-        document = json.loads(self.path.read_text(encoding="utf-8"))
-        sessions = document.get("sessions", {}) if isinstance(document, dict) else {}
-        for key, raw in sessions.items():
-            if isinstance(raw, dict):
-                self._entries[str(key)] = SessionEntry.from_dict({**raw, "session_key": key})
+        self._entries = _read_jsonl_entries(self.path)
+        imported = self._import_legacy_json()
+        if imported:
+            self._upsert_many(imported)
 
-    def _save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        document = {
-            "version": 1,
-            "sessions": {key: entry.to_dict() for key, entry in self._entries.items()},
-        }
-        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
-        temporary.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(temporary, self.path)
+    def _import_legacy_json(self) -> list[SessionEntry]:
+        if not self._legacy_json.is_file():
+            return []
+        try:
+            document = json.loads(self._legacy_json.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return []
+        sessions = document.get("sessions", document) if isinstance(document, dict) else {}
+        if not isinstance(sessions, dict):
+            return []
+        imported: list[SessionEntry] = []
+        for key, raw in sessions.items():
+            session_key = str(key)
+            if session_key.startswith("_") or session_key in self._entries:
+                continue
+            if not isinstance(raw, dict):
+                continue
+            try:
+                entry = SessionEntry.from_dict({**raw, "session_key": session_key})
+            except (KeyError, TypeError, ValueError):
+                continue
+            self._entries[session_key] = entry
+            imported.append(entry)
+        return imported
+
+    def _upsert(self, entry: SessionEntry) -> None:
+        self._upsert_many((entry,))
+
+    def _upsert_many(self, entries: tuple[SessionEntry, ...] | list[SessionEntry]) -> None:
+        if not entries:
+            return
+        for entry in entries:
+            _append_jsonl(self.path, entry.to_dict())
 
     def get(self, session_key: str) -> SessionEntry | None:
         return self._entries.get(session_key)
@@ -187,7 +253,7 @@ class SessionStore:
         entry.session_id = session_id
         entry.updated_at = time.time()
         try:
-            self._save()
+            self._upsert(entry)
         except BaseException:
             entry.session_id = previous_id
             entry.updated_at = previous_updated_at
@@ -198,13 +264,21 @@ class SessionStore:
         entry = self._entries.get(session_key)
         if entry is not None:
             entry.updated_at = time.time()
-            self._save()
+            self._upsert(entry)
 
     def _create(self, session_key: str, source: SessionSource) -> SessionEntry:
         moment = time.time()
         entry = SessionEntry(session_key, uuid4().hex, moment, moment, source)
+        previous = self._entries.get(session_key)
         self._entries[session_key] = entry
-        self._save()
+        try:
+            self._upsert(entry)
+        except BaseException:
+            if previous is None:
+                self._entries.pop(session_key, None)
+            else:
+                self._entries[session_key] = previous
+            raise
         return entry
 
     def _should_reset(self, entry: SessionEntry) -> str | None:

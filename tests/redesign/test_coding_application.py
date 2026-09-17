@@ -1,5 +1,4 @@
 import asyncio
-import sqlite3
 
 import pytest
 
@@ -15,8 +14,8 @@ from run_agent_core.messages import (
     UserMessage,
 )
 from run_agent_core.provider_events import AssistantDoneEvent
-from run_agent_core.session import CustomEntry, MessageEntry
-from run_agent_core.session.contracts import RunOutcome, SessionConflict, StaleRunToken
+from run_agent_core.session import CustomEntry, LeafEntry, resolve_active_leaf_id
+from run_agent_core.session.contracts import SessionConflict
 
 
 class ReplyProvider:
@@ -33,6 +32,31 @@ class ReplyProvider:
                 stop_reason="stop",
             ),
         )
+
+
+class RecordingProvider(ReplyProvider):
+    def __init__(self):
+        self.requests = []
+
+    async def stream_response(self, *, model, system, messages, tools, **kwargs):
+        self.requests.append(
+            {
+                "model": model,
+                "system": system,
+                "messages": [message.model_dump(mode="json") for message in messages],
+                "tools": [
+                    {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": dict(tool.parameters),
+                        "execution_mode": tool.execution_mode,
+                    }
+                    for tool in tools
+                ],
+            }
+        )
+        async for event in super().stream_response(messages=messages, **kwargs):
+            yield event
 
 
 def options(tmp_path, **kwargs):
@@ -56,8 +80,10 @@ async def test_application_commits_receipt_reopens_and_branches(tmp_path):
         session_id = app.session.session_id
         entries = (await app.session.storage.read_entries()).entries
         assert all(entry.seq is not None for entry in entries)
-        assert entries[-1].id == receipt.head_id
-        assert entries[-1].message.text == "reply: first"
+        assert resolve_active_leaf_id(entries) == receipt.head_id
+        assert isinstance(entries[-1], LeafEntry)
+        head_entry = next(entry for entry in entries if entry.id == receipt.head_id)
+        assert head_entry.message.text == "reply: first"
         first_head = receipt.head_id
         first_branch = receipt.branch_id
         events = [event async for event in app.prompt("second")]
@@ -65,13 +91,15 @@ async def test_application_commits_receipt_reopens_and_branches(tmp_path):
         await app.command(f"/branch {first_head}")
         assert app.session.storage.branch_id != first_branch
         assert [m.text for m in app.session.messages if isinstance(m, UserMessage)] == ["first"]
-        await app.command("/name SQLite session")
+        await app.command("/name JSONL session")
         events = [event async for event in app.prompt("third")]
         third_head = events[-1].head_id
+        jsonl = opts.paths.project_session_dir(tmp_path) / f"{session_id}.jsonl"
+        assert jsonl.is_file() and jsonl.stat().st_size > 0
     async with await CodingApplication.open(
         options(tmp_path, resume=session_id), provider=ReplyProvider()
     ) as reopened:
-        assert reopened.session.session_title == "SQLite session"
+        assert reopened.session.session_title == "JSONL session"
         assert (await reopened.session.storage.get_head()).entry_id == third_head
         assert [m.text for m in reopened.session.messages if isinstance(m, UserMessage)] == [
             "first",
@@ -82,57 +110,7 @@ async def test_application_commits_receipt_reopens_and_branches(tmp_path):
         }
 
 
-async def test_completion_failure_is_atomic_and_never_emits_settled(tmp_path):
-    async with await CodingApplication.open(options(tmp_path), provider=ReplyProvider()) as app:
-        storage = app.session.storage
-
-        def fail(stage):
-            if stage == "outcome_updated":
-                raise OSError("injected transaction failure")
-
-        storage.repository.fault = fail
-        observed = []
-        with pytest.raises(OSError, match="injected"):
-            async for event in app.prompt("atomic"):
-                observed.append(event)
-        assert not any(isinstance(event, AgentSettledEvent) for event in observed)
-        entries = (await storage.read_entries()).entries
-        assert not any(
-            isinstance(entry, MessageEntry) and isinstance(entry.message, AssistantMessage)
-            for entry in entries
-        )
-        status = await storage.repository.database.run(
-            lambda connection: connection.execute(
-                "SELECT status FROM executions WHERE run_id=?", (storage.token.run_id,)
-            ).fetchone()[0]
-        )
-        assert status == "running"
-
-
-async def test_completion_retires_run_token_and_retry_checks_full_outcome(tmp_path):
-    manager = SessionManager(options(tmp_path).paths)
-    try:
-        record = await manager.create_session(cwd=tmp_path, model="test")
-        storage = await manager.open_storage(record.id)
-        token = await storage.begin_run("run-one")
-        entry = CustomEntry(namespace="test", data={"key": "value"})
-        outcome = RunOutcome(token, storage.branch_id, "cancelled", None, (entry,))
-        receipt = await storage.complete_run(outcome)
-        assert await storage.complete_run(outcome) == receipt
-        with pytest.raises(StaleRunToken):
-            await storage.append_entries(
-                (CustomEntry(parent_id=entry.id, namespace="test", data={}),),
-                expected_head=entry.id,
-                token=token,
-            )
-        with pytest.raises(SessionConflict):
-            await storage.complete_run(RunOutcome(token, storage.branch_id, "cancelled", entry.id))
-        assert (await storage.begin_run("run-two")).generation > token.generation
-    finally:
-        await manager.aclose()
-
-
-async def test_failed_branch_summary_keeps_original_active_branch(tmp_path):
+async def test_failed_branch_summary_keeps_original_active_head(tmp_path):
     manager = SessionManager(options(tmp_path).paths)
     try:
         record = await manager.create_session(cwd=tmp_path, model="test")
@@ -144,12 +122,6 @@ async def test_failed_branch_summary_keeps_original_active_branch(tmp_path):
         with pytest.raises(SessionConflict):
             await storage.fork(entry.id, token=storage.token, entries=(invalid,))
         assert await storage.get_head() == original
-        actual = await storage.repository.database.run(
-            lambda connection: connection.execute(
-                "SELECT active_branch_id FROM sessions WHERE session_id=?", (record.id,)
-            ).fetchone()[0]
-        )
-        assert actual == original.branch_id
     finally:
         await manager.aclose()
 
@@ -168,7 +140,7 @@ class WaitingProvider:
             self.closed.set()
 
 
-async def test_cancelled_run_is_committed_and_next_run_can_start(tmp_path):
+async def test_cancelled_run_lets_the_next_run_start(tmp_path):
     provider = WaitingProvider()
     async with await CodingApplication.open(options(tmp_path), provider=provider) as app:
 
@@ -183,48 +155,7 @@ async def test_cancelled_run_is_committed_and_next_run_can_start(tmp_path):
             await task
         assert provider.closed.is_set()
         assert not app.session.is_running
-        with sqlite3.connect(options(tmp_path).paths.database_path) as connection:
-            assert (
-                connection.execute(
-                    "SELECT status FROM executions WHERE run_id=?", (run_token.run_id,)
-                ).fetchone()[0]
-                == "cancelled"
-            )
         assert app.session.storage.token.generation > run_token.generation
-
-
-async def test_cancel_during_begin_reconciles_token_without_calling_model(tmp_path, monkeypatch):
-    provider = WaitingProvider()
-    async with await CodingApplication.open(options(tmp_path), provider=provider) as app:
-        repository = app.session.storage.repository
-        original = repository.begin_run
-        committed = asyncio.Event()
-        release = asyncio.Event()
-
-        async def paused_begin(*args, **kwargs):
-            token = await original(*args, **kwargs)
-            committed.set()
-            await release.wait()
-            return token
-
-        monkeypatch.setattr(repository, "begin_run", paused_begin)
-
-        async def consume():
-            return [event async for event in app.prompt("cancel admission")]
-
-        task = asyncio.create_task(consume())
-        await asyncio.wait_for(committed.wait(), 5)
-        task.cancel()
-        release.set()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        assert not provider.entered.is_set()
-        assert not app.session.is_running
-        row = await repository.database.run(
-            lambda connection: connection.execute("SELECT status FROM executions").fetchone()[0]
-        )
-        assert row == "cancelled"
-        assert app.session.storage.token.run_id.startswith("idle-")
 
 
 async def test_cancelled_open_releases_new_writer(tmp_path, monkeypatch):
@@ -255,36 +186,26 @@ async def test_cancelled_open_releases_new_writer(tmp_path, monkeypatch):
         await manager.aclose()
 
 
-async def test_generator_close_does_not_leave_running_execution(tmp_path):
+async def test_generator_close_does_not_leave_session_running(tmp_path):
     async with await CodingApplication.open(options(tmp_path), provider=ReplyProvider()) as app:
         events = app.prompt("close early")
         await anext(events)
         await events.aclose()
         assert not app.session.is_running
-        statuses = await app.session.storage.repository.database.run(
-            lambda connection: [
-                row[0] for row in connection.execute("SELECT status FROM executions")
-            ]
-        )
-        assert statuses == ["cancelled"]
 
 
-async def test_reopen_marks_unfinished_attempt_unknown_without_replaying_it(tmp_path):
+async def test_reopen_keeps_persisted_entries_without_replaying_work(tmp_path):
     manager = SessionManager(options(tmp_path).paths)
     record = await manager.create_session(cwd=tmp_path, model="test")
     storage = await manager.open_storage(record.id)
     await storage.begin_run("unfinished")
+    entry = CustomEntry(namespace="test", data={"kept": True})
+    await storage.append_entries((entry,), expected_head=None, token=storage.token)
     await manager.aclose()
     manager = SessionManager(options(tmp_path).paths)
     try:
         storage = await manager.open_storage(record.id)
-        row = await storage.repository.database.run(
-            lambda connection: connection.execute(
-                "SELECT status FROM executions WHERE run_id='unfinished'"
-            ).fetchone()[0]
-        )
-        assert row == "outcome_unknown"
-        assert not (await storage.read_entries()).entries
+        assert [item.id for item in (await storage.read_entries()).entries] == [entry.id]
         await storage.begin_run("new-explicit-request")
     finally:
         await manager.aclose()

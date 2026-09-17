@@ -17,6 +17,7 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
 from tests.redesign.test_coding_application import options
 from tests.redesign.test_extension_tasks import completed
 from tests.redesign.test_host_services import context
@@ -41,6 +42,12 @@ REPO = Path(__file__).resolve().parents[2]
 EXPERIENCE = REPO / "src" / "run_agent_extensions" / "experience"
 REVIEW_HANDLER = "experience-review"
 CONSUMED_PREFIX = "review-consumed:"
+
+
+@pytest.fixture(autouse=True)
+def _admit_failed_runs_for_pipeline_tests(monkeypatch):
+    monkeypatch.setenv("EXPERIENCE_REVIEW_ON_SIGNALS", "true")
+
 
 EDITS = {
     "memory": [
