@@ -128,9 +128,7 @@ class ReviewTrigger:
         """A nudge is the reason hermes reviews; a correction or failure is opt-in."""
         if self._nudged(request):
             return True
-        return bool(
-            self._policy.review_on_signals and (request.corrections or request.failures)
-        )
+        return bool(self._policy.review_on_signals and (request.corrections or request.failures))
 
     def _nudged(self, request: ReviewRequest) -> bool:
         if request.memory_due or request.skills_due:
@@ -195,9 +193,7 @@ class ReviewCoordinator:
             return
         self._runs_since_review = 0
         self._last_reviewed_transcript = len(self._transcript())
-        signaled = self._policy.review_on_signals and bool(
-            request.corrections or request.failures
-        )
+        signaled = self._policy.review_on_signals and bool(request.corrections or request.failures)
         review_memory = flags.review_memory or (not flags.review_skills and signaled)
         review_skills = flags.review_skills or signaled
         if not flags.any:

@@ -34,7 +34,7 @@ class MCPServerConfig:
 
 def _schema_as_mapping(schema: object) -> dict[str, JSONValue]:
     if isinstance(schema, Mapping):
-        return dict(schema)  # type: ignore[arg-type]
+        return dict(schema)
     dump = getattr(schema, "model_dump", None)
     if callable(dump):
         data = dump(mode="json")
@@ -76,9 +76,7 @@ class MCPConnection:
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> AgentToolResult:
         if self._session is None:
             return AgentToolResult(
-                content=[
-                    TextContent(text=f"MCP server '{self.config.name}' is not connected")
-                ],
+                content=[TextContent(text=f"MCP server '{self.config.name}' is not connected")],
                 details={"server": self.config.name, "error": True},
             )
         try:
@@ -162,9 +160,7 @@ class MCPClientManager:
         for remote in mcp_tools:
             remote_name = remote.name
             schema = _schema_as_mapping(
-                getattr(remote, "input_schema", None)
-                or getattr(remote, "inputSchema", None)
-                or {}
+                getattr(remote, "input_schema", None) or getattr(remote, "inputSchema", None) or {}
             )
             if schema.get("type") is None:
                 schema = {
@@ -201,9 +197,7 @@ class MCPClientManager:
         self._tools.extend(wrapped_tools)
         return wrapped_tools
 
-    async def connect_all(
-        self, configs: list[MCPServerConfig] | None = None
-    ) -> list[AgentTool]:
+    async def connect_all(self, configs: list[MCPServerConfig] | None = None) -> list[AgentTool]:
         target = configs if configs is not None else self._configs
         tools: list[AgentTool] = []
         for config in target:

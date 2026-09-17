@@ -40,8 +40,10 @@ async def test_backup_restores_sessions_and_gateway_jsonl(tmp_path):
         '{"type":"message","id":"after"}\n', encoding="utf-8"
     )
     restored = await restore_backup(destination, tmp_path / "restored")
-    assert (restored / "sessions/demo-abc123/s1.jsonl").read_text(encoding="utf-8").startswith(
-        '{"type":"message","id":"a"}'
+    assert (
+        (restored / "sessions/demo-abc123/s1.jsonl")
+        .read_text(encoding="utf-8")
+        .startswith('{"type":"message","id":"a"}')
     )
     assert (restored / "gateway/sessions.jsonl").is_file()
 

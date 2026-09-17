@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import tempfile
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, suppress
@@ -175,11 +176,11 @@ def _suppress_os_error() -> Iterator[None]:
 
 
 def _lock_file(file: BinaryIO, *, exclusive: bool) -> None:
-    if os.name == "nt":
+    if sys.platform == "win32":
         import msvcrt
 
         del exclusive
-        msvcrt.locking(file.fileno(), msvcrt.LK_LOCK, 1)  # type: ignore[attr-defined]
+        msvcrt.locking(file.fileno(), msvcrt.LK_LOCK, 1)
         return
     import fcntl
 
@@ -188,11 +189,11 @@ def _lock_file(file: BinaryIO, *, exclusive: bool) -> None:
 
 
 def _unlock_file(file: BinaryIO) -> None:
-    if os.name == "nt":
+    if sys.platform == "win32":
         import msvcrt
 
         file.seek(0)
-        msvcrt.locking(file.fileno(), msvcrt.LK_UNLCK, 1)  # type: ignore[attr-defined]
+        msvcrt.locking(file.fileno(), msvcrt.LK_UNLCK, 1)
         return
     import fcntl
 

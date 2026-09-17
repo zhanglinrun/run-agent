@@ -86,8 +86,8 @@ class CodingSessionRecord:
             cwd=Path(str(payload["cwd"])),
             model=str(payload.get("model") or ""),
             title=None if payload.get("title") is None else str(payload["title"]),
-            created_at=float(payload.get("created_at") or 0),
-            updated_at=float(payload.get("updated_at") or 0),
+            created_at=float(str(payload.get("created_at") or 0)),
+            updated_at=float(str(payload.get("updated_at") or 0)),
             provider_name=(
                 None if payload.get("provider_name") is None else str(payload["provider_name"])
             ),
@@ -156,6 +156,7 @@ class SessionManager:
         record = self._prepare_session(
             cwd=cwd, model=model, provider_name=provider_name, title=title, session_id=session_id
         )
+        assert record.path is not None
         record.path.parent.mkdir(parents=True, exist_ok=True)
         if record.path.exists() and record.path.stat().st_size:
             raise RuntimeError(f"Session already exists with id '{record.id}'")
@@ -195,9 +196,7 @@ class SessionManager:
         return None
 
     async def list_sessions(self, cwd: Path | None = None) -> list[CodingSessionRecord]:
-        records = (
-            self._read_project_records(cwd) if cwd is not None else self._read_all_records()
-        )
+        records = self._read_project_records(cwd) if cwd is not None else self._read_all_records()
         return sorted(records, key=lambda record: record.updated_at, reverse=True)
 
     async def open_storage(
@@ -222,9 +221,7 @@ class SessionManager:
             raise ValueError(f"Unknown session: {session_id}")
         path = record.path or self.paths.project_session_dir(record.cwd) / f"{record.id}.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
-        handle = SessionWriter(
-            JsonlSessionStorage(path), session_id, owner_id=self.owner_id
-        )
+        handle = SessionWriter(JsonlSessionStorage(path), session_id, owner_id=self.owner_id)
         services = await self.host_services()
         services.attach_writer(handle, cwd=record.cwd)
         self._handles[session_id] = handle
@@ -362,4 +359,3 @@ def _deduplicate_records(records: list[CodingSessionRecord]) -> list[CodingSessi
         if existing is None or record.updated_at >= existing.updated_at:
             by_id[record.id] = record
     return list(by_id.values())
-

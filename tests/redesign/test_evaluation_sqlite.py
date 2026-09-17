@@ -72,9 +72,7 @@ class EvaluatedProvider:
 
 
 @pytest.mark.parametrize("mode", ["success", "error"])
-async def test_eval_uses_real_application_and_failure_keeps_cost(
-    tmp_path, monkeypatch, mode
-):
+async def test_eval_uses_real_application_and_failure_keeps_cost(tmp_path, monkeypatch, mode):
     providers = []
 
     def create(*args, **kwargs):

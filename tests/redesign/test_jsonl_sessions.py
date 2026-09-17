@@ -24,7 +24,9 @@ async def test_jsonl_append_survives_reopen(tmp_path: Path) -> None:
     path = tmp_path / "session.jsonl"
     storage = JsonlSessionStorage(path)
     first = MessageEntry(message=UserMessage(content="hello"))
-    second = MessageEntry(parent_id=first.id, message=AssistantMessage(content=[TextContent(text="hi")]))
+    second = MessageEntry(
+        parent_id=first.id, message=AssistantMessage(content=[TextContent(text="hi")])
+    )
     await storage.append(first)
     await storage.append(second)
     reopened = JsonlSessionStorage(path)
@@ -104,7 +106,9 @@ async def test_fork_appends_a_new_timeline(tmp_path: Path) -> None:
         await writer.append_entries((first,), expected_head=None, token=writer.token)
         await writer.append_entries((second,), expected_head=first.id, token=writer.token)
         original = await writer.get_head()
-        marker = CustomEntry(parent_id=first.id, namespace="run.resources", data={"reason": "branch"})
+        marker = CustomEntry(
+            parent_id=first.id, namespace="run.resources", data={"reason": "branch"}
+        )
         forked = await writer.fork(first.id, token=writer.token, entries=(marker,))
         assert forked.entry_id == marker.id
         assert forked.branch_id != original.branch_id
@@ -231,7 +235,9 @@ async def test_fork_copies_path_into_a_new_workspace_session(tmp_path: Path) -> 
         writer = await manager.open_storage(source.id)
         info = SessionInfoEntry(cwd=str(tmp_path))
         first = MessageEntry(parent_id=info.id, message=UserMessage(content="keep"))
-        second = MessageEntry(parent_id=first.id, message=AssistantMessage(content=[TextContent(text="drop")]))
+        second = MessageEntry(
+            parent_id=first.id, message=AssistantMessage(content=[TextContent(text="drop")])
+        )
         await writer.append_entries((info,), expected_head=None, token=writer.token)
         await writer.append_entries((first,), expected_head=info.id, token=writer.token)
         await writer.append_entries((second,), expected_head=first.id, token=writer.token)
@@ -260,10 +266,11 @@ async def test_fork_copies_path_into_a_new_workspace_session(tmp_path: Path) -> 
 
 def test_session_tree_rewind_keeps_abandoned_branch() -> None:
     first = MessageEntry(message=UserMessage(content="a"))
-    second = MessageEntry(parent_id=first.id, message=AssistantMessage(content=[TextContent(text="b")]))
+    second = MessageEntry(
+        parent_id=first.id, message=AssistantMessage(content=[TextContent(text="b")])
+    )
     tree = SessionTree((first, second))
     tree.rewind(first.id)
     assert tree.current_id == first.id
     assert second.id in tree.entries
     assert [entry.id for entry in tree.path()] == [first.id]
-

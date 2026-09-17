@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -31,7 +32,7 @@ assert scripts == {'run':'run_agent_entry:main'}, scripts
 async def check():
     paths = RunAgentPaths(home=pathlib.Path('state'), agents_home=pathlib.Path('agents'))
     manager = SessionManager(paths)
-    record = await manager.create_session(cwd='.', model='test', session_id='s')
+    record = await manager.create_session(cwd=pathlib.Path('.'), model='test', session_id='s')
     writer = await manager.open_storage(record.id)
     await writer.append_entries([MessageEntry(id='a', message=UserMessage(content='persist'))],
                                 token=writer.token, expected_head=None)
@@ -179,8 +180,10 @@ def main() -> None:
             text=True,
             encoding="utf-8",
             timeout=30,
-            check=True,
         )
+        if smoke.returncode:
+            sys.stderr.write(smoke.stderr)
+            raise SystemExit(smoke.returncode)
         report = json.loads(smoke.stdout)
         prefix = Path(report["python_prefix"]).resolve()
         assert prefix == python.parent.parent.resolve()

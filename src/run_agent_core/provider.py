@@ -31,9 +31,7 @@ class ProviderHttpHooks(Protocol):
 
     async def prepare_provider_headers(self, headers: dict[str, str]) -> None: ...
 
-    async def observe_provider_response(
-        self, status: int, headers: Mapping[str, str]
-    ) -> None: ...
+    async def observe_provider_response(self, status: int, headers: Mapping[str, str]) -> None: ...
 
 
 _PROVIDER_HTTP_HOOKS: ContextVar[ProviderHttpHooks | None] = ContextVar(

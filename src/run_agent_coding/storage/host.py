@@ -84,8 +84,9 @@ class MemoryHostServices:
         assert_active()
         views: dict[str, ResourceView] = {}
         for source in sources:
-            scopes: dict[str, dict[str, ResourceVersion]] = {}
-            for name in ("session", "project", "user"):
+            names: tuple[ServiceScope, ...] = ("session", "project", "user")
+            scopes: dict[ServiceScope, dict[str, ResourceVersion]] = {}
+            for name in names:
                 key = self._scope_key(session_id, source, name)
                 heads = _SCOPE_HEADS.get(key, {})
                 versions = _SCOPE_VERSIONS.get(key, {})
@@ -335,15 +336,11 @@ class MemoryResources:
         for ref in refs:
             if ref.digest not in self._blobs:
                 raise KeyError(f"Artifact is outside this source scope: {ref.digest}")
-        value = ResourceVersion(
-            key, "", parent_version, content, dict(metadata or {}), refs
-        )
+        value = ResourceVersion(key, "", parent_version, content, dict(metadata or {}), refs)
         body = asdict(value)
         body.pop("version")
         version = sha256(canonical_json(body).encode()).hexdigest()
-        value = ResourceVersion(
-            key, version, parent_version, content, dict(metadata or {}), refs
-        )
+        value = ResourceVersion(key, version, parent_version, content, dict(metadata or {}), refs)
         self._versions[version] = value
         self._heads[key] = version
         return value

@@ -108,9 +108,9 @@ async def test_cache_tampering_blocks_model_input(tmp_path, skill_root):
 async def test_package_file_limit_is_explicit(tmp_path, skill_root):
     (skill_root / "oversize.bin").write_bytes(b"x" * (16 * 1024 * 1024))
     store = SkillPackageStore(tmp_path / "cache")
-    skill = load_skills(
-        RunAgentResourcePaths(root=options(tmp_path).paths.home, agents_root=None)
-    )[0]
+    skill = load_skills(RunAgentResourcePaths(root=options(tmp_path).paths.home, agents_root=None))[
+        0
+    ]
     with pytest.raises(SkillPackageError, match="16 MiB"):
         await store.freeze(skill)
     assert not any(tmp_path.joinpath("cache").rglob("SKILL.md"))

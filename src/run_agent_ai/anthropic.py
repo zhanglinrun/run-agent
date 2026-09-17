@@ -211,9 +211,7 @@ class AnthropicProvider:
             async with request.client.stream(
                 "POST", request.url, json=request.payload, headers=request.headers
             ) as response:
-                await run_after_provider_response(
-                    response.status_code, dict(response.headers)
-                )
+                await run_after_provider_response(response.status_code, dict(response.headers))
                 if response.status_code >= 400:
                     state.result = await self._http_error_outcome(response, model, state.attempt)
                     return

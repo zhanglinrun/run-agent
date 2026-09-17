@@ -36,7 +36,10 @@ def _runtime(tmp_path: Path, source: str) -> ExtensionRuntime:
 
 
 def test_subscribe_accepts_pi_36_and_rejects_old_names(tmp_path):
-    names = "\n".join(f'    api.on("{name}", lambda event, context: None)' for name in sorted(EXTENSION_EVENT_TYPES))
+    names = "\n".join(
+        f'    api.on("{name}", lambda event, context: None)'
+        for name in sorted(EXTENSION_EVENT_TYPES)
+    )
     old = "\n".join(
         f'    api.on("{name}", lambda event, context: None)'
         for name in (

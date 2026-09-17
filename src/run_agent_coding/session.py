@@ -1622,9 +1622,7 @@ class CodingSession:
             )
         old_leaf_id = self._last_parent_id
         self._tree.rewind(entry_id)
-        await self._append_session_batch(
-            (LeafEntry(parent_id=entry_id, entry_id=entry_id),)
-        )
+        await self._append_session_batch((LeafEntry(parent_id=entry_id, entry_id=entry_id),))
         self._last_parent_id = entry_id
         await self._refresh_persisted_state(leaf_id=entry_id)
         history_repair = await self._persist_active_tool_history_repairs()
@@ -3985,12 +3983,8 @@ class CodingSession:
         *,
         context: AgentCallDiagnosticContext,
     ) -> bool:
-        if await self._extension_runtime.emit_session_before_compact(
-            "overflow", will_retry=True
-        ):
-            await self._notify_compaction_failure(
-                "overflow", aborted=True, will_retry=True
-            )
+        if await self._extension_runtime.emit_session_before_compact("overflow", will_retry=True):
+            await self._notify_compaction_failure("overflow", aborted=True, will_retry=True)
             return False
         try:
             plan = self._recent_preserving_compaction_plan()
@@ -4123,9 +4117,7 @@ class CodingSession:
         if plan is None:
             return False
         if await self._extension_runtime.emit_session_before_compact("threshold"):
-            await self._notify_compaction_failure(
-                "threshold", aborted=True, will_retry=False
-            )
+            await self._notify_compaction_failure("threshold", aborted=True, will_retry=False)
             return False
         try:
             summary = await self._generate_compaction_summary(plan.messages_to_summarize)

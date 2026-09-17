@@ -152,9 +152,7 @@ class JsonlTelemetrySink:
                 batch.append(additional)
             try:
                 async with self._lock:
-                    self._seq = _write_batch(
-                        self._path, batch=tuple(batch), start_seq=self._seq
-                    )
+                    self._seq = _write_batch(self._path, batch=tuple(batch), start_seq=self._seq)
             except BaseException as exc:
                 self._error = exc
                 self.failed += len(batch)

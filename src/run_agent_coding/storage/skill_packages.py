@@ -83,8 +83,7 @@ class SkillPackageStore:
         destination = self.cache / digest
         destination.mkdir(parents=True, exist_ok=True)
         by_path = {
-            path.relative_to(root).as_posix(): content
-            for path, (*_, content) in captured.items()
+            path.relative_to(root).as_posix(): content for path, (*_, content) in captured.items()
         }
         for row in rows:
             relative = PurePosixPath(row["path"])

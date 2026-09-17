@@ -1192,9 +1192,7 @@ class ExtensionRuntime:
     ) -> bool:
         """Return True when an extension cancels the pending session switch."""
         event = SessionBeforeSwitchEvent(reason=reason, target_session_id=target_session_id)
-        return await self._first_cancel(
-            "session_before_switch", event, SessionBeforeSwitchResult
-        )
+        return await self._first_cancel("session_before_switch", event, SessionBeforeSwitchResult)
 
     async def emit_session_before_fork(
         self,
@@ -1218,9 +1216,7 @@ class ExtensionRuntime:
             will_retry=will_retry,
             custom_instructions=custom_instructions,
         )
-        return await self._first_cancel(
-            "session_before_compact", event, SessionBeforeCompactResult
-        )
+        return await self._first_cancel("session_before_compact", event, SessionBeforeCompactResult)
 
     async def emit_session_before_tree(
         self,
@@ -1265,9 +1261,7 @@ class ExtensionRuntime:
             except Exception as exc:
                 self._record_runtime_failure(owner.name, "before_provider_headers", exc)
         headers.clear()
-        headers.update(
-            {key: value for key, value in mutable.items() if value is not None}
-        )
+        headers.update({key: value for key, value in mutable.items() if value is not None})
 
     async def observe_provider_response(
         self,
@@ -1275,9 +1269,7 @@ class ExtensionRuntime:
         headers: Mapping[str, str],
     ) -> None:
         """Dispatch `after_provider_response` to observers."""
-        await self.emit_event(
-            AfterProviderResponseEvent(status=status, headers=dict(headers))
-        )
+        await self.emit_event(AfterProviderResponseEvent(status=status, headers=dict(headers)))
 
     async def run_user_bash(
         self,
@@ -1306,9 +1298,7 @@ class ExtensionRuntime:
                 self._record_bad_result(owner.name, "user_bash", result)
                 continue
             if result.block:
-                return UserBashOutcome(
-                    command=current, block=True, reason=result.reason
-                )
+                return UserBashOutcome(command=current, block=True, reason=result.reason)
             if result.command is not None:
                 current = result.command
         return UserBashOutcome(command=current)
