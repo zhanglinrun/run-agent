@@ -39,8 +39,8 @@ from .candidates import (
     capture_claims,
 )
 from .config import ExperienceConfig
-from .memory import MemoryScope
 from .mutation import require_mutation
+from .scopes import Scope
 from .skill_manager import SkillManager, SkillWriteError, SkillWriteResult
 
 # The proposer reads one fixed run, so its prompt is a bounded summary and its request
@@ -102,7 +102,7 @@ class SkillEvolution:
     async def propose(
         self,
         *,
-        scope: MemoryScope,
+        scope: Scope,
         name: str,
         source_session: str,
         source_run: str,
@@ -159,7 +159,7 @@ class SkillEvolution:
     async def propose_from_run(
         self,
         *,
-        scope: MemoryScope,
+        scope: Scope,
         name: str,
         source_session: str,
         source_run: str,
@@ -329,7 +329,7 @@ class SkillEvolution:
         self.candidates.supersede_others(published)
         return result
 
-    def adopt(self, scope: MemoryScope, name: str) -> SkillWriteResult:
+    def adopt(self, scope: Scope, name: str) -> SkillWriteResult:
         require_mutation("skill")
         self._require_scope(scope)
         return self.skills.adopt_evolution(scope, name)
@@ -418,7 +418,7 @@ class SkillEvolution:
                         f"project probe drifted or became unsafe: {evidence.path!r}"
                     )
 
-    def _require_scope(self, scope: MemoryScope) -> None:
+    def _require_scope(self, scope: Scope) -> None:
         if scope == "project" and not self.project_enabled:
             raise CandidateError("project Skills require a trusted project")
 
@@ -492,9 +492,7 @@ def parse_proposal(
     return tuple(operations), tuple(claims)
 
 
-def _proposer_prompt(
-    scope: MemoryScope, name: str, body: str, transcript: str, feedback: str
-) -> str:
+def _proposer_prompt(scope: Scope, name: str, body: str, transcript: str, feedback: str) -> str:
     """Freeze the whole question: one Skill, one run summary, and any retry feedback."""
     sections = [
         f"Skill: {scope}/{name}",

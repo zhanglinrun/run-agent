@@ -5,10 +5,11 @@ commit queue, the built-in ``MEMORY.md`` / ``USER.md`` file provider with hermes
 frozen-snapshot semantics, and the ``setup(api)`` wiring that registers the
 ``memory`` tool and the ``/memory`` command.
 
-Only stable names are re-exported here. The package is deliberately absent from
-``run_agent_extensions.BUILTIN_EXTENSIONS``: it loads explicitly through
-``--extension <this directory>`` until the migration that removes memory from the
-``experience`` extension is complete.
+The package is a built-in extension (``run_agent_extensions.BUILTIN_EXTENSIONS``,
+short name ``memory``) and loads by default in new sessions; it also still loads
+explicitly through ``--extension memory`` or by pointing at this directory.
+
+Only stable names are re-exported here.
 """
 
 from __future__ import annotations

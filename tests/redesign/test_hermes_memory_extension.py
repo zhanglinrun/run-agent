@@ -19,7 +19,6 @@ from run_agent_coding.extensions import (
 from run_agent_coding.paths import RunAgentPaths
 from run_agent_core.messages import UserMessage
 from run_agent_core.tools import AgentTool
-from run_agent_extensions.experience.tools import MemoryCall as ExperienceMemoryCall
 from run_agent_extensions.hermes_memory import (
     MEMORY_USAGE,
     PROMPT_GUIDELINE,
@@ -179,25 +178,37 @@ def test_setup_registers_the_hook_tool_and_command_surface(tmp_path: Path) -> No
     assert api.tools["memory"].execution_mode == "sequential"
 
 
-def _without_descriptions(node: object) -> object:
-    """Drop docstring-derived description/title text so two schemas compare by shape."""
-    if isinstance(node, dict):
-        return {
-            key: _without_descriptions(value)
-            for key, value in node.items()
-            if key not in {"description", "title"}
-        }
-    if isinstance(node, list):
-        return [_without_descriptions(item) for item in node]
-    return node
-
-
-def test_tool_schema_stays_compatible_with_the_experience_extension() -> None:
-    # Same call surface: target/action/content/old_text/new_content/new_text/
+def test_tool_schema_pins_the_documented_call_surface() -> None:
+    # The one memory call surface: target/action/content/old_text/new_content/new_text/
     # operations[{action,content,old_text,new_content,new_text}]/scope, strict extras.
-    assert _without_descriptions(MemoryCall.model_json_schema()) == _without_descriptions(
-        ExperienceMemoryCall.model_json_schema()
-    )
+    schema = MemoryCall.model_json_schema()
+    assert schema["additionalProperties"] is False
+    assert set(schema["properties"]) == {
+        "target",
+        "action",
+        "content",
+        "old_text",
+        "new_content",
+        "new_text",
+        "operations",
+        "scope",
+    }
+    operation = schema["$defs"]["MemoryOperation"]
+    assert operation["additionalProperties"] is False
+    assert set(operation["properties"]) == {
+        "action",
+        "content",
+        "old_text",
+        "new_content",
+        "new_text",
+    }
+    assert schema["properties"]["target"]["default"] == "memory"
+    assert schema["properties"]["action"]["anyOf"][0]["enum"] == [
+        "add",
+        "replace",
+        "remove",
+        "batch",
+    ]
 
 
 @pytest.mark.parametrize(

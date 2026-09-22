@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 from uuid import uuid4
 
-from .memory import MemoryScope
+from .scopes import Scope
 
 if sys.platform == "win32":
     import msvcrt
@@ -70,7 +70,7 @@ class StatusEvent:
 @dataclass(frozen=True, slots=True)
 class SkillCandidate:
     candidate_id: str
-    scope: MemoryScope
+    scope: Scope
     name: str
     source_session: str
     source_run: str
@@ -174,7 +174,7 @@ class SkillCandidateStore:
     def create(
         self,
         *,
-        scope: MemoryScope,
+        scope: Scope,
         name: str,
         source_session: str,
         source_run: str,
@@ -557,7 +557,7 @@ def _parse_candidate(raw: Mapping[str, Any]) -> SkillCandidate:
     report_id = next((event.report_id for event in reversed(events) if event.report_id), None)
     return SkillCandidate(
         candidate_id=str(raw["candidate_id"]),
-        scope=cast(MemoryScope, scope),
+        scope=cast(Scope, scope),
         name=str(raw["name"]),
         source_session=str(source["session"]),
         source_run=str(source["run"]),

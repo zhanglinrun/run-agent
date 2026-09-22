@@ -89,6 +89,21 @@ def test_the_eval_documentation_does_not_advertise_removed_jsonl_output():
     assert "runtime/traces/" not in text
 
 
+def test_documented_builtin_extensions_and_commands_match_the_registry() -> None:
+    """The docs' built-in list, and the extension command surfaces, cannot drift."""
+    from run_agent_extensions import builtin_extension_names
+
+    docs = {
+        name: read(REPO / "src" / "run_agent_coding" / "data" / "docs" / name)
+        for name in ("cli.md", "extensions.md")
+    }
+    for extension in builtin_extension_names():
+        for name, text in docs.items():
+            assert f"`{extension}`" in text, f"{name} does not document the built-in {extension!r}"
+    for command in ("/memory", "/force-snip", "/four-layer-compact"):
+        assert command in docs["cli.md"], f"cli.md does not document {command}"
+
+
 def example_modules() -> list[Path]:
     bundled = REPO / "src" / "run_agent_coding" / "data" / "examples"
     return sorted(bundled.rglob("*.py"))

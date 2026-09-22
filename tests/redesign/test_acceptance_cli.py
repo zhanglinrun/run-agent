@@ -1,6 +1,6 @@
 """CLI acceptance.
 
-- The Coding CLI reads and manages experience in an isolated process.
+- The Coding CLI manages memory in an isolated process.
 - Redirected stdin without --print is refused instead of waiting for input, and
   Ctrl+C maps to exit code 130. "No control codes in machine output" is asserted
   by test_print_sqlite.
@@ -20,7 +20,7 @@ from run_agent_coding import cli
 
 REPO = Path(__file__).resolve().parents[2]
 
-EXPERIENCE_PROBE = """
+MEMORY_PROBE = """
 import asyncio
 import json
 import sys
@@ -41,7 +41,7 @@ def probe_options():
         paths=RunAgentPaths(home=STATE, agents_home=STATE / "agents"),
         model="test",
         provider_name="test",
-        extension_paths=(REPO / "src" / "run_agent_extensions" / "experience",),
+        extension_paths=(REPO / "src" / "run_agent_extensions" / "hermes_memory",),
         extensions_enabled=True,
     )
 
@@ -59,9 +59,9 @@ asyncio.run(main())
 """
 
 
-def test_coding_cli_manages_experience_in_an_isolated_process(tmp_path):
-    probe = tmp_path / "experience_probe.py"
-    probe.write_text(EXPERIENCE_PROBE, encoding="utf-8")
+def test_coding_cli_manages_memory_in_an_isolated_process(tmp_path):
+    probe = tmp_path / "memory_probe.py"
+    probe.write_text(MEMORY_PROBE, encoding="utf-8")
     completed = subprocess.run(
         [sys.executable, str(probe), str(REPO), str(tmp_path / "state")],
         text=True,

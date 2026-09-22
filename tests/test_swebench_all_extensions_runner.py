@@ -57,25 +57,41 @@ def test_prepare_refuses_old_artifacts(tmp_path):
 
 def test_required_extension_policy_and_secret_redaction():
     from run_agent_extensions.experience.config import load_experience_config
+    from run_agent_extensions.hermes_memory import load_hermes_memory_config
 
-    assert set(runner.EXTENSIONS) == {"mcp", "experience", "permission_policy", "plan_mode"}
+    assert set(runner.EXTENSIONS) == {
+        "compaction",
+        "experience",
+        "mcp",
+        "memory",
+        "permission_policy",
+        "plan_mode",
+    }
     assert runner.POLICY["RUN_AGENT_PERMISSION_MODE"] == "yolo"
     assert "RUN_AGENT_MCP_SERVERS" not in runner.POLICY
-    # Every Experience switch the campaign pins must still be one the extension honours,
+    # Every switch the campaign pins must still be one the owning extension honours,
     # so a renamed or dropped setting cannot silently become a no-op in the campaign.
-    pinned = {
-        "EXPERIENCE_MEMORY_ENABLED": "memory_enabled",
-        "EXPERIENCE_USER_PROFILE_ENABLED": "user_profile_enabled",
+    skill_pinned = {
         "EXPERIENCE_SKILL_LEDGER": "skill_ledger",
-        "EXPERIENCE_MEMORY_WRITE_APPROVAL": "memory_write_approval",
         "EXPERIENCE_SKILLS_WRITE_APPROVAL": "skills_write_approval",
     }
-    assert {key for key in runner.POLICY if key.startswith("EXPERIENCE_")} == set(pinned)
-    defaults = load_experience_config({})
-    for key, attribute in pinned.items():
-        override = "false" if getattr(defaults, attribute) else "true"
+    memory_pinned = {
+        "HERMES_MEMORY_ENABLED": "memory_enabled",
+        "HERMES_MEMORY_USER_PROFILE_ENABLED": "user_profile_enabled",
+        "HERMES_MEMORY_WRITE_APPROVAL": "write_approval",
+    }
+    assert {key for key in runner.POLICY if key.startswith("EXPERIENCE_")} == set(skill_pinned)
+    assert {key for key in runner.POLICY if key.startswith("HERMES_MEMORY_")} == set(memory_pinned)
+    skill_defaults = load_experience_config({})
+    for key, attribute in skill_pinned.items():
+        override = "false" if getattr(skill_defaults, attribute) else "true"
         loaded = load_experience_config({key: override})
-        assert getattr(loaded, attribute) is not getattr(defaults, attribute)
+        assert getattr(loaded, attribute) is not getattr(skill_defaults, attribute)
+    memory_defaults = load_hermes_memory_config({})
+    for key, attribute in memory_pinned.items():
+        override = "false" if getattr(memory_defaults, attribute) else "true"
+        loaded = load_hermes_memory_config({key: override})
+        assert getattr(loaded, attribute) is not getattr(memory_defaults, attribute)
     assert (
         runner.redact("credential-secret", {"OPENAI_API_KEY": "credential-secret"}) == "[REDACTED]"
     )

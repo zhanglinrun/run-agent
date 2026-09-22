@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from .memory import MemoryScope
+from .scopes import Scope
 from .skill_guard import ScanResult, lint_content, parse_frontmatter, scan_skill, scan_text
 from .skill_ledger import SkillLedger
 from .skill_usage import SkillUsage
@@ -46,7 +46,7 @@ class SkillRoots:
     user: Path
     project: Path
 
-    def directory(self, scope: MemoryScope) -> Path:
+    def directory(self, scope: Scope) -> Path:
         return self.user if scope == "user" else self.project
 
 
@@ -64,7 +64,7 @@ class SkillWriteResult:
 
 @dataclass(frozen=True, slots=True)
 class SkillInfo:
-    scope: MemoryScope
+    scope: Scope
     name: str
     description: str
     created_by: str
@@ -103,19 +103,19 @@ class SkillManager:
         self.guard = guard
         self.session_id = session_id
         # The old sidecar is read for pinned flags only. Existing files are never deleted.
-        self.usage: dict[MemoryScope, SkillUsage] = {
+        self.usage: dict[Scope, SkillUsage] = {
             "user": SkillUsage(roots.user),
             "project": SkillUsage(roots.project),
         }
-        self.ledger: dict[MemoryScope, SkillLedger] = {
+        self.ledger: dict[Scope, SkillLedger] = {
             "user": SkillLedger(roots.user, enabled=ledger),
             "project": SkillLedger(roots.project, enabled=ledger),
         }
 
-    def names(self, scope: MemoryScope) -> list[tuple[str, str]]:
+    def names(self, scope: Scope) -> list[tuple[str, str]]:
         return [(info.name, info.description) for info in self.describe(scope)]
 
-    def find(self, scope: MemoryScope, name: str) -> Path | None:
+    def find(self, scope: Scope, name: str) -> Path | None:
         root = self.roots.directory(scope)
         if not root.is_dir() or not NAME_PATTERN.fullmatch(name):
             return None
@@ -134,7 +134,7 @@ class SkillManager:
                 return nested
         return None
 
-    def describe(self, scope: MemoryScope) -> list[SkillInfo]:
+    def describe(self, scope: Scope) -> list[SkillInfo]:
         found: list[SkillInfo] = []
         for category, directory in self._iter_skill_dirs(scope):
             try:
@@ -158,7 +158,7 @@ class SkillManager:
 
     def view(
         self,
-        scope: MemoryScope,
+        scope: Scope,
         name: str,
         file_path: str = "SKILL.md",
         *,
@@ -173,7 +173,7 @@ class SkillManager:
         except (OSError, UnicodeDecodeError) as exc:
             raise SkillWriteError(f"could not read {file_path} in skill {name!r}") from exc
 
-    def main_content(self, scope: MemoryScope, name: str) -> str | None:
+    def main_content(self, scope: Scope, name: str) -> str | None:
         directory = self.find(scope, name)
         if directory is None:
             return None
@@ -182,14 +182,14 @@ class SkillManager:
         except (OSError, UnicodeDecodeError) as exc:
             raise SkillWriteError(f"could not read SKILL.md in skill {name!r}") from exc
 
-    def digest(self, scope: MemoryScope, name: str) -> str | None:
+    def digest(self, scope: Scope, name: str) -> str | None:
         content = self.main_content(scope, name)
         return hashlib.sha256(content.encode("utf-8")).hexdigest() if content is not None else None
 
-    def is_pinned(self, scope: MemoryScope, name: str) -> bool:
+    def is_pinned(self, scope: Scope, name: str) -> bool:
         return self.usage[scope].is_pinned(name)
 
-    def is_evolution_owned(self, scope: MemoryScope, name: str) -> bool:
+    def is_evolution_owned(self, scope: Scope, name: str) -> bool:
         content = self.main_content(scope, name)
         if content is None:
             return False
@@ -209,7 +209,7 @@ class SkillManager:
             raise SkillWriteError(f"security scan refused the candidate:\n{result.report()}")
         return tuple(finding.format() for finding in lint_content(content)), result
 
-    def adopt_evolution(self, scope: MemoryScope, name: str) -> SkillWriteResult:
+    def adopt_evolution(self, scope: Scope, name: str) -> SkillWriteResult:
         """Explicitly transfer one existing Skill to verifier-gated evolution ownership."""
         with self.write_scope(scope):
             directory = self.find(scope, name)
@@ -250,7 +250,7 @@ class SkillManager:
 
     def publish_candidate(
         self,
-        scope: MemoryScope,
+        scope: Scope,
         name: str,
         content: str,
         *,
@@ -267,7 +267,7 @@ class SkillManager:
         actual_candidate = hashlib.sha256(content.encode("utf-8")).hexdigest()
         if actual_candidate != candidate_digest:
             raise SkillWriteError("candidate content digest changed before publication")
-        lock_scopes: tuple[MemoryScope, ...] = (
+        lock_scopes: tuple[Scope, ...] = (
             ("user", "project") if expected_base_digest is None else (scope,)
         )
         with self.write_scope(*lock_scopes):
@@ -342,7 +342,7 @@ class SkillManager:
             )
 
     @contextmanager
-    def write_scope(self, *scopes: MemoryScope) -> Iterator[None]:
+    def write_scope(self, *scopes: Scope) -> Iterator[None]:
         handles: list[Any] = []
         try:
             for scope in sorted(set(scopes)):
@@ -372,7 +372,7 @@ class SkillManager:
                 finally:
                     handle.close()
 
-    def _iter_skill_dirs(self, scope: MemoryScope) -> list[tuple[str | None, Path]]:
+    def _iter_skill_dirs(self, scope: Scope) -> list[tuple[str | None, Path]]:
         root = self.roots.directory(scope)
         if not root.is_dir():
             return []
@@ -392,7 +392,7 @@ class SkillManager:
                     found.append((entry.name, nested))
         return found
 
-    def _resolve(self, scope: MemoryScope, name: str, file_path: str) -> Path:
+    def _resolve(self, scope: Scope, name: str, file_path: str) -> Path:
         _valid_name(name)
         directory = self.find(scope, name)
         if directory is None:

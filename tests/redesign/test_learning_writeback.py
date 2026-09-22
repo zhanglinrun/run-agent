@@ -26,11 +26,11 @@ from run_agent_evals.coding import CodingTaskExecutor
 from run_agent_evals.models import FrozenTask
 
 REPO = Path(__file__).resolve().parents[2]
-EXPERIENCE = REPO / "src" / "run_agent_extensions" / "experience"
+MEMORY = REPO / "src" / "run_agent_extensions" / "hermes_memory"
 
 
-def experience_options(tmp_path):
-    return replace(options(tmp_path), extension_paths=(EXPERIENCE,), extensions_enabled=True)
+def memory_options(tmp_path):
+    return replace(options(tmp_path), extension_paths=(MEMORY,), extensions_enabled=True)
 
 
 def test_writeback_is_enabled_unless_switched_off() -> None:
@@ -42,9 +42,9 @@ def test_writeback_is_enabled_unless_switched_off() -> None:
     assert writeback_enabled() is True
 
 
-async def test_no_experience_is_written_while_writeback_is_off(tmp_path):
+async def test_no_memory_is_written_while_writeback_is_off(tmp_path):
     async with await CodingApplication.open(
-        experience_options(tmp_path), provider=ReplyProvider()
+        memory_options(tmp_path), provider=ReplyProvider()
     ) as app:
         await app.start()
         await app.command("/memory add memory normal value")

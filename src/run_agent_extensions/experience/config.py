@@ -1,4 +1,4 @@
-"""Configuration for memory and verifier-gated Skill evolution."""
+"""Configuration for verifier-gated Skill evolution."""
 
 from __future__ import annotations
 
@@ -17,15 +17,6 @@ def _bool(value: str | None, default: bool) -> bool:
     raise ValueError(f"Expected a boolean, got {value!r}")
 
 
-def _int(value: str | None, default: int, *, minimum: int) -> int:
-    if value is None or not value.strip():
-        return default
-    number = int(value)
-    if number < minimum:
-        raise ValueError(f"Expected an integer >= {minimum}, got {value!r}")
-    return number
-
-
 def _float(value: str | None, default: float, *, minimum: float) -> float:
     if value is None or not value.strip():
         return default
@@ -37,11 +28,6 @@ def _float(value: str | None, default: float, *, minimum: float) -> float:
 
 @dataclass(frozen=True, slots=True)
 class ExperienceConfig:
-    memory_char_limit: int = 2200
-    user_char_limit: int = 1375
-    memory_enabled: bool = True
-    user_profile_enabled: bool = True
-    memory_write_approval: bool = False
     skills_write_approval: bool = False
     skill_guard: bool = True
     skill_ledger: bool = True
@@ -50,8 +36,6 @@ class ExperienceConfig:
     evolution_budget_seconds: float = 300.0
 
     def __post_init__(self) -> None:
-        if self.memory_char_limit < 100 or self.user_char_limit < 100:
-            raise ValueError("Memory character limits must be at least 100")
         if not self.evolution_suite.strip() or not self.evolution_suite_version.strip():
             raise ValueError("Evolution suite and version must not be empty")
         if self.evolution_budget_seconds <= 0:
@@ -59,12 +43,8 @@ class ExperienceConfig:
 
 
 def load_experience_config(env: Mapping[str, str]) -> ExperienceConfig:
+    """Read the Skill-evolution settings; memory has its own ``HERMES_MEMORY_*`` set."""
     return ExperienceConfig(
-        memory_char_limit=_int(env.get("EXPERIENCE_MEMORY_CHAR_LIMIT"), 2200, minimum=100),
-        user_char_limit=_int(env.get("EXPERIENCE_USER_CHAR_LIMIT"), 1375, minimum=100),
-        memory_enabled=_bool(env.get("EXPERIENCE_MEMORY_ENABLED"), True),
-        user_profile_enabled=_bool(env.get("EXPERIENCE_USER_PROFILE_ENABLED"), True),
-        memory_write_approval=_bool(env.get("EXPERIENCE_MEMORY_WRITE_APPROVAL"), False),
         skills_write_approval=_bool(env.get("EXPERIENCE_SKILLS_WRITE_APPROVAL"), False),
         skill_guard=_bool(env.get("EXPERIENCE_SKILL_GUARD"), True),
         skill_ledger=_bool(env.get("EXPERIENCE_SKILL_LEDGER"), True),

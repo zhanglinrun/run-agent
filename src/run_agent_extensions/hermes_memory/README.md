@@ -3,20 +3,20 @@
 A self-contained memory extension ported from hermes-agent. It ships the provider
 contract, the fan-out manager, the built-in `MEMORY.md` / `USER.md` file provider with
 hermes' frozen-snapshot semantics, and the `setup(api)` wiring that registers the
-`memory` tool and the `/memory` command under the same names the experience extension
-uses.
+`memory` tool and the `/memory` command.
 
-This package is **not** in `run_agent_extensions.BUILTIN_EXTENSIONS`. Load it explicitly:
+This package is the built-in `memory` extension
+(`run_agent_extensions.BUILTIN_EXTENSIONS`): new sessions load it by default, and it can
+also be loaded explicitly:
 
 ```text
+run --extension memory
 run --extension src/run_agent_extensions/hermes_memory
 ```
 
-It is the standalone half of the later migration that removes memory from the
-`experience` extension; registering it by default and deleting the experience-side
-memory path are separate steps. Do not load it at the same time as `experience` in an
-interactive session: both register a `memory` tool and a `/memory` command, and the
-first registration wins in the extension runtime.
+It is the only registrar of the `memory` tool and the `/memory` command; the
+`experience` extension owns Skill evolution only. Loading both extensions is safe and
+expected — they no longer share a name.
 
 ## Files
 
@@ -38,10 +38,8 @@ first registration wins in the extension runtime.
 The `memory` tool takes `target` (`memory` or `user`), `action`
 (`add`/`replace`/`remove`/`batch`), `content`/`old_text`/`new_content`/`new_text`,
 `operations[]`, and an optional `scope` (`project` or `user`) that overrides the
-target's default. The parameter schema is pinned equal to
-`experience.tools.MemoryCall` by a test, so the two extensions accept the same calls.
-`/memory show|add|replace|remove <user|memory> ... [--scope project|user]` is the
-hand-driven path and reports the same messages the tool returns.
+target's default. `/memory show|add|replace|remove <user|memory> ... [--scope project|user]`
+is the hand-driven path and reports the same messages the tool returns.
 
 When the project is untrusted (`context.project_resources_enabled` is False, i.e. the
 project trust policy declined or is unanswered) the project scope contributes no
@@ -197,9 +195,8 @@ Hooks hermes calls that Run Agent has no place for:
   entry retained, budget refusal with the current entries, duplicate add, ambiguity,
   non-round-trip content, drift backup, unreadable file, batch all-or-nothing, usage
   string, provider ABC surface, `run_memory_call` refusals.
-- `test_hermes_memory_extension.py` — `setup()` registration surface, tool-schema parity
-  with the experience extension, config parsing, scope resolution, byte-stable
-  `before_agent_start` section, request-local injection, tool happy/refusal/approval
+- `test_hermes_memory_extension.py` — `setup()` registration surface, the pinned call
+  surface, config parsing, scope resolution, byte-stable
   paths, command happy/refusal paths, and one end-to-end run through
   `CodingApplication` that proves every subscribed hook name exists, the `/memory`
   command is dispatchable, and the snapshot stays frozen for the session.

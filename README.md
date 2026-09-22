@@ -36,7 +36,7 @@ run bench --help
 
 ### 1. 事务化扩展生命周期
 
-Provider、Core、Coding 三层通过同步 `setup(api)` 装配 MCP、权限、计划模式和 Experience。每个注册带来源和 generation；setup 半途失败会按来源撤销注册。
+Provider、Core、Coding 三层通过同步 `setup(api)` 装配六个内置扩展：`experience`（Skill 演进）、`memory`（USER.md / MEMORY.md 记忆）、`compaction`（四层压缩策略）、`mcp`、`permission_policy` 和 `plan_mode`。每个注册带来源和 generation；setup 半途失败会按来源撤销注册。记忆与压缩都是可选扩展：`--no-extensions` 关闭全部，`--extension <name-or-path>` 按短名或路径单独装载。
 
 `/reload`、`/new`、`/resume` 和分支替换采用 staged runtime：候选完成源码校验、资源准备和 host publication 前，旧 runtime 保持 active；publication 成功后旧 generation 才进入只读 retiring 阶段，收到 shutdown 通知并逆序执行 disposer。发布失败不会提前关闭旧 MCP 连接或清除旧 UI 状态。
 
@@ -63,6 +63,8 @@ L3 大 ToolResult 按 SHA-256 内容寻址落盘
 
 所有裁切保持 `Assistant(tool_calls) + ToolResult*` 配对；模型给出的 call ID 不参与文件路径。L1-L3 足以满足预算时不调用摘要模型；免费层后仍超过硬窗口则在 Provider I/O 前拒绝请求。最终 View 及每层 token/artifact 报告随模型输入快照记录，完整 JSONL 历史不修改。
 
+`compaction.strategy` 有三个取值：`cheap-first`（默认，上面这条流水线）、`summary-only`（跳过 L1-L3，只保留持久摘要）和 `four-layer`。`four-layer` 把请求准备整体交给内置 `compaction` 扩展（`src/run_agent_extensions/claude_compaction`，Claude Code 四层移植）：L1 清空旧 ToolResult、L2 按 snip 边界投影历史、L3 直接复用 `MEMORY.md`/`USER.md` 作为摘要、L4 走模型摘要，并带 413/context-overflow 的 reactive 路径。核心此时不做任何 L1-L4 预处理，只保留硬窗口守卫（超窗在 Provider I/O 前以 `ContextBudgetExceeded` 拒绝）和单条持久 `CompactionEntry` 提交。该取值需要 `compaction` 扩展在场；扩展缺失时请求不会被改写。`/force-snip` 与 `/four-layer-compact` 由该扩展注册。
+
 确定性基准及离线校验：
 
 ```powershell
@@ -72,15 +74,22 @@ run bench context-rebuild .run/benchmarks/context
 
 基准数字只描述冻结的合成长历史，不代表真实模型成功率或账单成本。
 
-### 4. Verifier-Gated Experience
+### 4. 扩展化记忆与 Verifier-Gated Skill 演进
 
-Experience 仍是普通 Session 扩展，保留三种本地资产：
+记忆归内置 `memory` 扩展（`src/run_agent_extensions/hermes_memory`，hermes-agent 移植）：
 
-- `USER.md`：用户偏好；
-- `MEMORY.md`：项目事实；
-- `SKILL.md`：可复用程序性知识。
+- `USER.md`：用户偏好（用户作用域，`~/.run/USER.md`）；
+- `MEMORY.md`：项目事实（项目作用域，`<cwd>/.run/MEMORY.md`）；
+- `memory` 工具与 `/memory show|add|replace|remove [--scope]` 在原子写、字符预算和威胁检查下编辑这两个文件；写入立即落盘，但提示里的快照在 `session_start`/`/reload` 冻结，保证前缀缓存稳定。项目未受信时项目作用域不注入也不接受写入。
 
-Memory 可通过 `memory` 工具受控更新。模型不能直接修改正式 Skill；`skill_manage propose` 只能基于持久 `RunCommitEntry` 产生 cold candidate。候选保存在 loader 不可见的 `experience/candidates/`，内容按 SHA-256 存储，并绑定 source run、base/candidate digest、有界文本操作和项目 probe。
+```text
+/memory show
+/memory add <user|memory> <content>
+/memory replace <user|memory> <old_text> <new_content>
+/memory remove <user|memory> <old_text> [--scope project|user]
+```
+
+Skill 演进仍归 `experience` 扩展，保留 `SKILL.md` 这一种本地资产：模型不能直接修改正式 Skill；`skill_manage propose` 只能基于持久 `RunCommitEntry` 产生 cold candidate。候选保存在 loader 不可见的 `experience/candidates/`，内容按 SHA-256 存储，并绑定 source run、base/candidate digest、有界文本操作和项目 probe。
 
 候选只有在 host-owned `EvaluationService` 对 baseline/candidate 使用相同模型、工具、预算和隐藏 grader 配对运行后才能发布。任何 baseline 已通过任务回退、基础设施错误、base digest 漂移、probe 漂移、user-owned/pinned 资产都拒绝发布。没有 evaluator 时保持 cold，模型自评和使用次数不能代替 verifier。
 

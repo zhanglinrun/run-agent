@@ -1,11 +1,11 @@
 """Built-in file memory provider: ``MEMORY.md`` / ``USER.md`` with a frozen snapshot.
 
 Ported from hermes-agent's ``tools/memory_tool.py`` on top of this project's
-existing file-memory semantics (``run_agent_extensions.experience.memory``), which
-the two implementations already shared. Both are injected into the system prompt as
-a FROZEN snapshot: mid-session writes update the files on disk immediately and are
-durable, but do NOT change the system prompt — that preserves the prefix cache for
-the whole session. The snapshot refreshes on the next session start or ``/reload``.
+existing file-memory semantics, which the two implementations always shared. Both are
+injected into the system prompt as a FROZEN snapshot: mid-session writes update the
+files on disk immediately and are durable, but do NOT change the system prompt — that
+preserves the prefix cache for the whole session. The snapshot refreshes on the next
+session start or ``/reload``.
 
 Two parallel states, per hermes' ``MemoryStore``:
 
@@ -134,7 +134,7 @@ async def approve_memory_write(
 class MemoryWrite:
     """The outcome of one mutation: accepted or refused, with a usable message.
 
-    Mirrors ``run_agent_extensions.experience.memory.MemoryWrite`` so the tool and
+    Mirrors the project's earlier file-memory ``MemoryWrite`` so the tool and
     command surfaces of both extensions report the same fields. ``done`` is set on
     terminal answers: a success (do not repeat the write) or an exhausted
     consolidation budget (stop retrying this turn). ``entries`` carries the live

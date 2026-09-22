@@ -21,14 +21,14 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-EXTENSIONS = ("experience", "mcp", "permission_policy", "plan_mode")
+EXTENSIONS = ("compaction", "experience", "mcp", "memory", "permission_policy", "plan_mode")
 SAFE_FIELDS = ("instance_id", "repo", "base_commit", "problem_statement")
 POLICY = {
     "RUN_AGENT_PERMISSION_MODE": "yolo",
-    "EXPERIENCE_MEMORY_ENABLED": "true",
-    "EXPERIENCE_USER_PROFILE_ENABLED": "true",
+    "HERMES_MEMORY_ENABLED": "true",
+    "HERMES_MEMORY_USER_PROFILE_ENABLED": "true",
     "EXPERIENCE_SKILL_LEDGER": "true",
-    "EXPERIENCE_MEMORY_WRITE_APPROVAL": "false",
+    "HERMES_MEMORY_WRITE_APPROVAL": "false",
     "EXPERIENCE_SKILLS_WRITE_APPROVAL": "false",
 }
 RULES = (
@@ -293,7 +293,8 @@ async def application_child(campaign, trial, *, probe=False):
         runtime = app.session.extension_runtime
         sources = runtime.source_manifest()
         actual = {str(row["source_id"]).split("/")[-2] for row in sources}
-        if actual != set(EXTENSIONS) or len(sources) != 4:
+        expected = {BUILTIN_EXTENSIONS[name].name for name in EXTENSIONS}
+        if actual != expected or len(sources) != len(EXTENSIONS):
             raise RuntimeError(f"Extension activation mismatch: {actual}")
         tools = [tool.name for tool in app.session.tools]
         if not {"memory", "skill_manage"} <= set(tools):

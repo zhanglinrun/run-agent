@@ -5,7 +5,8 @@
 ## 1. 会话、记忆与正式 Skill：直接读取
 
 - 旧 Session JSONL（`<cwd>/.run/sessions/<id>.jsonl` 与同目录 `index.jsonl`）直接读取：消息与资源条目仍按 `id/parent_id` DAG 解析，`--sessions`、`--session <id>`、rewind/fork/branch 沿用原文件，不做格式转换。
-- 旧 `USER.md`、`MEMORY.md` 直接读取，并按现有字符预算注入提示；`/memory` 与 `memory` 工具继续在原子写、预算和威胁检查下编辑这两个文件。
+- 旧 `USER.md`、`MEMORY.md` 直接读取，并按现有字符预算注入提示；`/memory` 与 `memory` 工具继续在原子写、预算和威胁检查下编辑这两个文件。记忆职责已从 `experience` 扩展迁到独立的内置扩展 `memory`（`src/run_agent_extensions/hermes_memory`）：文件路径与格式未变——`~/.run/{MEMORY,USER}.md`（用户作用域）与 `<cwd>/.run/{MEMORY,USER}.md`（项目作用域）继续直接读取，`§` 分隔的条目格式、字符预算、快照冻结和威胁屏蔽语义保持一致。
+- 记忆相关环境变量改名：旧 `EXPERIENCE_MEMORY_*` / `EXPERIENCE_USER_*` 不再被读取，等价配置现为 `HERMES_MEMORY_*`（如 `HERMES_MEMORY_CHAR_LIMIT`、`HERMES_MEMORY_USER_CHAR_LIMIT`、`HERMES_MEMORY_ENABLED`、`HERMES_MEMORY_USER_PROFILE_ENABLED`、`HERMES_MEMORY_WRITE_APPROVAL`）。`EXPERIENCE_*` 仍保留 Skill 演进相关项（`EXPERIENCE_SKILLS_WRITE_APPROVAL`、`EXPERIENCE_SKILL_GUARD`、`EXPERIENCE_SKILL_LEDGER`、`EXPERIENCE_EVOLUTION_*`）。
 - 正式 Skill（`<skills-root>/<name>/SKILL.md`）由标准 loader 直接发现并冻结进会话资源快照，不要求旧 frontmatter 具备新字段。
 
 ## 2. 旧 sidecar 与旧 ledger：保留、可查、可 rollback

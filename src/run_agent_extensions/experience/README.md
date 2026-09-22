@@ -1,30 +1,15 @@
 # Experience
 
-The built-in Experience extension provides bounded Markdown memory and verifier-gated
-Skill evolution. It does not run a background review, cadence trigger, curator, or automatic
-maintenance loop.
+The built-in Experience extension provides verifier-gated Skill evolution. Memory lives in
+the separate built-in `memory` extension
+([`run_agent_extensions/hermes_memory`](../hermes_memory/README.md)), which owns
+`USER.md` / `MEMORY.md`, the `memory` tool and the `/memory` command. It does not run a
+background review, cadence trigger, curator, or automatic maintenance loop.
 
 Existing sessions preserve their recorded extension snapshot. Use
 `run --session <id> --refresh-resources` to adopt the current extension implementation while
-keeping history. Project memory, project Skills, and project probes remain subject to the
-existing project trust policy.
-
-## Memory
-
-| File | Default scope | Purpose | Default budget |
-| --- | --- | --- | --- |
-| `USER.md` | user (`~/.run/USER.md`) | Durable user facts and preferences | 1375 characters |
-| `MEMORY.md` | project (`<cwd>/.run/MEMORY.md`) | Durable project facts | 2200 characters |
-
-The `memory` tool and `/memory` command support add, replace, remove, and atomic batch
-updates. Memory writes use a sidecar lock, re-read before changing a file, enforce the final
-character budget, and reject ambiguous edits. Threat scanning rejects prompt injection,
-role hijacking, secret exfiltration, backdoors, and invisible Unicode. A poisoned entry added
-outside the tool is masked in the prompt but retained on disk for inspection.
-
-The prompt uses a snapshot captured at session start or `/reload`. A successful write is on
-disk immediately but does not change the active prompt prefix until the next resource load.
-An untrusted project contributes no project memory and accepts no project-memory writes.
+keeping history. Project Skills and project probes remain subject to the existing project
+trust policy.
 
 ## Published Skills
 
@@ -101,7 +86,6 @@ candidate published only when both the installed digest and formal ledger entry 
 
 | Command | Purpose |
 | --- | --- |
-| `/memory show|add|replace|remove ...` | Inspect or edit `USER.md` and `MEMORY.md`. |
 | `/evolve status` | Show evaluation availability and candidate counts. |
 | `/evolve candidates [status]` | List candidates, optionally by status. |
 | `/evolve show <candidate-id>` | Show immutable metadata, operations, claims, and body. |
@@ -111,6 +95,7 @@ candidate published only when both the installed digest and formal ledger entry 
 | `/evolve ledger [name] [--scope ...]` | Inspect formal Skill ledger entries. |
 | `/evolve rollback <ledger-id> [--scope ...]` | Restore the before-state after a safety capture. |
 
+`/memory` is not part of this extension any more; it is registered by the `memory` built-in.
 There is no review or curator command surface and no automatic stale/archive/consolidate pass.
 Old `.usage.json`, `.archive/`, `.ledger.jsonl`, and ledger blobs are not deleted. The old
 usage sidecar is read only for pinned compatibility; consultation counters are no longer
@@ -120,21 +105,21 @@ updated.
 
 Supported environment variables are:
 
-- `EXPERIENCE_MEMORY_CHAR_LIMIT`, `EXPERIENCE_USER_CHAR_LIMIT`
-- `EXPERIENCE_MEMORY_ENABLED`, `EXPERIENCE_USER_PROFILE_ENABLED`
-- `EXPERIENCE_MEMORY_WRITE_APPROVAL`, `EXPERIENCE_SKILLS_WRITE_APPROVAL`
+- `EXPERIENCE_SKILLS_WRITE_APPROVAL`
 - `EXPERIENCE_SKILL_GUARD`, `EXPERIENCE_SKILL_LEDGER`
 - `EXPERIENCE_EVOLUTION_SUITE`, `EXPERIENCE_EVOLUTION_SUITE_VERSION`
 - `EXPERIENCE_EVOLUTION_BUDGET_SECONDS`
 
-Review cadence, review inference, curator interval, archive, consolidation, and backup
-environment variables are removed.
+The old `EXPERIENCE_MEMORY_*` / `EXPERIENCE_USER_*` variables were replaced by
+`HERMES_MEMORY_*` and are no longer read here. Review cadence, review inference, curator
+interval, archive, consolidation, and backup environment variables are removed.
 
 ## Boundaries
 
-- Memory is context data, not authority. It cannot grant permissions.
+- Skill candidates and published Skills are not memory: durable facts and preferences go to
+  the `memory` extension, and `skill_manage` never edits those files.
 - Candidate storage is durable isolation, not a claim that a candidate improves behavior.
 - `verified` means the injected host report passed; it does not generalize beyond that suite.
 - Publication is atomic for one `SKILL.md`, not a multi-file Skill transaction.
-- Evaluation runs with learning writeback disabled cannot mutate memory, candidate state, or
-  formal Skills.
+- Evaluation runs with learning writeback disabled cannot mutate candidate state or
+  formal Skills, and the memory extension refuses its own writes under the same switch.

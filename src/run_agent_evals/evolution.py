@@ -28,8 +28,8 @@ from run_agent_extensions.experience.candidates import (
     SkillCandidate,
     SkillCandidateStore,
 )
-from run_agent_extensions.experience.memory import MemoryScope
 from run_agent_extensions.experience.skill_manager import SkillManager, SkillWriteError
+from run_agent_extensions.hermes_memory import MemoryScope
 
 EVOLUTION_REPORT_SCHEMA = "run-agent.evolution-report.v1"
 EVOLUTION_COMPARISON_SCHEMA = "run-agent.evolution-comparison.v1"

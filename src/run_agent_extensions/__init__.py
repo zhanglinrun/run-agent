@@ -17,8 +17,10 @@ __all__ = ["BUILTIN_EXTENSIONS", "builtin_extension_names", "resolve_extension_p
 _ROOT = Path(__file__).resolve().parent
 
 BUILTIN_EXTENSIONS: dict[str, Path] = {
+    "compaction": _ROOT / "claude_compaction",
     "experience": _ROOT / "experience",
     "mcp": _ROOT / "mcp",
+    "memory": _ROOT / "hermes_memory",
     "permission_policy": _ROOT / "permission_policy",
     "plan_mode": _ROOT / "plan_mode",
 }

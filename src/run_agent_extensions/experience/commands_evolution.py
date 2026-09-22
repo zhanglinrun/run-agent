@@ -12,8 +12,8 @@ from run_agent_coding.host.learning import LearningWritebackDisabled
 
 from .candidates import CandidateError, CandidateStatus
 from .evolution import SkillEvolution
-from .memory import MemoryScope
 from .mutation import MutationRejected, require_mutation
+from .scopes import Scope
 from .skill_manager import SkillWriteError
 from .write_approval import approve_write
 
@@ -165,7 +165,7 @@ def register_evolution_commands(
                         raise CandidateError(
                             "ledger entry was not found uniquely; pass --scope project|user"
                         )
-                    chosen = cast(MemoryScope, found[0])
+                    chosen = cast(Scope, found[0])
                 with current.skills.write_scope(chosen):
                     ok, message = current.skills.ledger[chosen].rollback(parts[0])
                 return message if ok else f"Refused: {message}"
@@ -199,14 +199,14 @@ async def _approve_formal_write(
         raise CandidateError("Skill write was not approved")
 
 
-def _scope(words: list[str]) -> tuple[MemoryScope, bool]:
-    scope: MemoryScope = "project"
+def _scope(words: list[str]) -> tuple[Scope, bool]:
+    scope: Scope = "project"
     explicit = False
     if "--scope" in words:
         index = words.index("--scope")
         if index + 1 >= len(words) or words[index + 1] not in {"project", "user"}:
             raise ValueError("--scope needs project or user")
-        scope = cast(MemoryScope, words[index + 1])
+        scope = cast(Scope, words[index + 1])
         explicit = True
         del words[index : index + 2]
     return scope, explicit

@@ -1,4 +1,4 @@
-"""Foreground memory updates and read/propose-only Skill management."""
+"""Read/propose-only Skill management for the experience extension."""
 
 from __future__ import annotations
 
@@ -21,8 +21,8 @@ from run_agent_core.types import JSONValue
 from .candidates import CandidateError, CandidateOperation
 from .config import ExperienceConfig
 from .evolution import SkillEvolution
-from .memory import MemoryScope, MemoryTarget, MemoryWrite
 from .mutation import MutationRejected, require_mutation
+from .scopes import Scope
 from .skill_manager import SkillAction, SkillWriteError
 from .stores import ExperienceStores
 from .write_approval import approve_write
@@ -31,27 +31,6 @@ StoresGetter = Callable[[], ExperienceStores]
 ConfigGetter = Callable[[], ExperienceConfig]
 EvolutionGetter = Callable[[], SkillEvolution]
 SourceRunGetter = Callable[[], str]
-
-
-class MemoryOperation(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    action: Literal["add", "replace", "remove"]
-    content: str = ""
-    old_text: str = ""
-    new_content: str = ""
-    new_text: str = ""
-
-
-class MemoryCall(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    target: MemoryTarget = "memory"
-    action: Literal["add", "replace", "remove", "batch"] | None = None
-    content: str = ""
-    old_text: str = ""
-    new_content: str = ""
-    new_text: str = ""
-    operations: list[MemoryOperation] = Field(default_factory=list)
-    scope: MemoryScope | None = None
 
 
 class SkillOperationCall(BaseModel):
@@ -71,19 +50,12 @@ class SkillCall(BaseModel):
     model_config = ConfigDict(extra="forbid")
     action: SkillAction
     name: str = Field(default="", max_length=64)
-    scope: MemoryScope = "project"
+    scope: Scope = "project"
     file_path: str = "SKILL.md"
     operations: list[SkillOperationCall] = Field(default_factory=list, max_length=8)
     claims: list[SkillClaimCall] = Field(default_factory=list)
     candidate_content: str | None = None
 
-
-MEMORY_TOOL_DESCRIPTION = (
-    "Manage long-term memory across sessions. Target 'user' for who the user is "
-    "and how they want you to work (USER.md, user scope by default); 'memory' for "
-    "durable facts about this project and its environment (MEMORY.md, project scope "
-    "by default). Actions: add, replace, remove, or an all-or-nothing batch."
-)
 
 SKILL_TOOL_DESCRIPTION = (
     "Inspect published Skills or propose one immutable candidate. Actions: list; view "
@@ -94,43 +66,6 @@ SKILL_TOOL_DESCRIPTION = (
     "evolution-owned and unpinned; otherwise the user must run /evolve adopt. A candidate "
     "stays cold when no host EvaluationService is available."
 )
-
-
-async def run_memory_tool(
-    stores: ExperienceStores,
-    arguments: Mapping[str, JSONValue],
-    *,
-    approval_granted: bool = False,
-) -> AgentToolResult:
-    call = MemoryCall.model_validate(arguments)
-    if not stores.target_enabled(call.target):
-        return refused(f"{call.target} memory is disabled in this profile")
-    if stores.config.memory_write_approval and not approval_granted:
-        return refused("memory write requires explicit approval")
-    if call.action is not None or call.operations:
-        try:
-            require_mutation("memory")
-        except (LearningWritebackDisabled, MutationRejected) as exc:
-            return refused(str(exc))
-    scope = stores.scope_for(call.target, call.scope)
-    memory_file = stores.memory[scope].file(call.target)
-    content = call.content or call.new_content or call.new_text
-    try:
-        if call.operations or call.action == "batch":
-            result = memory_file.apply_batch(
-                [operation.model_dump() for operation in call.operations]
-            )
-        elif call.action == "add":
-            result = memory_file.add(content)
-        elif call.action == "replace":
-            result = memory_file.replace(call.old_text, content)
-        elif call.action == "remove":
-            result = memory_file.remove(call.old_text)
-        else:
-            return refused("action must be add, replace, remove or batch (with operations)")
-    except LearningWritebackDisabled as exc:
-        return refused(str(exc))
-    return memory_result(result, scope, call.target)
 
 
 async def run_skill_tool(
@@ -231,24 +166,6 @@ def register_tools(
             message=message,
         )
 
-    async def memory(
-        tool_call_id: str,
-        arguments: Mapping[str, JSONValue],
-        signal: ToolCancellationToken | None = None,
-        on_update: ToolUpdateCallback | None = None,
-    ) -> AgentToolResult:
-        del tool_call_id, signal, on_update
-        current = stores()
-        call = MemoryCall.model_validate(arguments)
-        approved = False
-        if config().memory_write_approval and (call.action is not None or bool(call.operations)):
-            approved = await confirm_write(
-                "Approve memory write", f"Allow {call.action} in {call.target}?"
-            )
-            if not approved:
-                return refused("memory write was not approved")
-        return await run_memory_tool(current, arguments, approval_granted=approved)
-
     async def skill_manage(
         tool_call_id: str,
         arguments: Mapping[str, JSONValue],
@@ -276,16 +193,6 @@ def register_tools(
 
     api.register_tool(
         AgentTool(
-            name="memory",
-            label="Memory",
-            description=MEMORY_TOOL_DESCRIPTION,
-            parameters=MemoryCall.model_json_schema(),
-            execute_fn=memory,
-            execution_mode="sequential",
-        )
-    )
-    api.register_tool(
-        AgentTool(
             name="skill_manage",
             label="Skill Manage",
             description=SKILL_TOOL_DESCRIPTION,
@@ -302,23 +209,8 @@ def refused(message: str) -> AgentToolResult:
     )
 
 
-def memory_result(result: MemoryWrite, scope: MemoryScope, target: MemoryTarget) -> AgentToolResult:
-    details: dict[str, JSONValue] = {
-        "accepted": result.accepted,
-        "done": result.done,
-        "scope": scope,
-        "target": target,
-        "usage": result.usage,
-    }
-    if result.entries:
-        details["current_entries"] = list(result.entries)
-    if result.backup:
-        details["drift_backup"] = result.backup
-    return AgentToolResult(content=[TextContent(text=result.message)], details=details)
-
-
-def scope_of(stores: ExperienceStores, name: str, preferred: MemoryScope) -> MemoryScope:
-    order: tuple[MemoryScope, ...] = (preferred, "user" if preferred == "project" else "project")
+def scope_of(stores: ExperienceStores, name: str, preferred: Scope) -> Scope:
+    order: tuple[Scope, ...] = (preferred, "user" if preferred == "project" else "project")
     for scope in order:
         if scope == "project" and not stores.project_enabled:
             continue
@@ -328,17 +220,12 @@ def scope_of(stores: ExperienceStores, name: str, preferred: MemoryScope) -> Mem
 
 
 __all__ = [
-    "MEMORY_TOOL_DESCRIPTION",
     "SKILL_TOOL_DESCRIPTION",
-    "MemoryCall",
-    "MemoryOperation",
     "SkillCall",
     "SkillClaimCall",
     "SkillOperationCall",
-    "memory_result",
     "refused",
     "register_tools",
-    "run_memory_tool",
     "run_skill_tool",
     "scope_of",
 ]

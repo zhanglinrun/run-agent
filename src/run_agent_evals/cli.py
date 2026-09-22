@@ -53,8 +53,8 @@ from run_agent_extensions import resolve_extension_path
 from run_agent_extensions.experience.candidates import CandidateError, ProjectProbe, SkillCandidate
 from run_agent_extensions.experience.config import load_experience_config
 from run_agent_extensions.experience.evolution import EvolutionPolicy, SkillEvolution
-from run_agent_extensions.experience.memory import MemoryScope
 from run_agent_extensions.experience.stores import ExperienceStores
+from run_agent_extensions.hermes_memory import MemoryScope
 
 
 async def _run(args: argparse.Namespace) -> int:

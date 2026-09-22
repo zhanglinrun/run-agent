@@ -27,7 +27,9 @@ The durable transcript is not the Provider request. The loop first applies exten
 3. old retained ToolResults become digest-bearing previews;
 4. persistent LLM compaction is used only when the cheap layers cannot satisfy the reserve target.
 
-`compaction.strategy=four-layer` replaces steps 1-4 with an extension-owned path: the core performs no L1-L4 preparation of its own, an extension decides and rewrites the request in `before_provider_request`, and requests the durable commit over `session_compact_request` (validated by the core, which still writes the single `CompactionEntry`). Steps 1-3 are skipped and the hard window guard is unchanged: a request still above the model window is refused with `ContextBudgetExceeded` before physical Provider I/O.
+`compaction.strategy=four-layer` replaces steps 1-4 with an extension-owned path: the core performs no L1-L4 preparation of its own, the `compaction` built-in (`run_agent_extensions/claude_compaction`) decides and rewrites the request in `before_provider_request`, and requests the durable commit over `session_compact_request` (validated by the core, which still writes the single `CompactionEntry`). Steps 1-3 are skipped and the hard window guard is unchanged: a request still above the model window is refused with `ContextBudgetExceeded` before physical Provider I/O. The other two strategies stay entirely in the core; without the extension present, a `four-layer` session leaves the request unprepared beyond that guard.
+
+The memory layer is extension-owned and prompt-only. The `memory` built-in (`run_agent_extensions/hermes_memory`) renders `USER.md` / `MEMORY.md` into a frozen `before_agent_start` section and a request-local `<memory-context>` fence from the `context` hook, and it never rewrites a durable message or the session JSONL. The core has no memory store of its own.
 
 The final detached request and layer report are frozen in the model-input snapshot before physical Provider I/O. A request still above the hard model window is refused. Context blobs are derived caches and can be rebuilt from JSONL history.
 
@@ -39,14 +41,14 @@ Reload and session replacement use a staged runtime. The old generation remains 
 
 ## Experience and evaluation
 
-Experience is an extension. USER.md and MEMORY.md remain bounded Markdown stores. Formal Skill content is immutable to ordinary model tools: `skill_manage propose` creates a loader-invisible candidate bound to a committed run, base digest and bounded operations. Project claims require trusted read-only probes.
+Experience is an extension, and so is memory. The `memory` built-in keeps `USER.md` and `MEMORY.md` as bounded Markdown stores and owns their prompt injection; the `experience` built-in owns Skill evolution. Formal Skill content is immutable to ordinary model tools: `skill_manage propose` creates a loader-invisible candidate bound to a committed run, base digest and bounded operations. Project claims require trusted read-only probes.
 
 `EvaluationService` is a host contract. Local CLI sessions expose an unavailable implementation, which keeps candidates cold. The eval host may inject a paired evaluator; reports bind request, baseline and measured candidate hashes. Publication rechecks report, probes, ownership, pin and base digest under the Skill root lock before atomically replacing one SKILL.md and recording the ledger.
 
-Extension tasks are in memory and do not survive a process crash. Candidate and session logs are durable. Observations append under the configured state root. Backups contain session/index files only; Experience assets are ordinary user/project files and follow their own ownership policy.
+Extension tasks are in memory and do not survive a process crash. Candidate and session logs are durable. Observations append under the configured state root. Backups contain session/index files only; memory files, Skills and candidate assets are ordinary user/project files and follow their own ownership policy.
 
 ## Remaining runtime behavior
 
 AgentHarness owns transcript state, steering/follow-up queues, listeners and cancellation. Tool batches run in parallel only when every call declares parallel execution; mixing any sequential tool serializes the batch and results are returned in source order. This is a correctness policy, not an original scheduling algorithm.
 
-Settings merge `~/.run/settings.json` with trusted project settings. `shellCommandPrefix` and `defaultProjectTrust` are user-only. Projects may set queue modes, `compaction.enabled` and `compaction.strategy` (`cheap-first`, `summary-only` or `four-layer`); provider, model and thinking remain environment-based.
+Settings merge `~/.run/settings.json` with trusted project settings. `shellCommandPrefix` and `defaultProjectTrust` are user-only. Projects may set queue modes, `compaction.enabled` and `compaction.strategy` (`cheap-first`, `summary-only` or `four-layer`, the last only when the `compaction` extension is loaded); provider, model and thinking remain environment-based.

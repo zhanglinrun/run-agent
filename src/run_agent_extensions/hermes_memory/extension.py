@@ -1,12 +1,9 @@
 """``setup(api)`` wiring for the ported memory extension.
 
-This package is NOT part of the default built-in extension list (see
-``run_agent_extensions.BUILTIN_EXTENSIONS``): it is loaded explicitly, for example
-with ``run --extension hermes_memory`` or by pointing ``--extension`` at this
-directory, and it registers the same ``memory`` tool / ``/memory`` command names the
-experience extension registers. It is the standalone half of the later migration
-that removes memory from ``experience``; wiring it into the default set is a
-separate step.
+This package is the ``memory`` built-in extension: new sessions load it by default
+and ``--extension memory`` (or a path to this directory) loads it explicitly. It is
+the only registrar of the ``memory`` tool and the ``/memory`` command; the
+``experience`` extension owns Skill evolution only.
 
 Lifecycle, mapped onto this project's real hooks:
 
@@ -107,7 +104,7 @@ MEMORY_USAGE = (
 
 
 class MemoryOperation(BaseModel):
-    """One operation of a ``memory`` batch, field-compatible with ``experience``."""
+    """One operation of an all-or-nothing ``memory`` batch."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -121,10 +118,10 @@ class MemoryOperation(BaseModel):
 class MemoryCall(BaseModel):
     """The ``memory`` tool schema.
 
-    Deliberately field-for-field compatible with
-    ``run_agent_extensions.experience.tools.MemoryCall`` so the same model behaviour
-    and the same callers keep working across the migration; a test pins the two JSON
-    schemas equal.
+    The single call surface of the ``memory`` built-in: target/action/content/
+    old_text/new_content/new_text/operations[]/scope, with strict extras. It is
+    field-compatible with the tool the ``experience`` extension registered before
+    the migration, so existing model behaviour and existing callers keep working.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -532,8 +529,8 @@ def register_command(api: ExtensionAPI, state: _MemorySession) -> None:
 def memory_result(outcome: MemoryCallOutcome) -> AgentToolResult:
     """Render one executed ``memory`` call as a tool result.
 
-    The details keys match ``experience.tools.memory_result`` so a caller that
-    already understands one memory tool understands this one.
+    The details keys are the shared memory-tool contract: a caller that already
+    understands one memory tool understands this one.
     """
     details: dict[str, JSONValue] = {
         "accepted": outcome.accepted,
