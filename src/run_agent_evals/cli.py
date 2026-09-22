@@ -375,6 +375,9 @@ async def _evolve_arms(args: argparse.Namespace, stores: ExperienceStores) -> in
                             "report_id",
                             "passed",
                             "non_product",
+                            "admitted",
+                            "fallback",
+                            "reason",
                             "totals",
                         )
                     }
@@ -576,8 +579,9 @@ def _parser() -> argparse.ArgumentParser:
         default=[],
         metavar="DIR",
         help=(
-            "Extra root searched for the passing paired report the gated-evolution arm "
-            "needs; --output-root is always searched too."
+            "Extra root searched for a gate-passed paired report; --output-root is always "
+            "searched too. Without one the gated-evolution arm falls back to the formal "
+            "SKILL.md instead of refusing."
         ),
     )
     evolve_rebuild = commands.add_parser(

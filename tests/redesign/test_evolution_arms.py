@@ -102,6 +102,7 @@ def _arm_service(
     probe: ProjectProbe | None = None,
     repeats: int = 1,
     concurrency: int = 1,
+    report_roots: tuple[Path, ...] = (),
 ) -> EvolutionArmEvaluationService:
     return EvolutionArmEvaluationService(
         suite=SUITE,
@@ -112,6 +113,7 @@ def _arm_service(
         repeats=repeats,
         concurrency=concurrency,
         probe=probe,
+        report_roots=report_roots,
     )
 
 
@@ -214,6 +216,10 @@ async def test_no_skill_installs_nothing_and_static_skill_installs_the_formal_co
     assert no_skill.source["ablation"] is None
     assert no_skill.source["checks"] == {"structure": False, "facts": False, "behavior_gate": False}
     assert len(no_skill.source["task_digests"]) == 9
+    assert no_skill.source["admitted"] is False
+    assert no_skill.source["fallback"] is None
+    assert no_skill.source["reason"] is None
+    assert no_skill.source["behavior_gate"] is None
 
     static = await service.evaluate(EvolutionArmRequest(arm="static-skill", skill=SKILL))
     rows = _trials(static)
@@ -224,11 +230,16 @@ async def test_no_skill_installs_nothing_and_static_skill_installs_the_formal_co
     assert static.source["base_digest"] == _digest(FORMAL)
     assert static.source["candidate_id"] is None
     assert static.source["candidate_digest"] is None
+    assert static.source["admitted"] is False
+    assert static.source["fallback"] is None
+    assert static.source["reason"] is None
+    assert static.source["behavior_gate"] is None
     assert rebuild_evolution_report(static.root)["passed"] is True
 
 
 @pytest.mark.anyio
-async def test_gated_evolution_needs_a_verified_passing_paired_report(tmp_path: Path) -> None:
+async def test_gated_evolution_falls_back_to_the_formal_skill(tmp_path: Path) -> None:
+    """Without a gate-passed paired report the product keeps the formal Skill."""
     candidates = _candidates(tmp_path)
     skills = _skills(tmp_path)
     candidate = _revision_candidate(candidates)
@@ -239,22 +250,92 @@ async def test_gated_evolution_needs_a_verified_passing_paired_report(tmp_path: 
         arm="gated-evolution", skill=SKILL, candidate_id=candidate.candidate_id
     )
 
-    with pytest.raises(EvolutionArmRefused, match="passing paired"):
-        await service.evaluate(request)
+    fallback = await service.evaluate(request)
 
+    # The product publishes nothing when the gate refuses or never ran, so the frozen
+    # formal SKILL.md is exactly what this arm has to measure, and the record says so.
+    assert fallback.document["measured_content_hash"] == _digest(FORMAL)
+    assert fallback.source["admitted"] is False
+    assert fallback.source["fallback"] == "formal-skill"
+    assert fallback.source["reason"] == "no gate-passed paired report"
+    assert fallback.source["behavior_gate"] == "enforced"
+    assert fallback.source["behavior_gate_report"] is None
+    assert fallback.source["checks"] == {
+        "structure": True,
+        "facts": True,
+        "behavior_gate": False,
+    }
+    assert fallback.source["installed_digest"] == _digest(FORMAL)
+    assert fallback.source["candidate_digest"] == candidate.candidate_digest
+    rows = _trials(fallback)
+    assert len(rows) == 6
+    assert all(row["metadata"]["evaluated_skill_digest"] == _digest(FORMAL) for row in rows)
+    assert all(row["metadata"]["instruction"].startswith(f"/skill:{SKILL} ") for row in rows)
+    # The executor only solves with the revision, so a formal-Skill arm fails every task.
+    assert all(row["succeeded"] is False for row in rows)
+
+    document = rebuild_evolution_report(fallback.root)
+    # A clean campaign of failed trials: no infrastructure error, so the arm itself is
+    # rebuildable evidence even though it measures the fallback.
+    assert document["passed"] is True
+    assert document["summary"]["measurement"]["infrastructure_errors"] == 0
+    assert document["source"]["fallback"] == "formal-skill"
+
+    # The very same request installs the revision once a gate-passed report exists.
     paired = await _paired_report_id(tmp_path, candidates, skills, candidate)
     report = await service.evaluate(request)
 
     assert report.source["behavior_gate_report"] == paired
-    assert report.source["checks"] == {"structure": True, "facts": True, "behavior_gate": True}
+    assert report.source["admitted"] is True
+    assert report.source["fallback"] is None
+    assert report.source["reason"] is None
+    assert report.source["behavior_gate"] == "enforced"
+    assert report.source["checks"] == {
+        "structure": True,
+        "facts": True,
+        "behavior_gate": True,
+    }
     assert report.source["candidate_digest"] == candidate.candidate_digest
     assert report.source["base_digest"] == _digest(FORMAL)
+    assert report.source["installed_digest"] == candidate.candidate_digest
     rows = _trials(report)
     assert all(
         row["metadata"]["evaluated_skill_digest"] == candidate.candidate_digest for row in rows
     )
     assert all(row["succeeded"] for row in rows)
     assert rebuild_evolution_report(report.root)["passed"] is True
+
+
+@pytest.mark.anyio
+async def test_gated_evolution_still_refuses_without_a_usable_candidate(tmp_path: Path) -> None:
+    """Only a missing or unreadable candidate refuses: there is no fallback to measure."""
+    candidates = _candidates(tmp_path)
+    skills = _skills(tmp_path)
+    candidate = _revision_candidate(candidates)
+    service = _arm_service(
+        tmp_path, solving_digest=_digest(REVISION), skills=skills, candidates=candidates
+    )
+
+    with pytest.raises(EvolutionArmRefused, match="candidate id"):
+        await service.evaluate(EvolutionArmRequest(arm="gated-evolution", skill=SKILL))
+    with pytest.raises(EvolutionArmRefused, match="unknown candidate"):
+        await service.evaluate(
+            EvolutionArmRequest(arm="gated-evolution", skill=SKILL, candidate_id="deadbeef")
+        )
+
+    (candidates.blobs / f"{candidate.candidate_digest}.md").unlink()
+    with pytest.raises(EvolutionArmRefused, match="candidate blob is missing"):
+        await service.evaluate(
+            EvolutionArmRequest(
+                arm="gated-evolution", skill=SKILL, candidate_id=candidate.candidate_id
+            )
+        )
+    with pytest.raises(EvolutionArmRefused, match="candidate blob is missing"):
+        await service.evaluate(
+            EvolutionArmRequest(
+                arm="ungated-revision", skill=SKILL, candidate_id=candidate.candidate_id
+            )
+        )
 
 
 @pytest.mark.anyio
@@ -279,6 +360,10 @@ async def test_ungated_revision_installs_without_structure_or_fact_checks(tmp_pa
     assert report.document["non_product"] is True
     assert report.source["non_product"] is True
     assert report.source["checks"] == {"structure": False, "facts": False, "behavior_gate": False}
+    assert report.source["admitted"] is True
+    assert report.source["fallback"] is None
+    assert report.source["reason"] is None
+    assert report.source["behavior_gate"] is None
     rows = _trials(report)
     assert all(
         row["metadata"]["evaluated_skill_digest"] == invalid.candidate_digest for row in rows
@@ -332,17 +417,32 @@ async def test_project_probe_ablation_refuses_candidates_that_cite_project_facts
             )
         )
 
-    # A candidate that cites nothing passes the ablation and fails only on the gate.
+    # A candidate that cites nothing passes the ablation: no project probe is consulted, so
+    # the fact check is skipped and only the paired gate can still refuse it.
     plain = _revision_candidate(candidates)
-    with pytest.raises(EvolutionArmRefused, match="passing paired"):
-        await service.evaluate(
-            EvolutionArmRequest(
-                arm="gated-evolution",
-                ablation="project-probe",
-                skill=SKILL,
-                candidate_id=plain.candidate_id,
-            )
-        )
+    request = EvolutionArmRequest(
+        arm="gated-evolution",
+        ablation="project-probe",
+        skill=SKILL,
+        candidate_id=plain.candidate_id,
+    )
+    fallback = await service.evaluate(request)
+    assert fallback.source["facts_verified"] is False
+    assert fallback.source["admitted"] is False
+    assert fallback.source["fallback"] == "formal-skill"
+    assert fallback.source["reason"] == "no gate-passed paired report"
+
+    paired = await _paired_report_id(tmp_path, candidates, skills, plain)
+    report = await service.evaluate(request)
+    assert report.source["behavior_gate_report"] == paired
+    assert report.source["admitted"] is True
+    assert report.source["fallback"] is None
+    assert report.source["facts_verified"] is False
+    assert report.source["checks"] == {"structure": True, "facts": True, "behavior_gate": True}
+    assert all(
+        row["metadata"]["evaluated_skill_digest"] == plain.candidate_digest
+        for row in _trials(report)
+    )
 
 
 @pytest.mark.anyio
@@ -354,13 +454,8 @@ async def test_behavior_gate_ablation_skips_only_the_paired_gate(tmp_path: Path)
         tmp_path, solving_digest=_digest(REVISION), skills=skills, candidates=candidates
     )
 
-    with pytest.raises(EvolutionArmRefused, match="passing paired"):
-        await service.evaluate(
-            EvolutionArmRequest(
-                arm="gated-evolution", skill=SKILL, candidate_id=revision.candidate_id
-            )
-        )
-
+    # No paired report exists, but the ablation installs the candidate anyway: structure
+    # and facts passed and only the paired behavior gate was removed.
     report = await service.evaluate(
         EvolutionArmRequest(
             arm="gated-evolution",
@@ -369,13 +464,25 @@ async def test_behavior_gate_ablation_skips_only_the_paired_gate(tmp_path: Path)
             candidate_id=revision.candidate_id,
         )
     )
+    assert report.document["non_product"] is False
     assert report.source["ablation"] == "behavior-gate"
     assert report.source["label"] == "gated-evolution-behavior-gate"
     assert report.source["checks"] == {"structure": True, "facts": True, "behavior_gate": False}
+    assert report.source["behavior_gate"] == "skipped"
     assert report.source["behavior_gate_report"] is None
-    assert all(row["succeeded"] for row in _trials(report))
+    assert report.source["admitted"] is True
+    assert report.source["fallback"] is None
+    assert report.source["reason"] is None
+    assert report.source["installed_digest"] == revision.candidate_digest
+    rows = _trials(report)
+    assert all(
+        row["metadata"]["evaluated_skill_digest"] == revision.candidate_digest for row in rows
+    )
+    assert all(row["succeeded"] for row in rows)
+    assert rebuild_evolution_report(report.root)["passed"] is True
 
-    # Unlike ungated-revision, the structure and fact checks still refuse here.
+    # Unlike ungated-revision, which runs no check at all and records all three as false,
+    # the structure and fact checks still refuse here.
     invalid = _invalid_candidate(candidates)
     with pytest.raises(EvolutionArmRefused, match="structure check"):
         await service.evaluate(
@@ -453,6 +560,11 @@ async def test_comparison_report_is_written_and_rebuildable(tmp_path: Path) -> N
                 arm="ungated-revision", skill=SKILL, candidate_id=revision.candidate_id
             )
         ),
+        await service.evaluate(
+            EvolutionArmRequest(
+                arm="gated-evolution", skill=SKILL, candidate_id=revision.candidate_id
+            )
+        ),
     ]
     root = service.output_root
     comparison = write_evolution_comparison(root, reports)
@@ -461,7 +573,11 @@ async def test_comparison_report_is_written_and_rebuildable(tmp_path: Path) -> N
     assert (root / "REPORT.md").is_file()
     assert comparison["scope_statement"] == EVOLUTION_SCOPE_STATEMENT
     arms = comparison["arms"]
-    assert [arm["label"] for arm in arms] == ["no-skill", "ungated-revision"]
+    assert [arm["label"] for arm in arms] == [
+        "no-skill",
+        "ungated-revision",
+        "gated-evolution",
+    ]
     assert arms[0]["totals"] == {
         "tasks": 6,
         "tasks_passed": 0,
@@ -472,8 +588,24 @@ async def test_comparison_report_is_written_and_rebuildable(tmp_path: Path) -> N
     }
     assert arms[1]["totals"]["passes"] == 6
     assert arms[1]["non_product"] is True
+    assert arms[1]["admitted"] is True
+    # No gate-passed report exists here, so this arm measures the frozen formal Skill.
+    assert arms[2]["admitted"] is False
+    assert arms[2]["fallback"] == "formal-skill"
+    assert arms[2]["reason"] == "no gate-passed paired report"
+    assert arms[2]["behavior_gate"] == "enforced"
+    assert arms[2]["non_product"] is False
+    assert arms[2]["totals"] == {
+        "tasks": 6,
+        "tasks_passed": 0,
+        "trials": 6,
+        "passes": 0,
+        "errors": 0,
+        "failed": 6,
+    }
     assert all(row["failed"] == row["trials"] - row["passes"] for row in arms[0]["tasks"])
     assert arms[1]["efficiency"]["calls"] == 6
+    assert arms[2]["efficiency"]["calls"] == 6
     for arm in arms:
         assert (root / arm["report"] / "report.json").is_file()
 
@@ -481,6 +613,9 @@ async def test_comparison_report_is_written_and_rebuildable(tmp_path: Path) -> N
     assert "不外推通用 Coding 能力" in text
     assert "不预设任何提升百分比" in text
     assert "| split | task | passes | trials | errors | failed | passed |" in text
+    # The product-path fallback is visible in the human-readable comparison.
+    assert "- admitted: False; fallback: formal-skill; reason: no gate-passed paired report" in text
+    assert "- admitted: True; fallback: None; reason: None" in text
     assert rebuild_evolution_comparison(root) == comparison
 
     (root / "REPORT.md").write_text(text + "tampered\n", encoding="utf-8")
@@ -519,3 +654,33 @@ async def test_concurrent_arm_trials_keep_isolated_state_roots(tmp_path: Path) -
         assert row["task_id"] in state_root.parts
         assert state_root.is_relative_to(report.root)
     assert rebuild_evolution_report(report.root)["passed"] is True
+
+
+@pytest.mark.anyio
+async def test_a_gate_passed_report_outside_the_campaign_root_is_searched(tmp_path: Path) -> None:
+    """--report-root admits the candidate even when the campaign root holds no report."""
+    candidates = _candidates(tmp_path)
+    skills = _skills(tmp_path)
+    candidate = _revision_candidate(candidates)
+    paired = await _paired_report_id(tmp_path, candidates, skills, candidate)
+    service = EvolutionArmEvaluationService(
+        suite=SUITE,
+        output_root=tmp_path / "arms",
+        candidates=candidates,
+        skills=skills,
+        executor=ArmProbeExecutor(_digest(REVISION)),
+        repeats=1,
+        report_roots=(tmp_path / "reports",),
+    )
+
+    report = await service.evaluate(
+        EvolutionArmRequest(arm="gated-evolution", skill=SKILL, candidate_id=candidate.candidate_id)
+    )
+
+    assert report.source["behavior_gate_report"] == paired
+    assert report.source["admitted"] is True
+    assert report.root.is_relative_to(service.output_root)
+    assert all(
+        row["metadata"]["evaluated_skill_digest"] == candidate.candidate_digest
+        for row in _trials(report)
+    )

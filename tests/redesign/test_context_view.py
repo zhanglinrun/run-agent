@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 
 import pytest
 
 from run_agent_coding.application import ApplicationOptions, CodingApplication
-from run_agent_coding.context_view import ContextBudgetExceeded, ContextViewPipeline
+from run_agent_coding.context_view import (
+    ContextBlobDiagnostics,
+    ContextBudgetExceeded,
+    ContextViewPipeline,
+    _write_blob_once,
+    context_blob_diagnostics,
+)
 from run_agent_coding.paths import RunAgentPaths
 from run_agent_coding.provider_config import (
     OpenAICompatibleProviderConfig,
@@ -345,3 +352,95 @@ async def test_a_missing_blob_is_regenerated_from_the_jsonl_history(tmp_path: Pa
         blobs[0].unlink()
         await _drain(app.prompt("read the big file again"))
         assert blobs[0].read_text(encoding="utf-8") == stored
+
+
+def _vanishing_link(monkeypatch: pytest.MonkeyPatch, *, limit: int) -> dict[str, int]:
+    """Patch ``os.link`` so the first ``limit`` calls lose their temporary file."""
+    real_link = os.link
+    calls = {"count": 0}
+
+    def flaky_link(source: str, destination: str) -> None:
+        calls["count"] += 1
+        if calls["count"] <= limit:
+            os.unlink(source)
+        real_link(source, destination)
+
+    monkeypatch.setattr("run_agent_coding.context_view.os.link", flaky_link)
+    return calls
+
+
+def test_a_vanished_blob_temporary_file_is_retried_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A temp file lost before the link is rebuilt instead of failing the request."""
+    data = b"retry payload"
+    digest = hashlib.sha256(data).hexdigest()
+    target = tmp_path / ".run" / "context" / "blobs" / f"{digest}.txt"
+    diagnostics = ContextBlobDiagnostics()
+    calls = _vanishing_link(monkeypatch, limit=1)
+
+    _write_blob_once(target, data, diagnostics=diagnostics)
+
+    assert calls["count"] == 2
+    assert target.read_bytes() == data
+    assert diagnostics.attempts == 2
+    assert diagnostics.retries == 1
+    assert diagnostics.failures == 0
+    assert [item.name for item in target.parent.iterdir() if item.name.endswith(".tmp")] == []
+
+    # Idempotent: the same bytes neither rewrite the blob nor raise.
+    _write_blob_once(target, data, diagnostics=diagnostics)
+    assert diagnostics.attempts == 3
+    assert diagnostics.retries == 1
+    assert target.read_bytes() == data
+
+    with pytest.raises(RuntimeError, match="digest collision"):
+        _write_blob_once(target, b"different bytes", diagnostics=diagnostics)
+
+
+def test_a_second_vanished_blob_temporary_file_records_the_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the retry loses its temporary file too, the failure is observable."""
+    digest = hashlib.sha256(b"payload").hexdigest()
+    target = tmp_path / ".run" / "context" / "blobs" / f"{digest}.txt"
+    diagnostics = ContextBlobDiagnostics()
+    calls = _vanishing_link(monkeypatch, limit=2)
+
+    with pytest.raises(FileNotFoundError):
+        _write_blob_once(target, b"payload", diagnostics=diagnostics)
+
+    assert calls["count"] == 2
+    assert not target.exists()
+    assert diagnostics.attempts == 2
+    assert diagnostics.retries == 1
+    assert diagnostics.failures == 1
+    assert diagnostics.last_failure_path == str(target)
+    assert str(diagnostics.last_failure_error).startswith("FileNotFoundError")
+
+
+def test_the_context_pipeline_retries_a_vanished_blob_temporary_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pipeline keeps its L3 artifact and the default sink counts the retry."""
+    big = "z" * 200
+    messages: list[object] = [UserMessage(content="start"), *_tool_group("call-retry", big)]
+    pipeline = ContextViewPipeline(
+        cwd=tmp_path,
+        context_window_tokens=40,
+        reserve_tokens=5,
+        spill_chars=50,
+        spill_preview_chars=20,
+        keep_recent_tokens=10,
+    )
+    digest = hashlib.sha256(big.encode("utf-8")).hexdigest()
+    before = context_blob_diagnostics().retries
+    _vanishing_link(monkeypatch, limit=1)
+
+    prepared = pipeline.prepare(_request(messages))
+
+    blob = tmp_path / ".run" / "context" / "blobs" / f"{digest}.txt"
+    assert blob.read_text(encoding="utf-8") == big
+    assert "L3" in prepared.layers
+    assert prepared.artifacts[0].digest == digest
+    assert context_blob_diagnostics().retries == before + 1

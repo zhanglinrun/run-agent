@@ -12,6 +12,7 @@ is ever contacted. ``main`` maps a rejected rebuild onto a ``SystemExit``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -197,3 +198,93 @@ def test_evolve_cli_refuses_an_ablation_without_an_arm(tmp_path: Path) -> None:
             ]
         )
     assert "--ablate" in str(failure.value)
+
+
+FORMAL = (
+    "---\nname: config-skill\ndescription: solve config tasks\ncreated_by: evolution\n---\n"
+    "Use the project contract.\n"
+)
+REVISION = FORMAL.replace("Use the project contract.", "Use the revised project contract.")
+
+
+def _cli_candidate(state: Path) -> str:
+    """Create one pending revision candidate where ``--state-root`` resolves it."""
+    store = SkillCandidateStore(state / "experience" / "candidates")
+    candidate = store.create(
+        scope="user",
+        name="config-skill",
+        source_session="session",
+        source_run="run",
+        base_content=FORMAL,
+        operations=(
+            CandidateOperation(
+                "replace",
+                old_text="Use the project contract.",
+                new_text="Use the revised project contract.",
+            ),
+        ),
+        candidate_content=REVISION,
+    )
+    skill = state / "skills" / "config-skill" / "SKILL.md"
+    skill.parent.mkdir(parents=True, exist_ok=True)
+    skill.write_text(FORMAL, encoding="utf-8")
+    return candidate.candidate_id
+
+
+def test_evolve_cli_arm_falls_back_to_the_formal_skill_without_a_paired_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A refused gate still freezes a complete, offline-rebuildable arm campaign."""
+    monkeypatch.setattr("run_agent_evals.cli.CodingExecutor", StubCodingExecutor)
+    state = tmp_path / "state"
+    output = tmp_path / "reports"
+    candidate_id = _cli_candidate(state)
+
+    assert (
+        main(
+            [
+                "evolve",
+                "evals/evolution/config.toml",
+                "--skill",
+                "config-skill",
+                "--scope",
+                "user",
+                "--candidate-id",
+                candidate_id,
+                "--arm",
+                "gated-evolution",
+                "--state-root",
+                str(state),
+                "--output-root",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    printed = capsys.readouterr().out
+    assert "fallback" in printed
+
+    comparison = json.loads((output / "comparison.json").read_text(encoding="utf-8"))
+    assert [entry["label"] for entry in comparison["arms"]] == ["gated-evolution"]
+    arm = comparison["arms"][0]
+    assert arm["admitted"] is False
+    assert arm["fallback"] == "formal-skill"
+    assert arm["reason"] == "no gate-passed paired report"
+    assert arm["behavior_gate"] == "enforced"
+    assert arm["report_id"] in printed
+
+    # The formal SKILL.md is what ran, not the candidate revision.
+    formal_digest = hashlib.sha256(FORMAL.encode("utf-8")).hexdigest()
+    report_dir = output / arm["report"]
+    rows = json.loads((report_dir / "trials.json").read_text(encoding="utf-8"))
+    assert len(rows) == 18
+    assert {row["metadata"]["evaluated_skill_digest"] for row in rows} == {formal_digest}
+    report = json.loads((report_dir / "report.json").read_text(encoding="utf-8"))
+    assert report["measured_content_hash"] == formal_digest
+    assert report["source"]["candidate_digest"] != formal_digest
+
+    text = (output / "REPORT.md").read_text(encoding="utf-8")
+    assert "- admitted: False; fallback: formal-skill; reason: no gate-passed paired report" in text
+
+    assert main(["evolve-rebuild", str(output)]) == 0
+    assert "Evidence verified" in capsys.readouterr().out

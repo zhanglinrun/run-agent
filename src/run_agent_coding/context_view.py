@@ -316,7 +316,68 @@ def _prefix_anchor(messages: tuple[AgentMessage, ...]) -> tuple[str, str]:
     )
 
 
-def _write_blob_once(path: Path, data: bytes) -> None:
+@dataclass(slots=True)
+class ContextBlobDiagnostics:
+    """Counters for blob writes that are deliberately tolerated.
+
+    ``os.link``/``os.replace`` can lose a same-directory temporary file to an
+    external cleaner or a filesystem race, so the write is retried once instead of
+    failing the model request. Every caller that uses the default sink can read these
+    counters; tests inject their own instance.
+    """
+
+    attempts: int = 0
+    retries: int = 0
+    failures: int = 0
+    last_failure_path: str | None = None
+    last_failure_error: str | None = None
+
+    def record_attempt(self) -> None:
+        self.attempts += 1
+
+    def record_retry(self) -> None:
+        self.retries += 1
+
+    def record_failure(self, path: Path, error: OSError) -> None:
+        self.failures += 1
+        self.last_failure_path = str(path)
+        self.last_failure_error = f"{type(error).__name__}: {error}"
+
+
+DEFAULT_CONTEXT_BLOB_DIAGNOSTICS = ContextBlobDiagnostics()
+
+
+def context_blob_diagnostics() -> ContextBlobDiagnostics:
+    """Return the process-wide sink used by blob writes that were given no sink."""
+    return DEFAULT_CONTEXT_BLOB_DIAGNOSTICS
+
+
+def _write_blob_once(
+    path: Path, data: bytes, *, diagnostics: ContextBlobDiagnostics | None = None
+) -> None:
+    """Write one content-addressed blob, retrying once if its temporary file vanishes.
+
+    An existing target with identical bytes is success and different bytes are a
+    digest collision. A vanished temporary file - ``FileNotFoundError`` from
+    ``os.link`` or from the ``os.replace`` fallback - is rebuilt with a fresh
+    temporary file: same directory, same fsync, same atomic link/replace. A repeated
+    failure is recorded on the diagnostics sink and then propagates.
+    """
+    sink = diagnostics if diagnostics is not None else DEFAULT_CONTEXT_BLOB_DIAGNOSTICS
+    for attempt in (1, 2):
+        sink.record_attempt()
+        try:
+            _write_blob_attempt(path, data)
+        except FileNotFoundError as exc:
+            if attempt == 2:
+                sink.record_failure(path, exc)
+                raise
+            sink.record_retry()
+        else:
+            return
+
+
+def _write_blob_attempt(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_file():
         if path.read_bytes() != data:
@@ -357,8 +418,10 @@ def _write_blob_once(path: Path, data: bytes) -> None:
 
 __all__ = [
     "ContextArtifact",
+    "ContextBlobDiagnostics",
     "ContextBudgetExceeded",
     "ContextStrategy",
     "ContextViewPipeline",
     "PreparedContext",
+    "context_blob_diagnostics",
 ]
