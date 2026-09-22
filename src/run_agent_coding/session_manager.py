@@ -299,9 +299,12 @@ class SessionManager:
         ]
 
     def _read_all_records(self) -> list[CodingSessionRecord]:
-        records = self._read_index(self._catalog_path())
+        catalog = self._catalog_path()
+        records = self._read_index(catalog)
         for index_path in self.paths.sessions_dir.rglob("index.jsonl"):
-            records.extend(self._read_index(index_path))
+            # The catalog itself lives in this tree and was already read above.
+            if index_path != catalog:
+                records.extend(self._read_index(index_path))
         return _deduplicate_records(records)
 
     def rebuild_catalog(self, cwds: Iterable[Path]) -> list[CodingSessionRecord]:
