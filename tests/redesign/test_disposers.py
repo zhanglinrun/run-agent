@@ -138,3 +138,55 @@ async def test_cancelled_disposer_does_not_skip_sibling_cleanup():
     assert await owner.drain() == 0
     assert calls == ["earlier"]
     assert owner.errors == ["one: cleanup callback was cancelled"]
+
+
+async def test_drain_runs_every_source_in_global_reverse_registration_order():
+    owner = DisposerOwner(timeout=0.05)
+    calls = []
+
+    def recorder(name):
+        async def callback():
+            calls.append(name)
+
+        return callback
+
+    owner.register("one", recorder("one-first"))
+    owner.register("two", recorder("two-first"))
+    owner.register("one", recorder("one-second"))
+    owner.register("two", recorder("two-second"))
+    # Retire the newer source first: a per-source FIFO drain would run
+    # `two-first` before `one-second`, and concurrent source tasks would not
+    # order the two sources at all.
+    owner.retire_source("two")
+    owner.retire_source("one")
+    assert await owner.drain() == 0
+    expected = ["two-second", "one-second", "two-first", "one-first"]
+    assert calls == expected
+    assert await owner.drain() == 0
+    assert calls == expected
+
+
+async def test_uncooperative_callback_defers_older_callbacks_until_it_exits():
+    owner = DisposerOwner(timeout=0.01)
+    calls = []
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def older():
+        calls.append("older")
+
+    async def newest():
+        entered.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            await release.wait()
+
+    owner.register("one", older)
+    owner.register("two", newest)
+    owner.retire()
+    assert await owner.drain() == 1
+    assert entered.is_set()
+    assert calls == []
+    release.set()
+    assert await owner.drain() == 0
+    assert calls == ["older"]

@@ -2,7 +2,7 @@
 id = "config-round-trip"
 version = "1"
 kind = "bug-fix"
-budget_seconds = 90
+budget_seconds = 300
 artifacts = ["codec.py"]
 fail_to_pass = ["test_mixed_types_round_trip", "test_nested_values_round_trip", "test_output_is_canonical_and_compact", "test_non_object_top_level_is_rejected"]
 

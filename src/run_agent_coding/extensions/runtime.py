@@ -9,7 +9,7 @@ from inspect import isawaitable
 from pathlib import Path
 from time import time_ns
 from types import MappingProxyType
-from typing import Literal, Protocol
+from typing import Literal, Protocol, cast
 
 from run_agent_coding.commands import (
     CommandContext,
@@ -55,6 +55,7 @@ from run_agent_coding.extensions.api import (
     SessionBeforeTreeEvent,
     SessionBeforeTreeResult,
     SessionLifecycleReason,
+    SessionShutdownContext,
     SessionShutdownEvent,
     SessionStartEvent,
     ToolCallHookEvent,
@@ -1425,8 +1426,21 @@ class ExtensionRuntime:
         await self._emit_lifecycle("session_start", SessionStartEvent(reason=reason))
 
     async def emit_session_shutdown(self, reason: SessionLifecycleReason) -> None:
-        """Dispatch `session_shutdown` to subscribed extensions."""
-        await self._emit_lifecycle("session_shutdown", SessionShutdownEvent(reason=reason))
+        """Dispatch `session_shutdown` with a minimal, frozen, read-only context.
+
+        Receivers read only `reason`, `session_id` and `cwd`; every mutation
+        surface of the retiring runtime is unreachable by type.
+        """
+        session = self.session_view
+        await self._emit_lifecycle(
+            "session_shutdown",
+            SessionShutdownEvent(reason=reason),
+            context=SessionShutdownContext(
+                reason=reason,
+                session_id=session.session_id,
+                cwd=session.cwd,
+            ),
+        )
 
     async def run_input_hooks(
         self,
@@ -1562,10 +1576,22 @@ class ExtensionRuntime:
         if isinstance(event, AgentTurnEndEvent):
             self._extension_turn_index += 1
 
-    async def _emit_lifecycle(self, event_name: str, payload: object) -> None:
+    async def _emit_lifecycle(
+        self,
+        event_name: str,
+        payload: object,
+        *,
+        context: ExtensionContext | SessionShutdownContext | None = None,
+    ) -> None:
         for owner, handler in self._handlers_for(event_name):
+            handler_context: ExtensionContext | SessionShutdownContext = (
+                context if context is not None else self._fresh_context(owner.source_id)
+            )
             try:
-                await _resolve(handler(payload, self._fresh_context(owner.source_id)))
+                # `session_shutdown` substitutes the minimal frozen context above.
+                # Handlers are declared against ExtensionContext, so the
+                # substitution is narrowed at this single dispatch boundary.
+                await _resolve(handler(payload, cast("ExtensionContext", handler_context)))
             except Exception as exc:  # extensions are an isolation boundary
                 self._record_runtime_failure(owner.name, event_name, exc)
 

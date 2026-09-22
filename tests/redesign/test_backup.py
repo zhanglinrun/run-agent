@@ -48,9 +48,11 @@ async def test_backup_v3_restores_only_sessions(tmp_path):
     destination = await create_backup(home, tmp_path / "backup")
     manifest = await verify_backup(destination)
     assert manifest["schema"] == "run.backup.v3"
+    # The published package also carries a catalog rebuilt from its project indexes.
     assert {item["path"] for item in manifest["files"]} == {
         "sessions/demo-abc123/index.jsonl",
         "sessions/demo-abc123/s1.jsonl",
+        "sessions/index.jsonl",
     }
     assert not (destination / "gateway").exists()
     (home / "sessions" / "demo-abc123" / "s1.jsonl").write_text(
@@ -63,6 +65,9 @@ async def test_backup_v3_restores_only_sessions(tmp_path):
         .startswith('{"type":"message","id":"a"}')
     )
     assert not (restored / "gateway").exists()
+    # The rebuilt catalog resolves relative to itself, so the restored tree can be backed up.
+    again = await create_backup(restored, tmp_path / "backup-again")
+    assert (again / "sessions/index.jsonl").is_file()
 
 
 async def test_verify_and_restore_accept_v2_manifests_with_legacy_files(tmp_path):
@@ -115,3 +120,102 @@ async def test_restore_does_not_replace_existing_directory_or_remove_legacy_stat
     with pytest.raises(FileExistsError):
         await restore_backup(backup, target)
     assert legacy.read_text() == "existing state"
+
+
+def _write_stale_catalog(home: Path, *, model: str) -> None:
+    """Seed a catalog row that a project index has already moved past."""
+    catalog = home / "sessions" / "index.jsonl"
+    catalog.parent.mkdir(parents=True, exist_ok=True)
+    catalog.write_text(
+        json.dumps(
+            {
+                "id": "s1",
+                "path": "demo-abc123/s1.jsonl",
+                "cwd": ".",
+                "model": model,
+                "title": None,
+                "created_at": 1,
+                "updated_at": 0.5,
+                "provider_name": None,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _catalog_rows(root: Path) -> list[dict[str, object]]:
+    return [
+        json.loads(line)
+        for line in (root / "sessions" / "index.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+async def test_create_backup_rebuilds_a_stale_catalog_from_project_indexes(tmp_path):
+    home = tmp_path / "live"
+    _write_tree(home)
+    _write_stale_catalog(home, model="stale-model")
+
+    backup = await create_backup(home, tmp_path / "backup")
+
+    await verify_backup(backup)
+    rows = _catalog_rows(backup)
+    # The project index wins, and its relative path is re-homed next to the catalog.
+    assert [row["id"] for row in rows] == ["s1"]
+    assert rows[0]["model"] == "test"
+    assert rows[0]["path"] == "demo-abc123/s1.jsonl"
+
+
+async def test_restore_rebuilds_a_stale_catalog_from_project_indexes(tmp_path):
+    home = tmp_path / "live"
+    _write_tree(home)
+    backup = await create_backup(home, tmp_path / "backup")
+    _write_stale_catalog(backup, model="stale-model")
+    manifest_path = backup / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload = (backup / "sessions" / "index.jsonl").read_bytes()
+    for item in manifest["files"]:
+        if item["path"] == "sessions/index.jsonl":
+            item["sha256"] = hashlib.sha256(payload).hexdigest()
+            item["size"] = len(payload)
+    manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+
+    restored = await restore_backup(backup, tmp_path / "restored")
+
+    rows = _catalog_rows(restored)
+    assert [row["id"] for row in rows] == ["s1"]
+    assert rows[0]["model"] == "test"
+
+
+async def test_backup_keeps_catalog_rows_whose_project_index_is_absent(tmp_path):
+    """A backed-up home may know sessions whose project index lives elsewhere."""
+    home = tmp_path / "live"
+    _write_tree(home)
+    catalog = home / "sessions" / "index.jsonl"
+    catalog.write_text(
+        json.dumps(
+            {
+                "id": "outside",
+                "path": str(home / "sessions" / "outside.jsonl"),
+                "cwd": ".",
+                "model": "unique-model",
+                "title": None,
+                "created_at": 1,
+                "updated_at": 9,
+                "provider_name": None,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (home / "sessions" / "outside.jsonl").write_text(
+        '{"type":"message","id":"x"}\n', encoding="utf-8"
+    )
+
+    backup = await create_backup(home, tmp_path / "backup")
+
+    rows = {row["id"]: row for row in _catalog_rows(backup)}
+    assert set(rows) == {"s1", "outside"}
+    assert rows["outside"]["model"] == "unique-model"
+    assert rows["s1"]["model"] == "test"

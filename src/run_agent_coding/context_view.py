@@ -11,17 +11,32 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
-from run_agent_coding.context_window import estimate_context_usage, estimate_message_tokens
+from run_agent_coding.context_window import (
+    COMPACTION_SUMMARY_PREFIX as REPLAY_SUMMARY_PREFIX,
+)
+from run_agent_coding.context_window import (
+    estimate_context_usage,
+    estimate_message_tokens,
+)
+from run_agent_core.messages import (
+    COMPACTION_SUMMARY_PREFIX as PROVIDER_SUMMARY_PREFIX,
+)
 from run_agent_core.messages import (
     AgentMessage,
     AssistantMessage,
     TextContent,
     ToolResultMessage,
     UserMessage,
+    message_text,
 )
 from run_agent_core.provider import ModelRequest
 
 ContextStrategy = Literal["cheap-first", "summary-only"]
+
+# A compaction replay writes "Previous conversation summary:"; a user message that
+# already carries the provider-native summary wrapper is a persisted prefix as well.
+# Both are stable while a tail grows, unlike a user request that a later turn replaces.
+_SUMMARY_PREFIXES = (REPLAY_SUMMARY_PREFIX, PROVIDER_SUMMARY_PREFIX)
 
 
 class ContextBudgetExceeded(RuntimeError):
@@ -38,6 +53,14 @@ class ContextArtifact:
 
 @dataclass(frozen=True, slots=True)
 class PreparedContext:
+    """The frozen Provider view plus the report of how it was produced.
+
+    ``stable_prefix_digest`` identifies the provider prefix that a caller may
+    cache: the system prompt plus the head anchor of the conversation (a
+    persisted compaction summary, otherwise the first user request). See
+    ``_stable_prefix_digest`` for the exact definition and its invariants.
+    """
+
     request: ModelRequest
     tokens_before: int
     tokens_after: int
@@ -86,7 +109,7 @@ class ContextViewPipeline:
         del session_id  # Reserved for future per-session cache accounting.
         original = tuple(message.model_copy(deep=True) for message in request.messages)
         before = self._tokens(request, original)
-        stable_digest = _messages_digest(original[:-5] if len(original) > 5 else original)
+        stable_digest = _stable_prefix_digest(request.system, original)
         if before <= self.target_tokens or self.strategy == "summary-only":
             copied = replace(request, messages=original)
             return PreparedContext(
@@ -258,10 +281,39 @@ def _folded_checkpoint(turns: list[list[AgentMessage]], artifact_by_call: dict[s
     return "\n".join(rows)
 
 
-def _messages_digest(messages: tuple[AgentMessage, ...]) -> str:
-    payload = [message.model_dump(mode="json") for message in messages]
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+def _stable_prefix_digest(system: str, messages: tuple[AgentMessage, ...]) -> str:
+    """Digest the provider prefix a trailing entry cannot change.
+
+    Definition: SHA-256 over the canonical JSON of the system prompt
+    (instructions) plus exactly one head anchor - the persisted compaction
+    summary when the head already is one, otherwise the first user request.
+
+    Invariants:
+
+    * Appending to the tail (assistant replies, tool results, further user
+      turns) leaves the digest unchanged for as long as no new
+      ``CompactionEntry`` is written: neither the system prompt nor the head
+      anchor moves.
+    * A new L4 compaction (or a manual ``/compact``) rewrites the head with a
+      new summary text, so the digest changes. Re-summarizing into
+      byte-identical text provably leaves the provider prefix unchanged, so
+      the digest stays equal on purpose: it names the prefix, not the number
+      of compaction events.
+    """
+    kind, anchor = _prefix_anchor(messages)
+    encoded = json.dumps([system, kind, anchor], ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _prefix_anchor(messages: tuple[AgentMessage, ...]) -> tuple[str, str]:
+    """Return the head identity: a compaction summary or the first request."""
+    head = messages[0] if messages else None
+    if isinstance(head, UserMessage) and head.text.startswith(_SUMMARY_PREFIXES):
+        return "summary", head.text
+    return "request", next(
+        (message_text(message) for message in messages if isinstance(message, UserMessage)),
+        "",
+    )
 
 
 def _write_blob_once(path: Path, data: bytes) -> None:

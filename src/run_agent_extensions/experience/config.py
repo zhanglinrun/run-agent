@@ -46,7 +46,7 @@ class ExperienceConfig:
     skill_guard: bool = True
     skill_ledger: bool = True
     evolution_suite: str = "evolution"
-    evolution_suite_version: str = "1"
+    evolution_suite_version: str = "2"
     evolution_budget_seconds: float = 300.0
 
     def __post_init__(self) -> None:
@@ -69,7 +69,7 @@ def load_experience_config(env: Mapping[str, str]) -> ExperienceConfig:
         skill_guard=_bool(env.get("EXPERIENCE_SKILL_GUARD"), True),
         skill_ledger=_bool(env.get("EXPERIENCE_SKILL_LEDGER"), True),
         evolution_suite=(env.get("EXPERIENCE_EVOLUTION_SUITE") or "evolution").strip(),
-        evolution_suite_version=(env.get("EXPERIENCE_EVOLUTION_SUITE_VERSION") or "1").strip(),
+        evolution_suite_version=(env.get("EXPERIENCE_EVOLUTION_SUITE_VERSION") or "2").strip(),
         evolution_budget_seconds=_float(
             env.get("EXPERIENCE_EVOLUTION_BUDGET_SECONDS"), 300.0, minimum=0.001
         ),

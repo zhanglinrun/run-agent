@@ -122,3 +122,5 @@ Observability 与 Evals 是横向证据模块。默认编码工具为 `read`、`
 ```
 
 组件测试证明协议和故障边界，不证明真实模型能力。真实模型结论必须附任务版本、模型配置、Skill digest、失败分母和可离线重建的 evidence；没有报告支持的百分比不进入项目描述。
+
+旧版本升级与兼容行为（旧 Session/记忆/Skill 直读、旧 `.ledger.jsonl` 查看与 rollback、扩展源码变更后的 `--refresh-resources`、v2 备份恢复与 `~/.run/gateway` 数据）见 [MIGRATION.md](MIGRATION.md)。

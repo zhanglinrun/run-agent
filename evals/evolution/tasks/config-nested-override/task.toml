@@ -2,7 +2,7 @@
 id = "config-nested-override"
 version = "1"
 kind = "bug-fix"
-budget_seconds = 90
+budget_seconds = 300
 artifacts = ["config.py"]
 fail_to_pass = ["test_partial_service_override_keeps_sibling", "test_partial_logging_override_keeps_sibling", "test_results_do_not_share_nested_defaults"]
 

@@ -24,7 +24,9 @@ from run_agent_coding.storage.telemetry import JsonlTelemetrySink
 from run_agent_core.session.contracts import SessionConflict
 from run_agent_core.session.entries import LeafEntry, SessionEntry
 from run_agent_core.session.storage import (
+    DEFAULT_STORAGE_DIAGNOSTICS,
     JsonlSessionStorage,
+    StorageDiagnostics,
     _fsync_directory,
     _lock_file,
     _unlock_file,
@@ -113,6 +115,7 @@ class SessionManager:
         principal_id: str = "local",
         owner_id: str | None = None,
         evaluation: EvaluationService | None = None,
+        diagnostics: StorageDiagnostics | None = None,
     ) -> None:
         self.paths = paths or RunAgentPaths()
         self.principal_id = principal_id
@@ -126,12 +129,22 @@ class SessionManager:
         self._services: MemoryHostServices | None = None
         self._skill_packages: SkillPackageStore | None = None
         self._close_task: asyncio.Task[None] | None = None
+        self._diagnostics = diagnostics if diagnostics is not None else DEFAULT_STORAGE_DIAGNOSTICS
+        # Bounded set of project directories this manager has already been asked about;
+        # it is the only source of catalog-rebuild candidates besides the catalog itself,
+        # so a rebuild never becomes a disk-wide scan.
+        self._known_cwds: dict[Path, None] = {}
 
     def project_index_path(self, cwd: Path) -> Path:
         return self.paths.project_session_dir(cwd) / "index.jsonl"
 
     def _catalog_path(self) -> Path:
         return self.paths.sessions_dir / "index.jsonl"
+
+    @property
+    def diagnostics(self) -> StorageDiagnostics:
+        """Tolerated storage failures this manager recorded, such as a refused dir flush."""
+        return self._diagnostics
 
     async def host_services(self) -> MemoryHostServices:
         if self._services is None:
@@ -174,6 +187,9 @@ class SessionManager:
         if record.path.exists() and record.path.stat().st_size:
             raise RuntimeError(f"Session already exists with id '{record.id}'")
         record.path.touch()
+        # First write of a startup: repair the derived catalog for this project before
+        # adding the new record, so a missing/stale cache cannot hide existing sessions.
+        self.ensure_catalog((record.cwd,))
         self._upsert(record)
         return record
 
@@ -202,7 +218,18 @@ class SessionManager:
             path=path,
         )
 
-    async def get_session(self, session_id: str) -> CodingSessionRecord | None:
+    async def get_session(
+        self, session_id: str, *, cwd: Path | None = None
+    ) -> CodingSessionRecord | None:
+        """Find a session; ``cwd`` scopes the lookup to one project's index.
+
+        Supplying ``cwd`` is the startup entry for a resume-by-id: the project index is
+        read (and replayed into the catalog) before falling back to the catalog tree.
+        """
+        if cwd is not None:
+            for record in self._read_project_records(cwd):
+                if record.id == session_id:
+                    return record
         for record in self._read_all_records():
             if record.id == session_id:
                 return record
@@ -290,7 +317,13 @@ class SessionManager:
         with self._locked_index(path, exclusive=False):
             return list(_read_index_unlocked(path).values())
 
-    def _read_project_records(self, cwd: Path) -> list[CodingSessionRecord]:
+    def _remember_cwd(self, cwd: Path) -> Path:
+        resolved = cwd.resolve()
+        self._known_cwds.setdefault(resolved)
+        return resolved
+
+    def _project_records(self, cwd: Path) -> list[CodingSessionRecord]:
+        """Read one project index without repairing the catalog (no recursion)."""
         resolved = cwd.resolve()
         return [
             record
@@ -298,42 +331,126 @@ class SessionManager:
             if record.cwd == resolved
         ]
 
+    def _read_project_records(self, cwd: Path) -> list[CodingSessionRecord]:
+        resolved = self._remember_cwd(cwd)
+        self.ensure_catalog((resolved,))
+        return self._project_records(resolved)
+
     def _read_all_records(self) -> list[CodingSessionRecord]:
         catalog = self._catalog_path()
-        records = self._read_index(catalog)
+        records = self.ensure_catalog()
         for index_path in self.paths.sessions_dir.rglob("index.jsonl"):
             # The catalog itself lives in this tree and was already read above.
             if index_path != catalog:
                 records.extend(self._read_index(index_path))
         return _deduplicate_records(records)
 
+    def ensure_catalog(self, cwds: Iterable[Path] | None = None) -> list[CodingSessionRecord]:
+        """Repair the derived catalog from project indexes that are newer than the cache.
+
+        The project indexes are the source of truth; the catalog is a cache. This is the
+        startup entry: a missing or corrupt catalog is rebuilt for the *known* working
+        directories, and an entry that a project index has moved past is replayed (last
+        write wins). Candidates are the ``cwds`` given here, the working directories this
+        manager has already seen, and the working directories still readable inside the
+        catalog - there is deliberately no disk-wide scan.
+
+        Cost: one ``stat`` of the catalog plus one ``stat`` per candidate project index;
+        an index is only read when the catalog is missing/corrupt or when the index is
+        newer than the catalog. Writing happens only for stale entries (append) or when
+        unparseable rows must be dropped (atomic rewrite).
+        """
+        return self._repair_catalog((*(cwds or ()), *self._known_cwds))
+
     def rebuild_catalog(self, cwds: Iterable[Path]) -> list[CodingSessionRecord]:
-        """Rebuild the derived catalog cache from the project indexes.
+        """Replay the given project indexes into the derived catalog cache.
 
         The project indexes are the source of truth and the catalog is only a cache, so
         rebuilding it requires the caller to supply the working directories to replay.
+        Unlike :meth:`ensure_catalog` this is explicit and forced: the given indexes are
+        read even when their mtime is not newer than the catalog, and a catalog that was
+        deleted or corrupted is rebuilt in full for exactly these directories.
         """
-        for cwd in cwds:
-            for record in self._read_project_records(cwd):
-                self._write_index(self._catalog_path(), record)
-        return self._read_index(self._catalog_path())
+        return self._repair_catalog(tuple(cwds), force=True, include_catalog_cwds=False)
+
+    def _repair_catalog(
+        self,
+        candidates: Iterable[Path],
+        *,
+        force: bool = False,
+        include_catalog_cwds: bool = True,
+    ) -> list[CodingSessionRecord]:
+        """Merge candidate project indexes into the catalog and return its records.
+
+        Cost: one catalog read plus one ``stat`` per candidate; a project index is only
+        read when ``force`` is set, the catalog is missing/corrupt, or the index mtime is
+        newer than the catalog's. Writing happens only for stale rows (append) or when
+        unparseable rows must be dropped (atomic rewrite).
+        """
+        catalog_path = self._catalog_path()
+        catalog_records, _row_count, corrupt = self._read_index_state(catalog_path)
+        catalog_mtime = catalog_path.stat().st_mtime if catalog_path.exists() else None
+        ordered: dict[Path, None] = {}
+        for cwd in candidates:
+            ordered.setdefault(self._remember_cwd(cwd))
+        if include_catalog_cwds:
+            for record in catalog_records.values():
+                ordered.setdefault(self._remember_cwd(record.cwd))
+
+        stale: list[CodingSessionRecord] = []
+        for cwd in ordered:
+            index_path = self.project_index_path(cwd)
+            if not index_path.exists():
+                continue
+            if (
+                not force
+                and not corrupt
+                and catalog_mtime is not None
+                and index_path.stat().st_mtime <= catalog_mtime
+            ):
+                # The catalog was written after this index, so it already reflects it.
+                continue
+            for record in self._project_records(cwd):
+                existing = catalog_records.get(record.id)
+                if existing is None or _catalog_record_is_stale(existing, record):
+                    stale.append(record)
+                    catalog_records[record.id] = record
+        if not stale and not corrupt:
+            return list(catalog_records.values())
+        if corrupt:
+            self._rewrite_index(catalog_path, catalog_records.values())
+        else:
+            for record in stale:
+                self._write_index(catalog_path, record)
+        return self._read_index(catalog_path)
 
     def _upsert(self, record: CodingSessionRecord) -> None:
         self._write_index(self.project_index_path(record.cwd), record)
         self._write_index(self._catalog_path(), record)
 
+    def _read_index_state(self, path: Path) -> tuple[dict[str, CodingSessionRecord], int, bool]:
+        """Read one index under its shared lock as (records, rows, has-corrupt-rows)."""
+        with self._locked_index(path, exclusive=False):
+            return _read_index_state_unlocked(path)
+
     def _write_index(self, path: Path, record: CodingSessionRecord) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         encoded = (json.dumps(record.to_json(), ensure_ascii=False) + "\n").encode("utf-8")
         with self._locked_index(path, exclusive=True):
-            records, row_count = _read_index_state_unlocked(path)
+            records, row_count, corrupt = _read_index_state_unlocked(path)
             with path.open("ab") as file:
                 file.write(encoded)
                 file.flush()
                 os.fsync(file.fileno())
             records[record.id] = record
-            if row_count + 1 > max(_INDEX_COMPACTION_MIN_RECORDS, 4 * len(records)):
+            if corrupt or row_count + 1 > max(_INDEX_COMPACTION_MIN_RECORDS, 4 * len(records)):
                 self._compact_index_unlocked(path, records.values())
+
+    def _rewrite_index(self, path: Path, records: Iterable[CodingSessionRecord]) -> None:
+        """Atomically replace an index with its complete last-write-wins state."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with self._locked_index(path, exclusive=True):
+            self._compact_index_unlocked(path, records)
 
     @contextmanager
     def _locked_index(self, path: Path, *, exclusive: bool) -> Iterator[None]:
@@ -353,6 +470,11 @@ class SessionManager:
                 _unlock_file(lock_file)
 
     def _compact_index_unlocked(self, path: Path, records: Iterable[CodingSessionRecord]) -> None:
+        """Rewrite an index through temp file, fsync, replace, and a recorded dir flush.
+
+        A failure at any of those points leaves the previous complete index in place: the
+        temporary file is removed and the error propagates to the caller.
+        """
         descriptor, temporary = tempfile.mkstemp(
             prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
         )
@@ -365,7 +487,7 @@ class SessionManager:
                 file.flush()
                 os.fsync(file.fileno())
             os.replace(temporary_path, path)
-            _fsync_directory(path.parent)
+            _fsync_directory(path.parent, diagnostics=self._diagnostics)
         except BaseException:
             with suppress(OSError):
                 temporary_path.unlink()
@@ -408,15 +530,23 @@ class SessionManager:
 
 
 def _read_index_unlocked(path: Path) -> dict[str, CodingSessionRecord]:
-    records, _ = _read_index_state_unlocked(path)
+    records, _rows, _corrupt = _read_index_state_unlocked(path)
     return records
 
 
-def _read_index_state_unlocked(path: Path) -> tuple[dict[str, CodingSessionRecord], int]:
+def _read_index_state_unlocked(
+    path: Path,
+) -> tuple[dict[str, CodingSessionRecord], int, bool]:
+    """Read one index as (last-write-wins records, valid rows, saw-unparseable-rows).
+
+    A malformed row is skipped so a torn append cannot hide the complete state, but it is
+    reported so a rewrite can drop it instead of letting garbage accumulate forever.
+    """
     records: dict[str, CodingSessionRecord] = {}
     row_count = 0
+    corrupt = False
     if not path.exists():
-        return records, row_count
+        return records, row_count, corrupt
     for line in path.read_text(encoding="utf-8").split("\n"):
         stripped = line.strip()
         if not stripped:
@@ -424,12 +554,20 @@ def _read_index_state_unlocked(path: Path) -> tuple[dict[str, CodingSessionRecor
         try:
             payload = json.loads(stripped)
         except json.JSONDecodeError:
+            corrupt = True
             continue
         if isinstance(payload, dict):
             record = CodingSessionRecord.from_json(payload)
             records[record.id] = record
             row_count += 1
-    return records, row_count
+    return records, row_count, corrupt
+
+
+def _catalog_record_is_stale(existing: CodingSessionRecord, record: CodingSessionRecord) -> bool:
+    """Report whether a project index row should replace its catalog row."""
+    if record.updated_at > existing.updated_at:
+        return True
+    return record.updated_at == existing.updated_at and record != existing
 
 
 def _deduplicate_records(records: list[CodingSessionRecord]) -> list[CodingSessionRecord]:

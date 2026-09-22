@@ -1,11 +1,13 @@
 import asyncio
+import dataclasses
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 from tests.redesign.test_coding_application import ReplyProvider, options
 
 from run_agent_coding.application import CodingApplication
-from run_agent_coding.extensions.api import ExtensionError
+from run_agent_coding.extensions.api import ExtensionError, SessionShutdownContext
 from run_agent_coding.host.contracts import HeadChange, StateChange
 from run_agent_coding.session_manager import SessionManager
 from run_agent_coding.storage.host import ExtensionRetired
@@ -219,3 +221,62 @@ async def test_new_session_retirement_does_not_rebind_captured_scope(tmp_path, e
         with pytest.raises((ExtensionError, ExtensionRetired)):
             await old.state.compare_and_set(StateChange("late", 0, "old"))
         assert await context(app).services.scope().state.get("note") is None
+
+
+def test_shutdown_context_is_frozen_and_only_exposes_reason_session_and_cwd():
+    assert [field.name for field in dataclasses.fields(SessionShutdownContext)] == [
+        "reason",
+        "session_id",
+        "cwd",
+    ]
+    context = SessionShutdownContext(reason="reload", session_id="s-1", cwd=Path("."))
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        context.reason = "quit"  # type: ignore[misc]
+    for unavailable in ("services", "telemetry", "ui", "generation_id", "is_active"):
+        assert not hasattr(context, unavailable)
+
+
+async def test_shutdown_notification_is_single_and_receives_the_minimal_context(tmp_path):
+    shutdown_log = tmp_path / "shutdown.log"
+    source = tmp_path / "shutdown_context.py"
+    source.write_text(
+        f"""\
+from pathlib import Path
+
+
+def setup(api):
+    log = Path({str(shutdown_log)!r})
+
+    async def shutdown(event, context):
+        with log.open("a", encoding="utf-8") as stream:
+            stream.write(
+                f"{{event.reason}}|{{context.reason}}|{{context.session_id}}"
+                f"|{{context.cwd.name}}|{{type(context).__name__}}"
+                f"|{{hasattr(context, 'services')}}\\n"
+            )
+
+    api.on("session_shutdown", shutdown)
+""",
+        encoding="utf-8",
+    )
+    opts = replace(options(tmp_path), extension_paths=(source,))
+    async with await CodingApplication.open(opts, provider=ReplyProvider()) as app:
+        await app.start()
+        session_id = app.session.session_id
+        events = [event async for event in app.prompt("first")]
+        head = events[-1].head_id
+        recorded = f"{session_id}|{tmp_path.name}|SessionShutdownContext|False"
+
+        await app.command("/reload")
+        assert shutdown_log.read_text(encoding="utf-8").splitlines() == [
+            f"reload|reload|{recorded}"
+        ]
+        # A branch reuses the live runtime, so it must not notify shutdown.
+        await app.command(f"/branch {head}")
+        assert shutdown_log.read_text(encoding="utf-8").splitlines() == [
+            f"reload|reload|{recorded}"
+        ]
+    assert shutdown_log.read_text(encoding="utf-8").splitlines() == [
+        f"reload|reload|{recorded}",
+        f"quit|quit|{recorded}",
+    ]

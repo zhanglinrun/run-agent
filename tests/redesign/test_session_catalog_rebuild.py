@@ -1,8 +1,15 @@
-"""Project indexes are the source of truth; the global catalog is a rebuildable cache."""
+"""Project indexes are the source of truth; the global catalog is a rebuildable cache.
+
+The catalog is a derived cache, so a missing, corrupt, or outdated one must repair itself
+from a *known* project index at the point the manager is first asked about that project -
+never by scanning the disk.
+"""
 
 from __future__ import annotations
 
 import json
+import os
+from dataclasses import replace
 from pathlib import Path
 
 from run_agent_coding.paths import RunAgentPaths
@@ -11,6 +18,14 @@ from run_agent_coding.session_manager import SessionManager
 
 def _paths(tmp_path: Path) -> RunAgentPaths:
     return RunAgentPaths(home=tmp_path / "state", agents_home=tmp_path / "agents")
+
+
+def _catalog_rows(manager: SessionManager) -> list[dict[str, object]]:
+    return [
+        json.loads(line)
+        for line in manager._catalog_path().read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
 
 async def test_rebuild_catalog_restores_records_from_project_index(tmp_path: Path) -> None:
@@ -22,9 +37,8 @@ async def test_rebuild_catalog_restores_records_from_project_index(tmp_path: Pat
         catalog = manager._catalog_path()
         assert catalog.is_file()
         catalog.unlink()
-        assert [record.id for record in await manager.list_sessions(None)] == []
-        assert await manager.get_session(created.id) is None
 
+        # A catalog read repairs the cache from the project index of the known directory.
         rebuilt = manager.rebuild_catalog([tmp_path])
         assert [record.id for record in rebuilt] == [created.id]
 
@@ -37,6 +51,96 @@ async def test_rebuild_catalog_restores_records_from_project_index(tmp_path: Pat
         assert restored.created_at == created.created_at
         assert restored.updated_at == created.updated_at
         assert [record.id for record in await manager.list_sessions(None)] == [created.id]
+    finally:
+        await manager.aclose()
+
+
+async def test_missing_catalog_is_rebuilt_on_the_first_read(tmp_path: Path) -> None:
+    manager = SessionManager(_paths(tmp_path))
+    try:
+        created = await manager.create_session(cwd=tmp_path, model="test-model")
+        manager._catalog_path().unlink()
+
+        # No explicit rebuild call: reading the catalog is the startup repair entry point.
+        assert [record.id for record in await manager.list_sessions(None)] == [created.id]
+        assert manager._catalog_path().is_file()
+        assert await manager.get_session(created.id) is not None
+    finally:
+        await manager.aclose()
+
+
+async def test_project_scoped_startup_read_rebuilds_a_missing_catalog(tmp_path: Path) -> None:
+    """A fresh process with a deleted catalog recovers through list_sessions(cwd)."""
+    first = SessionManager(_paths(tmp_path))
+    try:
+        created = await first.create_session(cwd=tmp_path, model="test-model")
+    finally:
+        await first.aclose()
+    first._catalog_path().unlink()
+
+    second = SessionManager(_paths(tmp_path))
+    try:
+        assert [record.id for record in await second.list_sessions(tmp_path)] == [created.id]
+        assert second._catalog_path().is_file()
+        assert await second.get_session(created.id) is not None
+    finally:
+        await second.aclose()
+
+
+async def test_get_session_with_cwd_resolves_without_a_catalog(tmp_path: Path) -> None:
+    manager = SessionManager(_paths(tmp_path))
+    try:
+        created = await manager.create_session(cwd=tmp_path, model="test-model")
+        manager._catalog_path().unlink()
+
+        found = await manager.get_session(created.id, cwd=tmp_path)
+
+        assert found is not None
+        assert found.path == created.path
+        assert [row["id"] for row in _catalog_rows(manager)] == [created.id]
+    finally:
+        await manager.aclose()
+
+
+async def test_outdated_catalog_is_corrected_by_the_project_index(tmp_path: Path) -> None:
+    manager = SessionManager(_paths(tmp_path))
+    try:
+        created = await manager.create_session(cwd=tmp_path, model="old-model")
+        catalog = manager._catalog_path()
+        project_index = manager.project_index_path(tmp_path)
+
+        # Another writer updated only the project index, as a crash between the two writes
+        # would leave it; the catalog must lose that race.
+        fresher = replace(
+            created, model="fresh-model", title="fresh", updated_at=created.updated_at + 10
+        )
+        with project_index.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(fresher.to_json()) + "\n")
+        os.utime(catalog, (0, 0))
+        assert [row["model"] for row in _catalog_rows(manager)] == ["old-model"]
+
+        found = await manager.get_session(created.id)
+        assert [record.model for record in manager._read_index(catalog)] == ["fresh-model"]
+        assert found is not None
+        assert found.model == "fresh-model"
+        assert [row["model"] for row in _catalog_rows(manager)] == ["old-model", "fresh-model"]
+    finally:
+        await manager.aclose()
+
+
+async def test_corrupt_catalog_is_rewritten_from_the_project_index(tmp_path: Path) -> None:
+    manager = SessionManager(_paths(tmp_path))
+    try:
+        created = await manager.create_session(cwd=tmp_path, model="test-model")
+        catalog = manager._catalog_path()
+        catalog.write_text('{not json\n{"id": "torn"\n', encoding="utf-8")
+
+        records = await manager.list_sessions(None)
+
+        assert [record.id for record in records] == [created.id]
+        rows = _catalog_rows(manager)
+        assert [row["id"] for row in rows] == [created.id]
+        assert await manager.get_session(created.id) is not None
     finally:
         await manager.aclose()
 

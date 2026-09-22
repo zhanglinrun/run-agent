@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import re
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import cast
 
 from run_agent_coding.host.contracts import HistoryService
 from run_agent_coding.host.evaluation import (
@@ -10,12 +14,25 @@ from run_agent_coding.host.evaluation import (
     EvaluationRequest,
     EvaluationService,
 )
+from run_agent_coding.host.inference import (
+    InferenceRequest,
+    InferenceService,
+    UnavailableInference,
+)
 from run_agent_coding.host.learning import writeback_enabled
+from run_agent_core.messages import message_text
+from run_agent_core.session.entries import (
+    BranchSummaryEntry,
+    CompactionEntry,
+    MessageEntry,
+    SessionEntry,
+)
 
 from .candidates import (
     CandidateClaim,
     CandidateError,
     CandidateOperation,
+    OperationAction,
     ProjectProbe,
     SkillCandidate,
     SkillCandidateStore,
@@ -25,6 +42,27 @@ from .config import ExperienceConfig
 from .memory import MemoryScope
 from .mutation import require_mutation
 from .skill_manager import SkillManager, SkillWriteError, SkillWriteResult
+
+# The proposer reads one fixed run, so its prompt is a bounded summary and its request
+# count is a hard ceiling: a retry spends budget, it never extends it.
+MAX_PROPOSER_REQUESTS = 4
+MAX_PROPOSER_ENTRY_CHARS = 1_200
+MAX_PROPOSER_TRANSCRIPT_CHARS = 8_000
+MAX_PROPOSER_SKILL_CHARS = 4_000
+MAX_PROPOSER_OUTPUT_TOKENS = 1_500
+MAX_PROPOSER_FEEDBACK_CHARS = 400
+MAX_PROPOSER_OPERATIONS = 8
+PROPOSER_PURPOSE = "experience_propose"
+MISSING_SKILL_BODY = "(this Skill does not exist yet; an add operation must create it)"
+PROPOSER_SYSTEM = (
+    "You improve one Skill from one completed run. Reply with a single JSON object and "
+    'nothing else: {"operations": [{"action": "add"|"delete"|"replace", "old_text": "...", '
+    '"new_text": "..."}], "claims": [{"text": "...", "probe_paths": ["relative/path"]}]}. '
+    "Use at most 8 operations and keep the total changed characters under 2000. An add "
+    "without old_text appends. A replace or delete must quote old_text exactly once. Cite "
+    "a project fact only when a relative path inside the project proves it. If the run "
+    "teaches nothing reusable, reply with an empty operations list."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +86,7 @@ class SkillEvolution:
         policy: EvolutionPolicy | None = None,
         config: ExperienceConfig | None = None,
         history: HistoryService | None = None,
+        inference: InferenceService | None = None,
     ) -> None:
         self.candidates = candidates
         self.skills = skills
@@ -57,6 +96,7 @@ class SkillEvolution:
         self.policy = policy or EvolutionPolicy()
         self.config = config or ExperienceConfig()
         self.history = history
+        self.inference: InferenceService = inference or UnavailableInference()
 
     async def propose(
         self,
@@ -114,6 +154,72 @@ class SkillEvolution:
         if self.evaluation.available:
             await self.evaluate(candidate.candidate_id)
         return self.candidates.require(candidate.candidate_id)
+
+    async def propose_from_run(
+        self,
+        *,
+        scope: MemoryScope,
+        name: str,
+        source_session: str,
+        source_run: str,
+    ) -> SkillCandidate:
+        """Ask the host's inference service for one bounded edit to one fixed run.
+
+        This is not a second candidate pipeline. It reads the committed run, the current
+        Skill and the verifier feedback, turns the model's answer into operations and
+        claims, and hands both to ``propose``, so ownership, pin, base-digest, scope and
+        probe admission stay in the one place that already enforces them. The request
+        ceiling is a spent budget rather than a retry target: an unparsable answer costs
+        one request and is fed back as feedback, so no answer can make the proposer ask
+        ``MAX_PROPOSER_REQUESTS`` times or more.
+        """
+        require_mutation("candidate")
+        self._require_scope(scope)
+        if not self.inference.available:
+            raise CandidateError(
+                "no InferenceService is available for this host; the candidate can only stay cold"
+            )
+        if self.history is None:
+            raise CandidateError(f"source run {source_run!r} has no committed history")
+        entries = await self.history.read_completed_run(source_run)
+        if not entries:
+            raise CandidateError(f"source run {source_run!r} has no committed history")
+        base = self.skills.main_content(scope, name)
+        transcript = summarize_run(entries)
+        body = (base or MISSING_SKILL_BODY)[:MAX_PROPOSER_SKILL_CHARS]
+        feedback = ""
+        attempts = 0
+        while attempts < MAX_PROPOSER_REQUESTS:
+            attempts += 1
+            try:
+                result = await self.inference.complete(
+                    InferenceRequest(
+                        prompt=_proposer_prompt(scope, name, body, transcript, feedback),
+                        system=PROPOSER_SYSTEM,
+                        purpose=PROPOSER_PURPOSE,
+                        max_output_tokens=MAX_PROPOSER_OUTPUT_TOKENS,
+                    )
+                )
+            except Exception as exc:
+                # A refused or failed request is not a proposal; report the reason instead
+                # of keeping a candidate nobody measured.
+                raise CandidateError(f"inference request failed: {exc}") from exc
+            try:
+                operations, claims = parse_proposal(result.text)
+            except CandidateError as exc:
+                feedback = str(exc)[:MAX_PROPOSER_FEEDBACK_CHARS]
+                continue
+            return await self.propose(
+                scope=scope,
+                name=name,
+                source_session=source_session,
+                source_run=source_run,
+                operations=operations,
+                claims=claims,
+            )
+        raise CandidateError(
+            f"no usable proposal after {MAX_PROPOSER_REQUESTS} inference requests: {feedback}"
+        )
 
     async def evaluate(self, candidate_id: str) -> SkillCandidate:
         require_mutation("candidate")
@@ -316,4 +422,151 @@ class SkillEvolution:
             raise CandidateError("project Skills require a trusted project")
 
 
+def summarize_run(entries: Sequence[SessionEntry]) -> str:
+    """Render one completed run as a bounded, role-tagged transcript.
+
+    Every entry is truncated to ``MAX_PROPOSER_ENTRY_CHARS`` and the total stops at
+    ``MAX_PROPOSER_TRANSCRIPT_CHARS``, so the prompt does not grow with the run.
+    """
+    lines: list[str] = []
+    used = 0
+    for index, entry in enumerate(entries, start=1):
+        text = _entry_text(entry)
+        if not text:
+            continue
+        rendered = f"[{index}] {_entry_kind(entry)}: {text[:MAX_PROPOSER_ENTRY_CHARS]}"
+        if used + len(rendered) > MAX_PROPOSER_TRANSCRIPT_CHARS:
+            lines.append(f"[{index}] ... truncated at {MAX_PROPOSER_TRANSCRIPT_CHARS} characters")
+            break
+        lines.append(rendered)
+        used += len(rendered)
+    return "\n".join(lines)
+
+
+def parse_proposal(
+    text: str,
+) -> tuple[tuple[CandidateOperation, ...], tuple[tuple[str, tuple[str, ...]], ...]]:
+    """Turn one model answer into operations and claims, or refuse with a reason.
+
+    Models wrap JSON in fences and prose, so the first balanced object is taken rather
+    than demanding the whole answer be JSON. Every field is then checked, because
+    "unparsable" has to include a well-formed object whose actions are nonsense.
+    """
+    payload = _first_json_object(text)
+    if payload is None:
+        raise CandidateError("the answer contained no JSON object")
+    raw_operations = payload.get("operations")
+    if not isinstance(raw_operations, list):
+        raise CandidateError('the answer needs an "operations" list')
+    if not raw_operations:
+        raise CandidateError("the answer proposed no operations")
+    if len(raw_operations) > MAX_PROPOSER_OPERATIONS:
+        raise CandidateError(f"the answer proposed more than {MAX_PROPOSER_OPERATIONS} operations")
+    operations: list[CandidateOperation] = []
+    for position, item in enumerate(raw_operations, start=1):
+        if not isinstance(item, dict):
+            raise CandidateError(f"operation {position} is not an object")
+        action = item.get("action")
+        if action not in {"add", "delete", "replace"}:
+            raise CandidateError(f"operation {position} has an unknown action {action!r}")
+        raw_old = item.get("old_text") or ""
+        raw_new = item.get("new_text") or ""
+        if not isinstance(raw_old, str) or not isinstance(raw_new, str):
+            raise CandidateError(f"operation {position} needs string old_text and new_text")
+        operations.append(CandidateOperation(cast(OperationAction, action), raw_old, raw_new))
+    raw_claims = payload.get("claims") or []
+    if not isinstance(raw_claims, list):
+        raise CandidateError('"claims" must be a list when present')
+    claims: list[tuple[str, tuple[str, ...]]] = []
+    for position, item in enumerate(raw_claims, start=1):
+        if not isinstance(item, dict):
+            raise CandidateError(f"claim {position} is not an object")
+        claim_text = item.get("text")
+        paths = item.get("probe_paths")
+        if not isinstance(claim_text, str) or not claim_text.strip():
+            raise CandidateError(f"claim {position} needs non-empty text")
+        if not isinstance(paths, list) or not all(isinstance(path, str) for path in paths):
+            raise CandidateError(f"claim {position} needs probe_paths as a list of strings")
+        claims.append((claim_text, tuple(cast(list[str], paths))))
+    return tuple(operations), tuple(claims)
+
+
+def _proposer_prompt(
+    scope: MemoryScope, name: str, body: str, transcript: str, feedback: str
+) -> str:
+    """Freeze the whole question: one Skill, one run summary, and any retry feedback."""
+    sections = [
+        f"Skill: {scope}/{name}",
+        "Current Skill body:\n" + body,
+        "Completed run summary:\n" + transcript,
+    ]
+    if feedback:
+        sections.append("Your previous answer was rejected: " + feedback)
+    return "\n\n".join(sections)
+
+
+def _first_json_object(text: str) -> dict[str, object] | None:
+    """Return the first balanced JSON object in ``text``, fences and prose included."""
+    for match in re.finditer(r"\{", text):
+        candidate = _balanced_object(text, match.start())
+        if candidate is None:
+            continue
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return cast(dict[str, object], parsed)
+    return None
+
+
+def _balanced_object(text: str, start: int) -> str | None:
+    """Scan to the brace that closes the object opened at ``start``, ignoring strings."""
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        character = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character == "{":
+            depth += 1
+        elif character == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return None
+
+
+def _entry_text(entry: SessionEntry) -> str:
+    """Read one entry's visible text without depending on any single entry subtype."""
+    if isinstance(entry, MessageEntry):
+        return message_text(entry.message)
+    if isinstance(entry, (CompactionEntry, BranchSummaryEntry)):
+        return entry.summary
+    return ""
+
+
+def _entry_kind(entry: SessionEntry) -> str:
+    """Name an entry's role for the prompt, defaulting to its entry type."""
+    if isinstance(entry, MessageEntry):
+        return str(getattr(entry.message, "role", "message"))
+    return str(getattr(entry, "type", "entry"))
+
+
 __all__ = ["EvolutionPolicy", "SkillEvolution"]
+__all__ = [
+    "MAX_PROPOSER_REQUESTS",
+    "EvolutionPolicy",
+    "SkillEvolution",
+    "parse_proposal",
+    "summarize_run",
+]

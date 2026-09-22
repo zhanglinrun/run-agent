@@ -2,7 +2,7 @@
 id = "config-key-migration"
 version = "1"
 kind = "bug-fix"
-budget_seconds = 90
+budget_seconds = 300
 artifacts = ["settings.py", "client.py"]
 fail_to_pass = ["test_default_uses_only_new_schema", "test_removed_key_is_ignored", "test_client_uses_new_key"]
 

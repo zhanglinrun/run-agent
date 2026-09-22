@@ -77,6 +77,7 @@ def setup(api: ExtensionAPI) -> None:
             evaluation=context.services.evaluation,
             project_enabled=context.project_resources_enabled,
             history=context.services.history,
+            inference=context.services.inference,
             policy=EvolutionPolicy(
                 suite=cfg.evolution_suite,
                 suite_version=cfg.evolution_suite_version,

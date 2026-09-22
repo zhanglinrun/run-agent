@@ -8,6 +8,7 @@ import sys
 import tempfile
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Protocol
 from uuid import uuid4
@@ -16,6 +17,42 @@ from run_agent_core.session.contracts import SessionConflict
 from run_agent_core.session.entries import SessionEntry
 from run_agent_core.session.jsonl import entries_from_json_lines, entry_to_json_line
 from run_agent_core.session.tree import resolve_active_leaf_id
+
+
+@dataclass(slots=True)
+class StorageDiagnostics:
+    """Counters for storage failures that are deliberately tolerated.
+
+    A directory ``fsync`` is advisory: Windows cannot open a directory for it and some
+    filesystems refuse the call. The data file itself is already durable, so the failure
+    must not fail the write - but it must not vanish either, because "the rename is
+    durable" is exactly the claim an operator needs to audit. Every caller that uses the
+    default sink can read these counters; tests inject their own instance.
+    """
+
+    directory_fsync_attempts: int = 0
+    directory_fsync_failures: int = 0
+    last_directory_fsync_operation: str | None = None
+    last_directory_fsync_path: str | None = None
+    last_directory_fsync_error: str | None = None
+
+    def record_directory_fsync(self, path: Path, *, operation: str, error: OSError | None) -> None:
+        """Record one attempt; ``error`` is ``None`` when the directory flush succeeded."""
+        self.directory_fsync_attempts += 1
+        if error is None:
+            return
+        self.directory_fsync_failures += 1
+        self.last_directory_fsync_operation = operation
+        self.last_directory_fsync_path = str(path)
+        self.last_directory_fsync_error = f"{type(error).__name__}: {error}"
+
+
+DEFAULT_STORAGE_DIAGNOSTICS = StorageDiagnostics()
+
+
+def storage_diagnostics() -> StorageDiagnostics:
+    """Return the process-wide sink used by storages that were not given their own."""
+    return DEFAULT_STORAGE_DIAGNOSTICS
 
 
 class SessionStorage(Protocol):
@@ -129,10 +166,11 @@ class JsonlSessionStorage:
     same-directory temporary file, fsync, replace, and directory fsync.
     """
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, *, diagnostics: StorageDiagnostics | None = None) -> None:
         self.path = Path(path)
         self.lock_path = self.path.with_name(f".{self.path.name}.lock")
         self.temp_path = self.path.with_name(f".{self.path.name}.tmp")
+        self.diagnostics = diagnostics if diagnostics is not None else DEFAULT_STORAGE_DIAGNOSTICS
 
     async def append(self, entry: SessionEntry) -> None:
         """Append one entry under the session's exclusive cross-process lock."""
@@ -201,7 +239,7 @@ class JsonlSessionStorage:
                 file.flush()
                 os.fsync(file.fileno())
             os.replace(temporary_path, self.path)
-            _fsync_directory(self.path.parent)
+            _fsync_directory(self.path.parent, diagnostics=self.diagnostics)
         except BaseException:
             with _suppress_os_error():
                 Path(temporary).unlink()
@@ -263,13 +301,27 @@ def _unlock_file(file: BinaryIO) -> None:
     fcntl.flock(file.fileno(), fcntl.LOCK_UN)
 
 
-def _fsync_directory(path: Path) -> None:
+def _fsync_directory(path: Path, *, diagnostics: StorageDiagnostics | None = None) -> None:
+    """Flush a renamed directory entry, tolerating and recording platform refusals.
+
+    Windows cannot open a directory for ``os.fsync`` and some filesystems refuse the
+    call, so a failure here must not fail the write: the data file and its rename are
+    already durable. The failure is recorded on ``diagnostics`` instead of being
+    silently swallowed, and a success only bumps the attempt counter.
+    """
     try:
         descriptor = os.open(path, os.O_RDONLY)
-    except OSError:
+    except OSError as error:
+        if diagnostics is not None:
+            diagnostics.record_directory_fsync(path, operation="open", error=error)
         return
     try:
-        with suppress(OSError):
-            os.fsync(descriptor)
+        os.fsync(descriptor)
+    except OSError as error:
+        if diagnostics is not None:
+            diagnostics.record_directory_fsync(path, operation="fsync", error=error)
+    else:
+        if diagnostics is not None:
+            diagnostics.record_directory_fsync(path, operation="fsync", error=None)
     finally:
         os.close(descriptor)

@@ -19,7 +19,8 @@ from .write_approval import approve_write
 
 EVOLVE_USAGE = (
     "/evolve status|candidates [cold|verified|published|rejected|superseded]; "
-    "/evolve show <candidate-id>; /evolve adopt <name> [--scope project|user]; "
+    "/evolve show <candidate-id>; /evolve propose <name> [--scope project|user] "
+    "--session <id> --run <id>; /evolve adopt <name> [--scope project|user]; "
     "/evolve publish <candidate-id>; /evolve reject <candidate-id> [reason]; "
     "/evolve ledger [name] [--scope project|user]; "
     "/evolve rollback <ledger-id> [--scope project|user]"
@@ -39,6 +40,7 @@ def register_evolution_commands(
             return EVOLVE_USAGE
         try:
             scope, explicit_scope = _scope(words)
+            source_session, source_run = _run_options(words)
         except ValueError as exc:
             return f"Refused: {exc}"
         action, *parts = words
@@ -115,6 +117,27 @@ def register_evolution_commands(
                     )
                     or "The ledger is empty."
                 )
+            if action == "propose" and len(parts) == 1:
+                if not source_session or not source_run:
+                    raise CandidateError(
+                        "propose needs --session <id> and --run <id> of one committed run"
+                    )
+                await _approve_formal_write(
+                    context,
+                    current,
+                    f"Propose {scope}/{parts[0]} from run {source_run}?",
+                )
+                candidate = await current.propose_from_run(
+                    scope=scope,
+                    name=parts[0],
+                    source_session=source_session,
+                    source_run=source_run,
+                )
+                return (
+                    f"Proposed candidate {candidate.candidate_id} for "
+                    f"{candidate.scope}/{candidate.name}; status={candidate.status}"
+                    + (f"; report={candidate.report_id}" if candidate.report_id else "")
+                )
             if action == "adopt" and len(parts) == 1:
                 await _approve_formal_write(context, current, f"Adopt {scope}/{parts[0]}?")
                 require_mutation("skill")
@@ -187,6 +210,20 @@ def _scope(words: list[str]) -> tuple[MemoryScope, bool]:
         explicit = True
         del words[index : index + 2]
     return scope, explicit
+
+
+def _run_options(words: list[str]) -> tuple[str, str]:
+    """Pop ``--session`` and ``--run`` so a proposer names exactly one committed run."""
+    values = {"--session": "", "--run": ""}
+    for option in tuple(values):
+        if option not in words:
+            continue
+        index = words.index(option)
+        if index + 1 >= len(words) or words[index + 1].startswith("--"):
+            raise ValueError(f"{option} needs a value")
+        values[option] = words[index + 1]
+        del words[index : index + 2]
+    return values["--session"], values["--run"]
 
 
 __all__ = ["EVOLVE_USAGE", "register_evolution_commands"]

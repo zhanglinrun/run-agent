@@ -8,7 +8,7 @@ import json
 import shutil
 import time
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
@@ -21,12 +21,52 @@ from run_agent_evals.grader_runner import GraderSuiteRunner
 from run_agent_evals.models import ExecutionCancelled, ExecutionFailure, FrozenTask
 from run_agent_evals.task_spec import TaskSpec, load_task_spec, materialize_environment
 from run_agent_evals.verifier import DualPropositionVerifier
-from run_agent_extensions.experience.candidates import SkillCandidate, SkillCandidateStore
-from run_agent_extensions.experience.skill_manager import SkillManager
+from run_agent_extensions.experience.candidates import (
+    CandidateError,
+    ProjectProbe,
+    SkillCandidate,
+    SkillCandidateStore,
+)
+from run_agent_extensions.experience.memory import MemoryScope
+from run_agent_extensions.experience.skill_manager import SkillManager, SkillWriteError
 
 EVOLUTION_REPORT_SCHEMA = "run-agent.evolution-report.v1"
+EVOLUTION_COMPARISON_SCHEMA = "run-agent.evolution-comparison.v1"
 Split = Literal["train", "selection", "test"]
-Arm = Literal["baseline", "candidate"]
+Arm = Literal[
+    "baseline",
+    "candidate",
+    "no-skill",
+    "static-skill",
+    "ungated-revision",
+    "gated-evolution",
+]
+EvolutionArm = Literal["no-skill", "static-skill", "ungated-revision", "gated-evolution"]
+AblationName = Literal["project-probe", "behavior-gate"]
+EVOLUTION_ARMS: tuple[EvolutionArm, ...] = (
+    "no-skill",
+    "static-skill",
+    "ungated-revision",
+    "gated-evolution",
+)
+EVOLUTION_ABLATIONS: tuple[AblationName, ...] = ("project-probe", "behavior-gate")
+CANDIDATE_ARMS: frozenset[EvolutionArm] = frozenset({"ungated-revision", "gated-evolution"})
+EVOLUTION_SCOPE_STATEMENT = (
+    "受控结论只证明这两个冻结任务族（config 与 normalization），不外推通用 Coding 能力；"
+    "本对照不预设任何提升百分比，passes/trials 全部取自冻结证据。"
+)
+EVOLUTION_DENOMINATOR_RULE = (
+    "每个任务以全部 trial 为分母：失败、超时、空 patch 与基础设施错误都保留在分母里。"
+)
+EVOLUTION_GATE_RULE = (
+    "产品路径的配对门禁要求 selection 无回归、至少一项改善且无基础设施错误；"
+    "ungated-revision 与 -project-probe/-behavior-gate 消融只是对照，不改变产品路径。"
+)
+
+# A trial hit its own watchdog only when the elapsed time sits on its budget; a
+# cancellation far below that budget (a whole campaign interrupted) stays an error.
+_TRIAL_TIMEOUT_TOLERANCE_RATIO = 0.02
+_TRIAL_TIMEOUT_TOLERANCE_FLOOR_SECONDS = 0.25
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +96,7 @@ class EvolutionTrial:
     infrastructure_error: str | None
     duration_ms: float
     metadata: Mapping[str, JSONValue]
+    timed_out: bool = False
     fail_to_pass: tuple[str, ...] = ()
     pass_to_pass: tuple[str, ...] = ()
     unmet_targets: tuple[str, ...] = ()
@@ -244,68 +285,18 @@ class EvolutionEvaluationService:
         invoke_skill: bool,
         budget_seconds: float,
     ) -> EvolutionTrial:
-        trial_root = report_root / "workspaces" / arm / task.id / str(repeat)
-        workspace = trial_root / "candidate"
-        pristine = trial_root / "pristine"
-        materialize_environment(spec, workspace)
-        materialize_environment(spec, pristine)
-        execution_spec = replace(
-            spec,
-            instruction=(
-                f"/skill:{skill_name} {spec.instruction}" if invoke_skill else spec.instruction
-            ),
-        )
-        started = time.perf_counter()
-        metadata: Mapping[str, JSONValue] = {}
-        error: str | None = None
-        try:
-            measured = await asyncio.wait_for(
-                self.executor.execute(execution_spec, workspace, state_root),
-                timeout=budget_seconds,
-            )
-            metadata = {**measured, "evaluated_skill_digest": skill_digest}
-        except (ExecutionFailure, ExecutionCancelled) as exc:
-            result = getattr(exc, "result", None)
-            metadata = result.metadata if result is not None else {}
-            error = f"{type(exc).__name__}: {exc}"
-        except Exception as exc:
-            error = f"{type(exc).__name__}: {exc}"
-        metadata = {**metadata, "evaluated_skill_digest": skill_digest}
-
-        duration_ms = (time.perf_counter() - started) * 1000
-        if error is not None:
-            return EvolutionTrial(
-                task.id, task.split, arm, repeat, False, error, duration_ms, metadata
-            )
-        try:
-            proposition = await DualPropositionVerifier(GraderSuiteRunner(spec), repeats=1).verify(
-                pristine, workspace, targets=spec.fail_to_pass
-            )
-        except Exception as exc:
-            return EvolutionTrial(
-                task.id,
-                task.split,
-                arm,
-                repeat,
-                False,
-                f"grader: {type(exc).__name__}: {exc}",
-                duration_ms,
-                metadata,
-            )
-        return EvolutionTrial(
-            task.id,
-            task.split,
+        return await _run_trial(
+            self.executor,
             arm,
+            task,
+            spec,
             repeat,
-            proposition.succeeded,
-            None,
-            duration_ms,
-            metadata,
-            tuple(sorted(proposition.fail_to_pass)),
-            tuple(sorted(proposition.pass_to_pass)),
-            tuple(sorted(proposition.unmet_targets)),
-            tuple(sorted(proposition.newly_failing)),
-            tuple(sorted(proposition.flaky)),
+            state_root,
+            report_root,
+            skill_name=skill_name,
+            skill_digest=skill_digest,
+            invoke_skill=invoke_skill,
+            budget_seconds=budget_seconds,
         )
 
     def _validate_request(self, request: EvaluationRequest, candidate: SkillCandidate) -> None:
@@ -330,6 +321,651 @@ class EvolutionEvaluationService:
                 rebuild_evolution_report(path.parent)
                 return path.parent.name
         return None
+
+
+async def _run_trial(
+    executor: TaskExecutor,
+    arm: Arm,
+    task: EvolutionSuiteTask,
+    spec: TaskSpec,
+    repeat: int,
+    state_root: Path,
+    report_root: Path,
+    *,
+    skill_name: str,
+    skill_digest: str | None,
+    invoke_skill: bool,
+    budget_seconds: float,
+) -> EvolutionTrial:
+    """Run one graded trial in its own workspace against one installed state root."""
+    trial_root = report_root / "workspaces" / arm / task.id / str(repeat)
+    workspace = trial_root / "candidate"
+    pristine = trial_root / "pristine"
+    materialize_environment(spec, workspace)
+    materialize_environment(spec, pristine)
+    execution_spec = replace(
+        spec,
+        instruction=(
+            f"/skill:{skill_name} {spec.instruction}" if invoke_skill else spec.instruction
+        ),
+    )
+    started = time.perf_counter()
+    metadata: Mapping[str, JSONValue] = {}
+    error: str | None = None
+    timed_out = False
+    try:
+        measured = await asyncio.wait_for(
+            executor.execute(execution_spec, workspace, state_root),
+            timeout=budget_seconds,
+        )
+        metadata = {**measured, "evaluated_skill_digest": skill_digest}
+    except (ExecutionFailure, ExecutionCancelled, TimeoutError) as exc:
+        result = getattr(exc, "result", None)
+        metadata = result.metadata if result is not None else {}
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        timed_out = _hit_own_budget(exc, elapsed_ms, budget_seconds)
+        if not timed_out:
+            error = f"{type(exc).__name__}: {exc}"
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"
+    metadata = {**metadata, "evaluated_skill_digest": skill_digest}
+    duration_ms = (time.perf_counter() - started) * 1000
+
+    if error is not None or timed_out:
+        # Hitting this trial's own watchdog is a failed trial, not broken
+        # infrastructure: it stays in the denominator and leaves the gate clean.
+        return EvolutionTrial(
+            task.id,
+            task.split,
+            arm,
+            repeat,
+            False,
+            error,
+            duration_ms,
+            metadata,
+            timed_out=timed_out,
+        )
+    try:
+        proposition = await DualPropositionVerifier(GraderSuiteRunner(spec), repeats=1).verify(
+            pristine, workspace, targets=spec.fail_to_pass
+        )
+    except Exception as exc:
+        return EvolutionTrial(
+            task.id,
+            task.split,
+            arm,
+            repeat,
+            False,
+            f"grader: {type(exc).__name__}: {exc}",
+            duration_ms,
+            metadata,
+        )
+    return EvolutionTrial(
+        task.id,
+        task.split,
+        arm,
+        repeat,
+        proposition.succeeded,
+        None,
+        duration_ms,
+        metadata,
+        fail_to_pass=tuple(sorted(proposition.fail_to_pass)),
+        pass_to_pass=tuple(sorted(proposition.pass_to_pass)),
+        unmet_targets=tuple(sorted(proposition.unmet_targets)),
+        newly_failing=tuple(sorted(proposition.newly_failing)),
+        flaky=tuple(sorted(proposition.flaky)),
+    )
+
+
+def _hit_own_budget(exc: BaseException, elapsed_ms: float, budget_seconds: float) -> bool:
+    """Whether a cancellation is this trial's own watchdog, not a cold interruption.
+
+    ``asyncio.wait_for`` surfaces a watchdog hit either as ``TimeoutError`` or, when
+    the executor converts the cancellation, as ``ExecutionCancelled``. Either form
+    counts only when the elapsed time has reached this trial's own budget.
+    """
+    if not isinstance(exc, (ExecutionCancelled, TimeoutError)):
+        return False
+    budget_ms = budget_seconds * 1000
+    tolerance_ms = max(
+        _TRIAL_TIMEOUT_TOLERANCE_FLOOR_SECONDS * 1000,
+        budget_ms * _TRIAL_TIMEOUT_TOLERANCE_RATIO,
+    )
+    return elapsed_ms >= budget_ms - tolerance_ms
+
+
+@dataclass(frozen=True, slots=True)
+class EvolutionArmRequest:
+    """One frozen arm (optionally one ablation) outside the product gate path."""
+
+    arm: EvolutionArm
+    skill: str
+    scope: MemoryScope = "user"
+    ablation: AblationName | None = None
+    candidate_id: str | None = None
+    budget_seconds: float = 300.0
+
+
+@dataclass(frozen=True, slots=True)
+class EvolutionArmReport:
+    """A written arm report plus the frozen document ``evolve-rebuild`` verifies."""
+
+    report_id: str
+    root: Path
+    document: dict[str, Any]
+
+    @property
+    def arm(self) -> str:
+        return str(self.document["arm"])
+
+    @property
+    def ablation(self) -> str | None:
+        value = self.document.get("ablation")
+        return str(value) if value is not None else None
+
+    @property
+    def label(self) -> str:
+        return str(self.document["label"])
+
+    @property
+    def passed(self) -> bool:
+        return bool(self.document["passed"])
+
+    @property
+    def summary(self) -> dict[str, Any]:
+        return cast(dict[str, Any], self.document["summary"])
+
+    @property
+    def source(self) -> dict[str, Any]:
+        return cast(dict[str, Any], self.document["source"])
+
+
+class EvolutionArmRefused(ValueError):
+    """An arm refused by admission, structure, fact or behavior policy."""
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedArm:
+    content: str | None
+    installed_digest: str | None
+    candidate: SkillCandidate | None
+    base_digest: str | None
+    checks: Mapping[str, bool]
+    behavior_gate_report: str | None
+    facts_verified: bool
+
+
+_NO_CHECKS: Mapping[str, bool] = {"structure": False, "facts": False, "behavior_gate": False}
+
+
+class EvolutionArmEvaluationService:
+    """Measure one arm, or one ablation of an arm, as offline-rebuildable evidence.
+
+    Only ``gated-evolution`` mirrors the paired evaluator: it needs a verified and
+    passing paired report and reruns the structure, fact and base-digest checks
+    before installing the revision. ``ungated-revision`` is deliberately the
+    non-product comparison arm and skips all of those checks. The two ablations
+    remove exactly one gate each, so a campaign can quantify that gate alone.
+    Nothing here publishes a Skill or advances a candidate.
+    """
+
+    available = True
+
+    def __init__(
+        self,
+        *,
+        suite: Path,
+        output_root: Path,
+        candidates: SkillCandidateStore,
+        skills: SkillManager,
+        executor: TaskExecutor | None = None,
+        repeats: int = 3,
+        concurrency: int = 1,
+        probe: ProjectProbe | None = None,
+        report_roots: Sequence[Path] = (),
+    ) -> None:
+        if repeats < 1:
+            raise ValueError("Evolution repeats must be positive")
+        if concurrency < 1:
+            raise ValueError("Evolution concurrency must be positive")
+        self.suite = load_evolution_suite(suite)
+        self.output_root = output_root.resolve()
+        self.candidates = candidates
+        self.skills = skills
+        self.executor = executor or CodingExecutor()
+        self.repeats = repeats
+        self.concurrency = concurrency
+        self.probe = probe
+        self.report_roots = tuple(path.resolve() for path in report_roots)
+
+    async def evaluate(self, request: EvolutionArmRequest) -> EvolutionArmReport:
+        self._validate_request(request)
+        prepared = self._prepare(request)
+        label = _arm_label(request.arm, request.ablation)
+        report_id = uuid4().hex
+        root = self.output_root / label / report_id
+        if root.exists():
+            raise FileExistsError(root)
+        root.mkdir(parents=True)
+        trials = await self._measure(request, prepared, label, root)
+        _write_json(root / "trials.json", [_trial_json(trial) for trial in trials])
+        summary = reduce_evolution_trials(trials, repeats=self.repeats)
+        source = self._source(request, prepared, label)
+        report = {
+            "schema": EVOLUTION_REPORT_SCHEMA,
+            "kind": "arm",
+            "report_id": report_id,
+            "label": label,
+            "arm": request.arm,
+            "ablation": request.ablation,
+            "non_product": request.arm == "ungated-revision",
+            "measured_content_hash": prepared.installed_digest,
+            "passed": _summary_passed(summary),
+            "summary": summary,
+            "source": source,
+        }
+        _write_json(root / "source.json", source)
+        _write_json(root / "report.json", report)
+        _write_json(
+            root / "inventory.json",
+            {
+                "schema": EVOLUTION_REPORT_SCHEMA,
+                "files": _inventory(root, exclude={"inventory.json"}),
+            },
+        )
+        return EvolutionArmReport(report_id, root, report)
+
+    def _validate_request(self, request: EvolutionArmRequest) -> None:
+        if request.arm in CANDIDATE_ARMS:
+            if request.candidate_id is None:
+                raise EvolutionArmRefused(f"{request.arm} needs an explicit candidate id")
+        elif request.candidate_id is not None:
+            raise EvolutionArmRefused(
+                f"{request.arm} does not install a candidate; drop the candidate id"
+            )
+        if request.ablation is not None and request.arm != "gated-evolution":
+            raise EvolutionArmRefused(
+                f"the {request.ablation} ablation applies only to gated-evolution"
+            )
+        if not request.skill.strip():
+            raise EvolutionArmRefused("an evolution arm needs a Skill name")
+        if request.budget_seconds <= 0:
+            raise EvolutionArmRefused("evolution arm budget must be positive")
+
+    def _prepare(self, request: EvolutionArmRequest) -> _PreparedArm:
+        if request.arm == "no-skill":
+            return _PreparedArm(None, None, None, None, dict(_NO_CHECKS), None, False)
+        if request.arm == "static-skill":
+            content = self.skills.main_content(request.scope, request.skill)
+            if content is None:
+                raise EvolutionArmRefused(
+                    f"static-skill needs an installed Skill {request.skill!r} "
+                    f"in the {request.scope} scope"
+                )
+            digest = _sha256(content.encode())
+            return _PreparedArm(content, digest, None, digest, dict(_NO_CHECKS), None, False)
+
+        candidate = self._require_candidate(request)
+        content = self._candidate_content(candidate)
+        digest = _sha256(content.encode())
+        if digest != candidate.candidate_digest:
+            raise EvolutionArmRefused("candidate content digest changed before evaluation")
+        if request.arm == "ungated-revision":
+            # The explicit non-product comparison arm: the revision is installed as-is,
+            # so structure, fact and behavior policy never run.
+            return _PreparedArm(
+                content, digest, candidate, candidate.base_digest, dict(_NO_CHECKS), None, False
+            )
+
+        self._check_structure(candidate, content)
+        self._check_base_digest(candidate)
+        checks = {
+            "structure": True,
+            "facts": True,
+            "behavior_gate": request.ablation != "behavior-gate",
+        }
+        facts_verified = False
+        if request.ablation == "project-probe":
+            if candidate.claims:
+                raise EvolutionArmRefused(
+                    "project-probe ablation refuses a candidate that cites project facts: "
+                    f"{len(candidate.claims)} claim(s) carry probe paths"
+                )
+        else:
+            facts_verified = self._check_facts(candidate)
+        behavior_report = None
+        if request.ablation != "behavior-gate":
+            behavior_report = self._require_passing_report(candidate)
+        return _PreparedArm(
+            content,
+            digest,
+            candidate,
+            candidate.base_digest,
+            checks,
+            behavior_report,
+            facts_verified,
+        )
+
+    def _require_candidate(self, request: EvolutionArmRequest) -> SkillCandidate:
+        if request.candidate_id is None:
+            raise EvolutionArmRefused(f"{request.arm} needs an explicit candidate id")
+        try:
+            candidate = self.candidates.require(request.candidate_id)
+        except CandidateError as exc:
+            raise EvolutionArmRefused(str(exc)) from exc
+        if candidate.scope != request.scope or candidate.name != request.skill:
+            raise EvolutionArmRefused(
+                f"candidate {candidate.candidate_id} belongs to {candidate.scope}/{candidate.name}"
+            )
+        return candidate
+
+    def _candidate_content(self, candidate: SkillCandidate) -> str:
+        try:
+            return self.candidates.content(candidate)
+        except CandidateError as exc:
+            raise EvolutionArmRefused(str(exc)) from exc
+
+    def _check_structure(self, candidate: SkillCandidate, content: str) -> None:
+        try:
+            self.skills.validate_candidate(candidate.name, content)
+        except SkillWriteError as exc:
+            raise EvolutionArmRefused(f"structure check refused the candidate: {exc}") from exc
+
+    def _check_base_digest(self, candidate: SkillCandidate) -> None:
+        formal = self.skills.main_content(candidate.scope, candidate.name)
+        if _digest_optional(formal) != candidate.base_digest:
+            raise EvolutionArmRefused("formal Skill no longer matches the candidate baseline")
+
+    def _check_facts(self, candidate: SkillCandidate) -> bool:
+        for claim in candidate.claims:
+            if not claim.probes:
+                raise EvolutionArmRefused(
+                    f"fact check refused a claim without a project probe: {claim.text!r}"
+                )
+        if self.probe is None:
+            return False
+        for claim in candidate.claims:
+            for evidence in claim.probes:
+                if not self.probe.verify(evidence):
+                    raise EvolutionArmRefused(
+                        f"fact check refused a drifted or unsafe project probe: {evidence.path!r}"
+                    )
+        return True
+
+    def _require_passing_report(self, candidate: SkillCandidate) -> str:
+        for directory in (*self.report_roots, self.output_root):
+            if not directory.is_dir():
+                continue
+            for path in sorted(directory.glob("*/report.json")):
+                try:
+                    document = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if not isinstance(document, Mapping) or document.get("kind") == "arm":
+                    continue
+                request = document.get("request")
+                if not isinstance(request, Mapping):
+                    continue
+                if request.get("candidate_id") != candidate.candidate_id:
+                    continue
+                if document.get("passed") is not True:
+                    continue
+                if document.get("measured_content_hash") != candidate.candidate_digest:
+                    continue
+                try:
+                    rebuild_evolution_report(path.parent)
+                except ValueError:
+                    continue
+                return path.parent.name
+        raise EvolutionArmRefused(
+            "gated-evolution requires a passing paired evaluation report for candidate "
+            f"{candidate.candidate_id}; run the paired campaign into --output-root"
+        )
+
+    async def _measure(
+        self,
+        request: EvolutionArmRequest,
+        prepared: _PreparedArm,
+        label: str,
+        root: Path,
+    ) -> list[EvolutionTrial]:
+        async def run(task: EvolutionSuiteTask, spec: TaskSpec, repeat: int) -> EvolutionTrial:
+            state_root = root / "state" / label / task.id / str(repeat)
+            _install_skill(state_root, request.skill, prepared.content)
+            measured = _installed_digest(state_root, request.skill)
+            if measured != prepared.installed_digest:
+                raise EvolutionArmRefused(f"{label}: installed Skill digest mismatch")
+            return await _run_trial(
+                self.executor,
+                cast(Arm, label),
+                task,
+                spec,
+                repeat,
+                state_root,
+                root,
+                skill_name=request.skill,
+                skill_digest=measured,
+                invoke_skill=prepared.content is not None,
+                budget_seconds=min(spec.budget_seconds, request.budget_seconds),
+            )
+
+        jobs = []
+        for task in self.suite.tasks:
+            if task.split == "train":
+                continue
+            spec = load_task_spec(task.path)
+            for repeat in range(self.repeats):
+                jobs.append(run(task, spec, repeat))
+        trials: list[EvolutionTrial] = []
+        for start in range(0, len(jobs), self.concurrency):
+            trials.extend(await asyncio.gather(*jobs[start : start + self.concurrency]))
+        return trials
+
+    def _source(
+        self, request: EvolutionArmRequest, prepared: _PreparedArm, label: str
+    ) -> dict[str, Any]:
+        candidate = prepared.candidate
+        return {
+            "arm": request.arm,
+            "ablation": request.ablation,
+            "label": label,
+            "skill": request.skill,
+            "scope": request.scope,
+            "candidate_id": candidate.candidate_id if candidate is not None else None,
+            "candidate_digest": candidate.candidate_digest if candidate is not None else None,
+            "base_digest": prepared.base_digest,
+            "installed_digest": prepared.installed_digest,
+            "suite": str(self.suite.path),
+            "suite_digest": self.suite.digest,
+            "family": self.suite.family,
+            "version": self.suite.version,
+            "repeats": self.repeats,
+            "concurrency": self.concurrency,
+            "task_digests": {task.id: _directory_digest(task.path) for task in self.suite.tasks},
+            "checks": dict(prepared.checks),
+            "facts_verified": prepared.facts_verified,
+            "behavior_gate_report": prepared.behavior_gate_report,
+            "probe_root": str(self.probe.project_root) if self.probe is not None else None,
+            "non_product": request.arm == "ungated-revision",
+            "notes": _arm_notes(request.arm, request.ablation),
+        }
+
+
+def write_evolution_comparison(
+    output_root: Path, reports: Sequence[EvolutionArmReport]
+) -> dict[str, Any]:
+    """Freeze a per-arm comparison view next to the arm reports it summarizes."""
+    if not reports:
+        raise ValueError("an evolution comparison needs at least one arm report")
+    root = output_root.resolve()
+    document = _comparison_document(root, [report.document for report in reports])
+    _write_json(root / "comparison.json", document)
+    (root / "REPORT.md").write_text(_comparison_markdown(document), encoding="utf-8")
+    return document
+
+
+def rebuild_evolution_comparison(root: Path) -> dict[str, Any]:
+    """Verify a comparison view and every arm report it names, then return the view."""
+    root = root.resolve()
+    try:
+        loaded = json.loads((root / "comparison.json").read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ValueError(f"evolution comparison is missing: {root}") from exc
+    if not isinstance(loaded, dict) or loaded.get("schema") != EVOLUTION_COMPARISON_SCHEMA:
+        raise ValueError("Unsupported evolution comparison")
+    documents: list[Mapping[str, Any]] = []
+    for entry in loaded.get("arms") or []:
+        if not isinstance(entry, Mapping):
+            raise ValueError("Evolution comparison contains a malformed arm")
+        label = str(entry.get("label") or "")
+        report_id = str(entry.get("report_id") or "")
+        relative = f"{label}/{report_id}"
+        if not label or not report_id or entry.get("report") != relative:
+            raise ValueError("Evolution comparison names a report it does not own")
+        documents.append(rebuild_evolution_report(root / relative))
+    expected = _comparison_document(root, documents)
+    if expected != loaded:
+        raise ValueError("Evolution comparison does not match the frozen arm reports")
+    try:
+        markdown = (root / "REPORT.md").read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"evolution comparison report is missing: {root}") from exc
+    if markdown != _comparison_markdown(expected):
+        raise ValueError("Evolution comparison report does not match the frozen arm reports")
+    return expected
+
+
+def _comparison_document(
+    output_root: Path, documents: Sequence[Mapping[str, Any]]
+) -> dict[str, Any]:
+    return {
+        "schema": EVOLUTION_COMPARISON_SCHEMA,
+        "output_root": str(output_root),
+        "scope_statement": EVOLUTION_SCOPE_STATEMENT,
+        "denominator_rule": EVOLUTION_DENOMINATOR_RULE,
+        "gate_rule": EVOLUTION_GATE_RULE,
+        "arms": [_comparison_arm(document) for document in documents],
+    }
+
+
+def _comparison_arm(document: Mapping[str, Any]) -> dict[str, Any]:
+    label = str(document["label"])
+    report_id = str(document["report_id"])
+    summary = cast(Mapping[str, Any], document["summary"])
+    source = cast(Mapping[str, Any], document["source"])
+    tasks = cast(Mapping[str, Mapping[str, Any]], summary["tasks"])
+    rows: list[dict[str, Any]] = []
+    for task_id, task in sorted(tasks.items()):
+        measured = cast(Mapping[str, Any], task[label])
+        passes = int(measured["passes"])
+        trials = int(measured["trials"])
+        rows.append(
+            {
+                "task_id": task_id,
+                "split": str(task["split"]),
+                "passes": passes,
+                "trials": trials,
+                "errors": int(measured["errors"]),
+                "failed": trials - passes,
+                "passed": bool(measured["passed"]),
+            }
+        )
+    efficiency = cast(Mapping[str, Any], summary["efficiency"])
+    return {
+        "arm": str(document["arm"]),
+        "ablation": document.get("ablation"),
+        "label": label,
+        "report": f"{label}/{report_id}",
+        "report_id": report_id,
+        "passed": bool(document["passed"]),
+        "non_product": bool(document.get("non_product")),
+        "checks": source.get("checks"),
+        "notes": source.get("notes"),
+        "totals": {
+            "tasks": len(rows),
+            "tasks_passed": sum(1 for row in rows if row["passed"]),
+            "trials": sum(int(row["trials"]) for row in rows),
+            "passes": sum(int(row["passes"]) for row in rows),
+            "errors": sum(int(row["errors"]) for row in rows),
+            "failed": sum(int(row["failed"]) for row in rows),
+        },
+        "tasks": rows,
+        "efficiency": efficiency.get(label),
+    }
+
+
+def _comparison_markdown(document: Mapping[str, Any]) -> str:
+    lines = [
+        "# Skill evolution arm comparison",
+        "",
+        f"- scope: {document['scope_statement']}",
+        f"- denominator: {document['denominator_rule']}",
+        f"- gate: {document['gate_rule']}",
+        "",
+    ]
+    for arm in cast(list[Mapping[str, Any]], document["arms"]):
+        lines.append(f"## {arm['label']}")
+        lines.append("")
+        lines.append(
+            f"- report: `{arm['report']}`; campaign clean: {arm['passed']}; "
+            f"non-product: {arm['non_product']}"
+        )
+        for note in cast(list[str], arm["notes"]):
+            lines.append(f"- note: {note}")
+        lines.append("")
+        lines.append("| split | task | passes | trials | errors | failed | passed |")
+        lines.append("| --- | --- | --- | --- | --- | --- | --- |")
+        for row in cast(list[Mapping[str, Any]], arm["tasks"]):
+            lines.append(
+                f"| {row['split']} | {row['task_id']} | {row['passes']} | {row['trials']} | "
+                f"{row['errors']} | {row['failed']} | {row['passed']} |"
+            )
+        totals = cast(Mapping[str, Any], arm["totals"])
+        efficiency = cast(Mapping[str, Any], arm["efficiency"] or {})
+        lines.append("")
+        lines.append(
+            f"totals: tasks {totals['tasks_passed']}/{totals['tasks']}; "
+            f"trials {totals['trials']}; passes {totals['passes']}; "
+            f"errors {totals['errors']}; failed {totals['failed']}"
+        )
+        lines.append(
+            f"efficiency: calls {efficiency.get('calls')}; "
+            f"input tokens {efficiency.get('input_tokens')}; "
+            f"output tokens {efficiency.get('output_tokens')}; "
+            f"known cost {efficiency.get('known_cost')}; "
+            f"total cost {efficiency.get('total_cost')}"
+        )
+        lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def _arm_label(arm: EvolutionArm, ablation: AblationName | None) -> str:
+    return arm if ablation is None else f"{arm}-{ablation}"
+
+
+def _arm_notes(arm: EvolutionArm, ablation: AblationName | None) -> list[str]:
+    if arm == "no-skill":
+        notes = ["no-skill: no Skill is installed or invoked"]
+    elif arm == "static-skill":
+        notes = ["static-skill: the frozen formal SKILL.md is installed and invoked unchanged"]
+    elif arm == "ungated-revision":
+        notes = [
+            "ungated-revision: non-product comparison arm; the candidate is installed "
+            "without structure, fact or behavior checks"
+        ]
+    else:
+        notes = [
+            "gated-evolution: product path; structure, fact and paired behavior checks "
+            "gate the installed revision"
+        ]
+    if ablation == "project-probe":
+        notes.append("project-probe ablation: a candidate citing project facts is refused")
+    elif ablation == "behavior-gate":
+        notes.append(
+            "behavior-gate ablation: structure and fact checks ran; the paired behavior "
+            "gate was skipped"
+        )
+    return notes
 
 
 def load_evolution_suite(path: Path) -> EvolutionSuite:
@@ -367,7 +1003,9 @@ def reduce_evolution_trials(trials: list[EvolutionTrial], *, repeats: int) -> di
     required_passes = repeats // 2 + 1
     for (split, task_id, arm), rows in sorted(grouped.items()):
         passes = sum(row.succeeded for row in rows)
-        errors = sum(row.infrastructure_error is not None for row in rows)
+        # A trial that hit its own watchdog is a failure in the denominator, never
+        # an infrastructure error; a cold cancellation keeps its error.
+        errors = sum(row.infrastructure_error is not None and not row.timed_out for row in rows)
         infra_errors += errors
         task = tasks.setdefault(task_id, {"split": split})
         task[arm] = {
@@ -377,36 +1015,75 @@ def reduce_evolution_trials(trials: list[EvolutionTrial], *, repeats: int) -> di
             "passed": errors == 0 and passes >= required_passes,
         }
 
-    regressions: list[str] = []
-    improvements: list[str] = []
-    for task_id, row in tasks.items():
-        if row["split"] != "selection":
-            continue
-        baseline = bool(row["baseline"]["passed"])
-        candidate = bool(row["candidate"]["passed"])
-        if baseline and not candidate:
-            regressions.append(task_id)
-        if not baseline and candidate:
-            improvements.append(task_id)
+    selection_gate, measurement = _selection_outcome(tasks, infra_errors, repeats, bool(trials))
+    summary: dict[str, Any] = {"tasks": tasks, "selection_gate": selection_gate}
+    if measurement is not None:
+        summary["measurement"] = measurement
+    summary["efficiency"] = _efficiency(trials)
+    return summary
+
+
+def _selection_outcome(
+    tasks: Mapping[str, Mapping[str, Any]], infra_errors: int, repeats: int, measured: bool
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Compute the paired gate when both paired arms exist, else an arm measurement.
+
+    The product path always supplies ``baseline`` and ``candidate`` trials and keeps
+    exactly the gate it always had. Any other arm set gets a per-arm measurement
+    instead, so a campaign can reduce arbitrary arms without forking the reducer.
+    """
+    selection = [row for row in tasks.values() if row["split"] == "selection"]
+    if selection and all("baseline" in row and "candidate" in row for row in selection):
+        regressions: list[str] = []
+        improvements: list[str] = []
+        for task_id, row in tasks.items():
+            if row["split"] != "selection":
+                continue
+            baseline = bool(row["baseline"]["passed"])
+            candidate = bool(row["candidate"]["passed"])
+            if baseline and not candidate:
+                regressions.append(task_id)
+            if not baseline and candidate:
+                improvements.append(task_id)
+        required = repeats // 2 + 1
+        gate = {
+            "passed": infra_errors == 0 and not regressions and bool(improvements),
+            "infrastructure_errors": infra_errors,
+            "regressions": regressions,
+            "improvements": improvements,
+            "rule": (
+                f"{required}-of-{repeats}; no selection regression and at least one improvement"
+            ),
+        }
+        return gate, None
     gate = {
-        "passed": infra_errors == 0 and not regressions and bool(improvements),
+        "applicable": False,
+        "reason": "the paired selection gate needs both the baseline and the candidate arm",
         "infrastructure_errors": infra_errors,
-        "regressions": regressions,
-        "improvements": improvements,
+    }
+    measurement = {
+        "passed": infra_errors == 0 and measured,
+        "infrastructure_errors": infra_errors,
         "rule": (
-            f"{required_passes}-of-{repeats}; no selection regression and at least one improvement"
+            "arm campaign: failures, timeouts and empty patches stay in the denominator; "
+            "infrastructure errors fail the campaign"
         ),
     }
-    return {
-        "tasks": tasks,
-        "selection_gate": gate,
-        "efficiency": _efficiency(trials),
-    }
+    return gate, measurement
+
+
+def _summary_passed(summary: Mapping[str, Any]) -> bool:
+    """Read the frozen pass flag of either a paired report or an arm report."""
+    gate = summary.get("selection_gate")
+    if isinstance(gate, Mapping) and "passed" in gate:
+        return bool(gate["passed"])
+    measurement = summary.get("measurement")
+    return isinstance(measurement, Mapping) and bool(measurement.get("passed"))
 
 
 def _efficiency(trials: list[EvolutionTrial]) -> dict[str, Any]:
     summary: dict[str, Any] = {}
-    for arm in ("baseline", "candidate"):
+    for arm in sorted({trial.arm for trial in trials}):
         rows = [trial for trial in trials if trial.arm == arm]
         costs = [trial.metadata.get("cost") for trial in rows]
         complete = bool(rows) and all(isinstance(value, int | float) for value in costs)
@@ -464,6 +1141,8 @@ def rebuild_evolution_report(root: Path) -> dict[str, Any]:
     rebuilt = reduce_evolution_trials(trials, repeats=int(source["repeats"]))
     if rebuilt != report.get("summary"):
         raise ValueError("Evolution report does not match frozen trials")
+    if bool(report.get("passed")) != _summary_passed(rebuilt):
+        raise ValueError("Evolution report pass flag does not match frozen trials")
     return report
 
 
@@ -484,6 +1163,7 @@ def _trial_from_json(raw: Mapping[str, Any]) -> EvolutionTrial:
         infrastructure_error=raw.get("infrastructure_error"),
         duration_ms=float(raw["duration_ms"]),
         metadata=cast(Mapping[str, JSONValue], raw.get("metadata", {})),
+        timed_out=bool(raw.get("timed_out", False)),
         fail_to_pass=tuple(raw.get("fail_to_pass", ())),
         pass_to_pass=tuple(raw.get("pass_to_pass", ())),
         unmet_targets=tuple(raw.get("unmet_targets", ())),
@@ -552,14 +1232,30 @@ def _sha256(value: bytes) -> str:
 
 
 __all__ = [
-    "CodingExecutor",
+    "CANDIDATE_ARMS",
+    "EVOLUTION_ABLATIONS",
+    "EVOLUTION_ARMS",
+    "EVOLUTION_COMPARISON_SCHEMA",
+    "EVOLUTION_DENOMINATOR_RULE",
+    "EVOLUTION_GATE_RULE",
     "EVOLUTION_REPORT_SCHEMA",
+    "EVOLUTION_SCOPE_STATEMENT",
+    "AblationName",
+    "Arm",
+    "CodingExecutor",
+    "EvolutionArm",
+    "EvolutionArmEvaluationService",
+    "EvolutionArmRefused",
+    "EvolutionArmReport",
+    "EvolutionArmRequest",
     "EvolutionEvaluationService",
     "EvolutionSuite",
     "EvolutionSuiteTask",
     "EvolutionTrial",
     "TaskExecutor",
     "load_evolution_suite",
+    "rebuild_evolution_comparison",
     "rebuild_evolution_report",
     "reduce_evolution_trials",
+    "write_evolution_comparison",
 ]

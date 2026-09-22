@@ -2,7 +2,7 @@
 id = "config-cli-env-file"
 version = "1"
 kind = "bug-fix"
-budget_seconds = 90
+budget_seconds = 300
 artifacts = ["cli_config.py"]
 fail_to_pass = ["test_cli_overrides_environment_and_file", "test_environment_overrides_file_with_types", "test_cli_can_disable_environment_flag", "test_invalid_environment_boolean_is_rejected"]
 

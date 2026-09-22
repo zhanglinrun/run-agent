@@ -1,4 +1,10 @@
-"""Copy session trees into a verified backup directory."""
+"""Copy session trees into a verified backup directory.
+
+The global session catalog (``<sessions>/index.jsonl``) is a derived cache: the project
+indexes inside the same tree are the source of truth. Publishing a backup and restoring
+one both rebuild that catalog from those project indexes, so a verified package never
+carries a stale cache and a restore never has to promise a cross-file transaction.
+"""
 
 from __future__ import annotations
 
@@ -8,19 +14,120 @@ import json
 import os
 import shutil
 import tempfile
+from collections.abc import Iterable, Iterator
+from contextlib import suppress
 from pathlib import Path
 from time import time
 from typing import Any
 
 from run_agent_coding.storage.canonical import canonical_json
+from run_agent_core.session.storage import _fsync_directory
 
 BACKUP_SCHEMA = "run.backup.v3"
 SUPPORTED_BACKUP_SCHEMAS = frozenset({"run.backup.v2", BACKUP_SCHEMA})
+CATALOG_NAME = "index.jsonl"
 
 
 def _digest(path: Path) -> str:
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def rebuild_catalog(sessions_root: str | Path) -> Path:
+    """Recompute ``<sessions_root>/index.jsonl`` from the project indexes in that tree.
+
+    Rows still readable in the existing catalog are kept as a fallback, because a backed-up
+    home may not contain the project index of every session it knows about; a project index
+    row always wins on conflict (last write wins by ``updated_at``). Relative session paths
+    are re-homed to the catalog's own directory so the rebuilt catalog stays self-consistent
+    with the tree it now describes.
+
+    Cost: one scan of the session tree that is already being copied, verified, or restored -
+    never a scan of anything outside it.
+    """
+    root = Path(sessions_root)
+    catalog = root / CATALOG_NAME
+    records: dict[str, dict[str, Any]] = {}
+    if catalog.is_file():
+        for payload in _index_rows(catalog):
+            record_id = _record_id(payload)
+            if record_id is not None:
+                records[record_id] = payload
+    for index_path in sorted(root.rglob(CATALOG_NAME)):
+        if index_path == catalog:
+            continue
+        for payload in _index_rows(index_path):
+            record_id = _record_id(payload)
+            if record_id is None:
+                continue
+            candidate = _rehost_path(payload, index_path, root)
+            existing = records.get(record_id)
+            if existing is None or _updated_at(candidate) >= _updated_at(existing):
+                records[record_id] = candidate
+    root.mkdir(parents=True, exist_ok=True)
+    _write_catalog(catalog, records.values())
+    return catalog
+
+
+def _index_rows(path: Path) -> Iterator[dict[str, Any]]:
+    """Yield each parseable JSON object in an index, skipping torn lines."""
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            yield payload
+
+
+def _record_id(payload: dict[str, Any]) -> str | None:
+    value = payload.get("id")
+    return value if isinstance(value, str) and value else None
+
+
+def _updated_at(payload: dict[str, Any]) -> float:
+    try:
+        return float(payload.get("updated_at") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _rehost_path(payload: dict[str, Any], index_path: Path, root: Path) -> dict[str, Any]:
+    """Rewrite a session path so it resolves relative to the catalog, not the project."""
+    raw = payload.get("path")
+    if not raw:
+        return payload
+    candidate = Path(str(raw))
+    if candidate.is_absolute():
+        return payload
+    try:
+        relative = (index_path.parent / candidate).resolve().relative_to(root.resolve())
+    except (OSError, ValueError):
+        return payload
+    return {**payload, "path": relative.as_posix()}
+
+
+def _write_catalog(catalog: Path, records: Iterable[dict[str, Any]]) -> None:
+    """Replace the catalog atomically, keeping the old file on any failure."""
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{catalog.name}.", suffix=".tmp", dir=catalog.parent
+    )
+    temporary_path = Path(temporary)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            for record in records:
+                stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, catalog)
+        _fsync_directory(catalog.parent)
+    except BaseException:
+        with suppress(OSError):
+            temporary_path.unlink()
+        raise
 
 
 def _assert_index_complete(index_path: Path) -> None:
@@ -72,15 +179,22 @@ async def create_backup(home: str | Path, destination: str | Path) -> Path:
             files = _collect_files(home)
             if not files:
                 raise FileNotFoundError(f"No session files under {home}")
-            entries: list[dict[str, Any]] = []
             for path in files:
-                relative = path.relative_to(home).as_posix()
-                target = staging / relative
+                target = staging / path.relative_to(home)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(path, target)
-                entries.append(
-                    {"path": relative, "sha256": _digest(target), "size": target.stat().st_size}
-                )
+            # The published package carries a catalog rebuilt from its own project indexes.
+            sessions = staging / "sessions"
+            if sessions.is_dir():
+                rebuild_catalog(sessions)
+            entries = [
+                {
+                    "path": path.relative_to(staging).as_posix(),
+                    "sha256": _digest(path),
+                    "size": path.stat().st_size,
+                }
+                for path in _collect_files(staging)
+            ]
             manifest = {
                 "schema": BACKUP_SCHEMA,
                 "created_at": time(),
@@ -145,6 +259,11 @@ async def restore_backup(source: str | Path, destination: str | Path) -> Path:
                 target = staging / relative
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source / relative, target)
+            # A restored tree gets the same treatment as a published one: the catalog is
+            # rebuilt from the project indexes that travelled with it.
+            sessions = staging / "sessions"
+            if sessions.is_dir():
+                rebuild_catalog(sessions)
             os.rename(staging, destination)
         finally:
             if staging.exists():

@@ -54,7 +54,11 @@ from run_agent_coding.events import (
     SessionInfoChangedEvent,
     ThinkingLevelSelectEvent,
 )
-from run_agent_coding.extensions.adoption import finish_committed_adoption
+from run_agent_coding.extensions.adoption import (
+    finish_committed_adoption,
+    publish_branch_reuse,
+    stage_branch_reuse,
+)
 from run_agent_coding.extensions.api import (
     ModelSelectEvent,
     ResourcesDiscoverResult,
@@ -1577,23 +1581,19 @@ class CodingSession:
             extension_resources = self._extension_runtime.context_resources.decode(
                 pinned["extension_resources"]
             )
-        activation = await self._prepare_resource_activation(
-            "branch",
+        staging = await stage_branch_reuse(
+            self,
             resources=resources,
             extension_resources=extension_resources,
         )
-        marker = activation.entry.model_copy(update={"parent_id": target_id})
-        leaf = LeafEntry(parent_id=marker.id, entry_id=marker.id)
-        branch_entries: tuple[SessionEntry, ...] = (
-            (summary_entry, marker, leaf) if summary_entry is not None else (marker, leaf)
+        commit = await publish_branch_reuse(
+            self,
+            staging,
+            target_id=target_id,
+            branch_point=branch_point,
+            summary_entry=summary_entry,
         )
-        await self.storage.fork(branch_point, token=self.storage.token, entries=branch_entries)
-        await settle(self._reload_entry_cache())
-        target_id = marker.id
-        self._last_parent_id = marker.id
-        self._resource_snapshot_id = marker.id
-        self._extension_runtime.context_resources.snapshot = extension_resources
-        self._use_resources(resources)
+        target_id = commit.marker_id
 
         await self._refresh_persisted_state(leaf_id=target_id)
         history_repair = await self._persist_active_tool_history_repairs()
@@ -3995,10 +3995,13 @@ class CodingSession:
                     error_message="Overflow compaction failed",
                 )
                 return False
+            first_kept_entry_id, tokens_before = self._compaction_boundary(plan)
             summary = await self._generate_compaction_summary(plan.messages_to_summarize)
             await self._append_compaction(
                 summary,
                 replace_entry_ids=plan.replace_entry_ids,
+                first_kept_entry_id=first_kept_entry_id,
+                tokens_before=tokens_before,
                 compact_reason="overflow",
                 will_retry=True,
             )
@@ -4130,6 +4133,7 @@ class CodingSession:
         plan = self._recent_preserving_compaction_plan()
         if plan is None:
             return False
+        first_kept_entry_id, tokens_before = self._compaction_boundary(plan)
         if await self._extension_runtime.emit_session_before_compact("threshold"):
             await self._notify_compaction_failure("threshold", aborted=True, will_retry=False)
             return False
@@ -4138,6 +4142,8 @@ class CodingSession:
             await self._append_compaction(
                 summary,
                 replace_entry_ids=plan.replace_entry_ids,
+                first_kept_entry_id=first_kept_entry_id,
+                tokens_before=tokens_before,
                 compact_reason="threshold",
             )
         except Exception as exc:
@@ -4241,6 +4247,18 @@ class CodingSession:
             replace_entry_ids=tuple(entry_id for entry_id, _message in replaced),
             messages_to_summarize=tuple(message for _entry_id, message in replaced),
         )
+
+    def _compaction_boundary(self, plan: CompactionPlan) -> tuple[str | None, int]:
+        """Return the retained boundary and the pre-summary token estimate.
+
+        ``first_kept_entry_id`` names the durable entry a compaction stops before,
+        so a reader can tell exactly which entries the summary covers. ``None``
+        means the plan replaces every active entry, so there is no boundary left.
+        """
+        rows = self._active_context_rows()
+        index = len(plan.replace_entry_ids)
+        first_kept_entry_id = rows[index][0] if index < len(rows) else None
+        return first_kept_entry_id, self.context_token_estimate
 
     def _active_context_rows(self) -> tuple[tuple[str, AgentMessage], ...]:
         return tuple(zip(self._state.context_entry_ids, self._state.messages, strict=True))

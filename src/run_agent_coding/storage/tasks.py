@@ -21,7 +21,7 @@ from run_agent_coding.storage.canonical import canonical_json
 from run_agent_coding.storage.settle import settle
 from run_agent_core.types import JSONValue
 
-TASK_ORIGIN_KINDS = ("user", "review", "evaluation", "naming")
+TASK_ORIGIN_KINDS = ("user", "evaluation", "naming")
 
 
 class TaskRejected(RuntimeError):

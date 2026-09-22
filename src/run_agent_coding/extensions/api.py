@@ -237,6 +237,21 @@ class SessionShutdownEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class SessionShutdownContext:
+    """Minimal, frozen read-only context for the `session_shutdown` notification.
+
+    Shutdown handlers receive only the reason, the session identity and the
+    working directory. The full `ExtensionContext` surface (host services,
+    state, tasks, UI, paths, telemetry) is intentionally absent, so a handler
+    cannot hold mutation authority while the observed runtime retires.
+    """
+
+    reason: SessionLifecycleReason
+    session_id: str | None
+    cwd: Path
+
+
+@dataclass(frozen=True, slots=True)
 class InputEvent:
     """Payload for the `input` hook: raw user prompt text, before expansion.
 

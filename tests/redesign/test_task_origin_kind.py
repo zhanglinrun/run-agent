@@ -1,9 +1,9 @@
 """A managed task carries a host-assigned origin kind.
 
 The host, not the extension and not the payload, decides whether a task is
-ordinary user work or an auxiliary task such as a review. Auxiliary work must be
-excludable from triggering further reviews, and the classification has to survive
-a round trip through storage so it can be queried later.
+ordinary user work or an auxiliary task such as an evaluation. Auxiliary work must
+be excludable from triggering further auxiliary work, and the classification has to
+survive a round trip through storage so it can be queried later.
 """
 
 from dataclasses import replace
@@ -36,10 +36,10 @@ async def test_the_origin_kind_survives_storage_and_is_queryable(tmp_path):
         await app.start()
         services = context(app).services
         auxiliary = await services.tasks.submit(
-            TaskSpec(handler="origin-probe", payload=None, origin_kind="review")
+            TaskSpec(handler="origin-probe", payload=None, origin_kind="evaluation")
         )
         ordinary = await services.tasks.submit(
             TaskSpec(handler="origin-probe", payload=None, origin_kind="user")
         )
-        assert (await completed(services.tasks, auxiliary)).origin_kind == "review"
+        assert (await completed(services.tasks, auxiliary)).origin_kind == "evaluation"
         assert (await completed(services.tasks, ordinary)).origin_kind == "user"

@@ -310,3 +310,52 @@ async def test_changed_tool_implementation_rejects_resume(tmp_path):
                 replace(opts, resume=session_id),
                 provider=ReplyProvider(),
             )
+
+
+async def test_branch_failure_keeps_pinned_resources_marker_and_runtime(
+    tmp_path, resource_extension, monkeypatch
+):
+    opts = replace(options(tmp_path), extension_paths=(resource_extension,))
+    async with await CodingApplication.open(opts, provider=RecordingProvider()) as app:
+        await app.start()
+        await publish(app, "memory version one")
+        await app.command("/reload")
+        first = [event async for event in app.prompt("first task")][-1]
+        runtime = app.session.extension_runtime
+        generation = runtime._generation.id
+        marker = resource_events(app)[-1].id
+        system_prompt = app.session.system_prompt
+        await publish(app, "memory version two")
+
+        with monkeypatch.context() as patch:
+
+            async def activation_failure(*args, **kwargs):
+                raise OSError("branch activation failed")
+
+            patch.setattr(app.session, "_prepare_resource_activation", activation_failure)
+            with pytest.raises(OSError, match="branch activation failed"):
+                await app.session.branch_to_entry(first.head_id)
+            assert app.session.extension_runtime is runtime and runtime.active
+            assert runtime._generation.id == generation
+            assert app.session.system_prompt == system_prompt
+            assert resource_events(app)[-1].id == marker
+
+        with monkeypatch.context() as patch:
+
+            async def publication_failure(*args, **kwargs):
+                raise OSError("branch publication failed")
+
+            patch.setattr(app.session.storage, "fork", publication_failure)
+            # Staging succeeds (pinned versions are still selectable against the
+            # live runtime); only the commit itself must fail.
+            with pytest.raises(OSError, match="branch publication failed"):
+                await app.session.branch_to_entry(first.head_id)
+            assert app.session.extension_runtime is runtime and runtime.active
+            assert runtime._generation.id == generation
+            assert app.session.system_prompt == system_prompt
+            assert resource_events(app)[-1].id == marker
+            await (
+                context(app)
+                .services.scope()
+                .state.compare_and_set(StateChange("still-alive", 0, True))
+            )

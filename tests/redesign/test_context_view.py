@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pytest
 
+from run_agent_coding.application import ApplicationOptions, CodingApplication
 from run_agent_coding.context_view import ContextBudgetExceeded, ContextViewPipeline
+from run_agent_coding.paths import RunAgentPaths
+from run_agent_coding.provider_config import (
+    OpenAICompatibleProviderConfig,
+    ProviderSettings,
+)
 from run_agent_core.messages import (
     AssistantMessage,
     TextContent,
@@ -13,6 +20,11 @@ from run_agent_core.messages import (
     UserMessage,
 )
 from run_agent_core.provider import ModelRequest
+from run_agent_core.provider_events import AssistantDoneEvent
+
+
+async def _drain(events) -> list[object]:
+    return [event async for event in events]
 
 
 def _request(messages: list[object]) -> ModelRequest:
@@ -127,3 +139,209 @@ def test_summary_only_reports_need_without_mutating(tmp_path: Path) -> None:
     assert prepared.layers == ()
     assert prepared.needs_l4 is True
     assert prepared.request.messages[0].text == "x" * 5000  # type: ignore[union-attr]
+
+
+def _parallel_group(call_ids: tuple[str, ...], texts: tuple[str, ...]) -> list[object]:
+    """One assistant message with several tool calls, then their results in order."""
+    return [
+        AssistantMessage(
+            content=[
+                ToolCall(id=call_id, name="read", arguments={"path": f"{call_id}.py"})
+                for call_id in call_ids
+            ],
+            stop_reason="toolUse",
+        ),
+        *[
+            ToolResultMessage(
+                tool_call_id=call_id,
+                tool_name="read",
+                content=[TextContent(text=text)],
+            )
+            for call_id, text in zip(call_ids, texts, strict=True)
+        ],
+    ]
+
+
+def test_two_identical_large_results_in_one_request_share_one_blob(tmp_path: Path) -> None:
+    """Content addressing deduplicates the same oversized result inside one request."""
+    big = "same payload " * 40
+    messages: list[object] = [
+        UserMessage(content="start"),
+        *_parallel_group(("call-a", "call-b"), (big, big)),
+    ]
+    pipeline = ContextViewPipeline(
+        cwd=tmp_path,
+        context_window_tokens=40,
+        reserve_tokens=5,
+        spill_chars=50,
+        spill_preview_chars=20,
+        keep_recent_tokens=10,
+    )
+
+    prepared = pipeline.prepare(_request(messages))
+
+    digest = hashlib.sha256(big.encode("utf-8")).hexdigest()
+    assert "L3" in prepared.layers
+    assert [(item.tool_call_id, item.digest) for item in prepared.artifacts] == [
+        ("call-a", digest),
+        ("call-b", digest),
+    ]
+    blobs = list((tmp_path / ".run" / "context" / "blobs").glob("*.txt"))
+    assert [path.name for path in blobs] == [f"{digest}.txt"]
+    assert blobs[0].read_text(encoding="utf-8") == big
+
+
+def test_a_real_parallel_tool_group_is_never_split(tmp_path: Path) -> None:
+    """One assistant message can carry several calls; its results stay atomic."""
+    messages: list[object] = [UserMessage(content="root")]
+    messages.extend(_parallel_group(("old-1", "old-2"), ("a" * 600, "b" * 600)))
+    for index in range(4):
+        messages.append(UserMessage(content=f"recent-{index} " + "q" * 200))
+        messages.extend(
+            _parallel_group((f"tail-{index}-1", f"tail-{index}-2"), ("x" * 400, "y" * 400))
+        )
+        messages.append(AssistantMessage(content=f"done-{index}"))
+    pipeline = ContextViewPipeline(
+        cwd=tmp_path,
+        context_window_tokens=400,
+        reserve_tokens=50,
+        spill_chars=10_000,
+        keep_recent_tokens=600,
+        compact_result_chars=50,
+        keep_recent_results=2,
+    )
+
+    prepared = pipeline.prepare(_request(messages))
+    view = list(prepared.request.messages)
+
+    assert "L1" in prepared.layers and "L2" in prepared.layers
+    groups = [
+        index
+        for index, message in enumerate(view)
+        if isinstance(message, AssistantMessage) and len(message.tool_calls) > 1
+    ]
+    assert groups, "the parallel groups must survive the cut"
+    for index in groups:
+        calls = view[index].tool_calls
+        following = view[index + 1 : index + 1 + len(calls)]
+        assert all(isinstance(message, ToolResultMessage) for message in following)
+        assert [message.tool_call_id for message in following] == [call.id for call in calls]
+
+    placeholders = [
+        message
+        for message in view
+        if isinstance(message, ToolResultMessage)
+        and message.text.startswith("[Earlier read result compacted")
+    ]
+    assert placeholders, "L2 must rewrite old results instead of dropping them"
+    placeholder_ids = {message.tool_call_id for message in placeholders}
+    for index in groups:
+        call_ids = {call.id for call in view[index].tool_calls}
+        assert call_ids & placeholder_ids in (set(), call_ids), "L2 split a parallel group"
+
+
+def test_stable_prefix_digest_ignores_an_appended_tail(tmp_path: Path) -> None:
+    """Only a new persisted summary prefix may move the digest, never a tail entry."""
+    pipeline = ContextViewPipeline(cwd=tmp_path, context_window_tokens=10_000, reserve_tokens=100)
+
+    first = pipeline.prepare(_request([UserMessage(content="root request")]))
+    grown = pipeline.prepare(
+        _request(
+            [
+                UserMessage(content="root request"),
+                *_tool_group("call-1", "tool output"),
+                AssistantMessage(content="answer"),
+                UserMessage(content="follow-up"),
+            ]
+        )
+    )
+
+    assert grown.stable_prefix_digest == first.stable_prefix_digest
+
+
+def test_stable_prefix_digest_changes_with_a_new_summary_prefix(tmp_path: Path) -> None:
+    """A new L4 prefix rewrites the head, so the digest must change with it."""
+    pipeline = ContextViewPipeline(cwd=tmp_path, context_window_tokens=10_000, reserve_tokens=100)
+    prefix = "Previous conversation summary:\n"
+
+    before = pipeline.prepare(_request([UserMessage(content="root request")]))
+    first = pipeline.prepare(
+        _request([UserMessage(content=f"{prefix}first summary"), UserMessage(content="tail")])
+    )
+    second = pipeline.prepare(
+        _request([UserMessage(content=f"{prefix}second summary"), UserMessage(content="tail")])
+    )
+
+    assert first.stable_prefix_digest != before.stable_prefix_digest
+    assert second.stable_prefix_digest != first.stable_prefix_digest
+
+
+class _ReadOnceProvider:
+    """Offline provider that reads one path once, then answers from the tool result."""
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+
+    async def stream_response(self, *, messages, **kwargs):
+        seen = any(isinstance(message, ToolResultMessage) for message in messages)
+        yield AssistantDoneEvent(
+            reason="stop" if seen else "toolUse",
+            message=AssistantMessage(
+                content=(
+                    [TextContent(text="read finished")]
+                    if seen
+                    else [ToolCall(id="read-big", name="read", arguments={"path": self.path})]
+                ),
+                stop_reason="stop" if seen else "toolUse",
+                model="test",
+            ),
+        )
+
+
+def _options(tmp_path: Path) -> ApplicationOptions:
+    return ApplicationOptions(
+        cwd=tmp_path,
+        paths=RunAgentPaths(home=tmp_path / "state", agents_home=tmp_path / "agents"),
+        model="small-window",
+        provider_name="test",
+        extensions_enabled=False,
+    )
+
+
+def _settings(context_window: int) -> ProviderSettings:
+    return ProviderSettings(
+        default_provider="test",
+        providers=(
+            OpenAICompatibleProviderConfig(
+                name="test",
+                models=("small-window",),
+                default_model="small-window",
+                api_key_env="CONTEXT_VIEW_TEST_API_KEY",
+                context_window=context_window,
+            ),
+        ),
+    )
+
+
+async def test_a_missing_blob_is_regenerated_from_the_jsonl_history(tmp_path: Path) -> None:
+    """Blobs are a derived cache: the durable transcript alone can rebuild them."""
+    content = "\n".join("y" * 180 for _ in range(220))
+    (tmp_path / "big.txt").write_text(content, encoding="utf-8")
+    provider = _ReadOnceProvider("big.txt")
+    options = _options(tmp_path)
+
+    async with await CodingApplication.open(
+        options, provider=provider, settings=_settings(20_000)
+    ) as app:
+        await _drain(app.prompt("read the big file"))
+        blobs = list((tmp_path / ".run" / "context" / "blobs").glob("*.txt"))
+        assert len(blobs) == 1
+        stored = blobs[0].read_text(encoding="utf-8")
+        assert stored == content
+
+        jsonl = options.paths.project_session_dir(tmp_path) / f"{app.session.session_id}.jsonl"
+        assert "y" * 180 in jsonl.read_text(encoding="utf-8")
+
+        blobs[0].unlink()
+        await _drain(app.prompt("read the big file again"))
+        assert blobs[0].read_text(encoding="utf-8") == stored

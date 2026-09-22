@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import os
+import stat
 from pathlib import Path
 
 import pytest
 
 from run_agent_coding import session_manager as session_manager_module
+from run_agent_coding.jsonl_storage import SessionWriter
 from run_agent_coding.paths import RunAgentPaths
 from run_agent_coding.session import _entries_for_fork
 from run_agent_coding.session_manager import SessionManager
@@ -21,7 +24,7 @@ from run_agent_core.session.entries import (
     SessionInfoEntry,
 )
 from run_agent_core.session.jsonl import entry_from_json_line, entry_to_json_line
-from run_agent_core.session.storage import JsonlSessionStorage
+from run_agent_core.session.storage import JsonlSessionStorage, StorageDiagnostics
 from run_agent_core.session.tree import SessionTree, path_to_entry, resolve_active_leaf_id
 
 
@@ -176,6 +179,101 @@ async def test_session_index_is_append_only_lww_and_compacts(
         assert len(project_index.read_text(encoding="utf-8").splitlines()) == 1
     finally:
         await manager.aclose()
+
+
+async def test_index_compaction_failure_keeps_the_previous_complete_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rewrite that dies mid-flight must leave the append-only index readable."""
+    monkeypatch.setattr(session_manager_module, "_INDEX_COMPACTION_MIN_RECORDS", 1)
+    manager = SessionManager(_paths(tmp_path))
+    try:
+        record = await manager.create_session(
+            cwd=tmp_path, model="old", title="old", session_id="compact-failure"
+        )
+        project_index = manager.project_index_path(tmp_path)
+        for index in range(3):
+            await manager.touch_session(record.id, model="new", title=f"title-{index}")
+        # Four rows with one live record: the fourth append is the one that compacts.
+        assert len(project_index.read_text(encoding="utf-8").splitlines()) == 4
+
+        original_replace = os.replace
+
+        def fail_replace(source: object, destination: object) -> None:
+            if Path(str(destination)) == project_index:
+                raise OSError("injected index replace failure")
+            original_replace(source, destination)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(os, "replace", fail_replace)
+        with pytest.raises(OSError, match="injected index replace failure"):
+            await manager.touch_session(record.id, model="new", title="title-3")
+
+        # The appended row survived; the interrupted rewrite left no partial file behind.
+        assert len(project_index.read_text(encoding="utf-8").splitlines()) == 5
+        assert list(tmp_path.glob(".index.jsonl.*.tmp")) == []
+        recorded = manager._read_index(project_index)
+        assert [(row.id, row.title) for row in recorded] == [(record.id, "title-3")]
+
+        # Once the fault clears, the very next compaction succeeds and reduces the index.
+        monkeypatch.setattr(os, "replace", original_replace)
+        updated = await manager.touch_session(record.id, model="new", title="title-4")
+        assert len(project_index.read_text(encoding="utf-8").splitlines()) == 1
+        assert [row.title for row in manager._read_index(project_index)] == ["title-4"]
+        assert (await manager.get_session(record.id)) == updated
+    finally:
+        await manager.aclose()
+
+
+async def test_directory_fsync_failure_is_recorded_and_the_state_survives(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows cannot fsync a directory: the write continues, the failure is visible."""
+    diagnostics = StorageDiagnostics()
+    path = tmp_path / "session.jsonl"
+    storage = JsonlSessionStorage(path, diagnostics=diagnostics)
+    info = SessionInfoEntry(cwd=str(tmp_path))
+    first = MessageEntry(parent_id=info.id, message=UserMessage(content="one"))
+    await storage.append(info)
+    await storage.append(first)
+    assert diagnostics.directory_fsync_failures == 0
+
+    original_fsync = os.fsync
+
+    def fail_directory_fsync(descriptor: int) -> None:
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise OSError("injected directory fsync failure")
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", fail_directory_fsync)
+    second = MessageEntry(
+        parent_id=first.id, message=AssistantMessage(content=[TextContent(text="two")])
+    )
+    await storage.append_batch((second,))
+
+    assert diagnostics.directory_fsync_attempts >= 1
+    assert diagnostics.directory_fsync_failures >= 1
+    assert diagnostics.last_directory_fsync_error is not None
+    assert diagnostics.last_directory_fsync_path == str(tmp_path)
+
+    # The committed batch is intact even though the directory flush did not happen.
+    writer = SessionWriter(JsonlSessionStorage(path, diagnostics=diagnostics), "session")
+    entries = await writer.read_all()
+    assert [entry.id for entry in entries] == [info.id, first.id, second.id]
+    assert [entry.seq for entry in entries] == [1, 2, 3]
+    assert resolve_active_leaf_id(entries) == second.id
+    assert (await writer.get_head()).entry_id == second.id
+
+    # A later write still succeeds: the failure is recorded, not sticky.
+    third = MessageEntry(
+        parent_id=second.id, message=AssistantMessage(content=[TextContent(text="three")])
+    )
+    await storage.append_batch((third,))
+    assert [entry.id for entry in await storage.read_all()] == [
+        info.id,
+        first.id,
+        second.id,
+        third.id,
+    ]
 
 
 def test_fork_path_keeps_resources_compaction_and_run_commit() -> None:

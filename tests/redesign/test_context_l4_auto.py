@@ -112,7 +112,19 @@ async def test_needs_l4_summarizes_even_when_threshold_is_looser(tmp_path: Path)
             await _drain(app.prompt(f"turn {index} " + "x" * _TURN_CHARS))
             if _compactions(session):
                 break
-        assert _compactions(session), (
+        compactions = _compactions(session)
+        assert compactions, (
             "the free view exceeded window - reserve, so the automatic path must "
             "append a persistent CompactionEntry instead of only reporting needs_l4"
         )
+        # The automatic path carries the same boundary metadata as the manual one.
+        compaction = compactions[-1]
+        assert compaction.first_kept_entry_id is not None
+        assert compaction.tokens_before is not None
+        assert compaction.tokens_before > 0
+        assert compaction.first_kept_entry_id not in set(compaction.replaces_entry_ids)
+        rows = session._active_context_rows()
+        assert rows[0][0] == compaction.id
+        assert compaction.first_kept_entry_id in {entry_id for entry_id, _ in rows}
+        if len(rows) > 1:
+            assert rows[1][0] == compaction.first_kept_entry_id

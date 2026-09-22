@@ -2,7 +2,7 @@
 id = "config-env-file-default-precedence"
 version = "1"
 kind = "bug-fix"
-budget_seconds = 90
+budget_seconds = 300
 artifacts = ["config.py"]
 fail_to_pass = ["test_environment_overrides_file", "test_falsey_environment_value_overrides_file"]
 

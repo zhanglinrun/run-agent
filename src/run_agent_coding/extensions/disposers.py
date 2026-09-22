@@ -1,4 +1,4 @@
-"""Source-owned asynchronous cleanup with bounded waiting and retained handles."""
+"""Source-owned asynchronous cleanup with a global reverse-order drain."""
 
 from __future__ import annotations
 
@@ -10,10 +10,20 @@ Disposer = Callable[[], Awaitable[None]]
 
 
 class DisposerOwner:
+    """Owns the async cleanup callbacks of every source in one generation.
+
+    Drain order is the global reverse of registration order, across sources:
+    the callback registered last runs first even when its source retires before
+    an older one. Each callback runs at most once, a failing callback never
+    skips the remaining ones, and repeated drains only pick up callbacks that
+    were not retired yet or are still owned after bounded waiting.
+    """
+
     def __init__(self, *, timeout: float = 1.0) -> None:
         self.timeout = timeout
-        self._registered: dict[str, list[Disposer]] = {}
-        self._retired: list[tuple[str, list[Disposer]]] = []
+        self._registered: dict[str, list[tuple[int, Disposer]]] = {}
+        self._retired: list[tuple[int, str, Disposer]] = []
+        self._next_sequence = 0
         self._tasks: dict[asyncio.Task[None], str] = {}
         self._cancelled: set[asyncio.Task[None]] = set()
         self._closed = False
@@ -27,12 +37,13 @@ class DisposerOwner:
         owned = self._registered.setdefault(source_id, [])
         if len(owned) >= 64:
             raise ValueError("An extension can own at most 64 disposers")
-        owned.append(disposer)
+        owned.append((self._next_sequence, disposer))
+        self._next_sequence += 1
 
     def retire_source(self, source_id: str) -> None:
         callbacks = self._registered.pop(source_id, [])
-        if callbacks:
-            self._retired.append((source_id, callbacks))
+        for sequence, disposer in callbacks:
+            self._retired.append((sequence, source_id, disposer))
 
     def retire(self) -> None:
         self._closed = True
@@ -47,34 +58,59 @@ class DisposerOwner:
         if not task.cancelled() and (error := task.exception()) is not None:
             self.errors.append(f"{source}: {type(error).__name__}: {error}")
 
-    async def _dispose(self, source_id: str, callbacks: list[Disposer]) -> None:
-        # Reverse acquisition order within a source; failures do not skip siblings.
-        for callback in reversed(callbacks):
-            try:
-                await callback()
-            except asyncio.CancelledError:
-                self.errors.append(f"{source_id}: cleanup callback was cancelled")
-            except Exception as exc:
-                self.errors.append(f"{source_id}: {type(exc).__name__}: {exc}")
+    async def _dispose(self, source_id: str, callback: Disposer) -> None:
+        # One callback per task: failures and cancellation are recorded here and
+        # the remaining callbacks still run, in order, on later iterations.
+        try:
+            await callback()
+        except asyncio.CancelledError:
+            self.errors.append(f"{source_id}: cleanup callback was cancelled")
+        except Exception as exc:
+            self.errors.append(f"{source_id}: {type(exc).__name__}: {exc}")
 
-    async def drain(self) -> int:
-        for source_id, callbacks in self._retired:
-            task = asyncio.create_task(
-                self._dispose(source_id, callbacks), name=f"dispose:{source_id}"
-            )
-            self._tasks[task] = source_id
-            task.add_done_callback(self._finished)
-        self._retired.clear()
-        if not self._tasks:
-            return 0
-        _, pending = await asyncio.wait(tuple(self._tasks), timeout=self.timeout)
-        for task in pending:
-            if task not in self._cancelled:
-                self._cancelled.add(task)
-                task.cancel()
-        if pending:
-            await asyncio.wait(pending, timeout=min(0.05, self.timeout))
+    def _pop_next(self) -> tuple[str, Disposer] | None:
+        """Return the latest registered retired callback, or None."""
+        if not self._retired:
+            return None
+        position = max(range(len(self._retired)), key=lambda index: self._retired[index][0])
+        _sequence, source_id, disposer = self._retired.pop(position)
+        return source_id, disposer
+
+    def _settle_done(self) -> None:
         for task in tuple(self._tasks):
             if task.done():
                 self._finished(task)
+
+    async def _settle_owned(self) -> None:
+        """Await tasks an earlier bounded drain kept owned."""
+        await asyncio.wait(tuple(self._tasks), timeout=self.timeout)
+        self._settle_done()
+
+    async def drain(self) -> int:
+        """Run every retired callback once, latest registration first.
+
+        A callback that does not finish inside `timeout` is cancelled and kept
+        owned; drain then stops before starting older callbacks so the global
+        reverse order holds across drains. Returns the number of owned tasks.
+        """
+        if self._tasks:
+            await self._settle_owned()
+        if self._tasks:
+            return len(self._tasks)
+        while (entry := self._pop_next()) is not None:
+            source_id, callback = entry
+            task = asyncio.create_task(
+                self._dispose(source_id, callback), name=f"dispose:{source_id}"
+            )
+            self._tasks[task] = source_id
+            task.add_done_callback(self._finished)
+            done, _ = await asyncio.wait((task,), timeout=self.timeout)
+            if not done:
+                self._cancelled.add(task)
+                task.cancel()
+                done, _ = await asyncio.wait((task,), timeout=min(0.05, self.timeout))
+                if not done:
+                    break
+            self._finished(task)
+        self._settle_done()
         return len(self._tasks)

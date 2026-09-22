@@ -2,7 +2,7 @@
 id = "normalization-acronym"
 version = "1"
 kind = "bug-fix"
-budget_seconds = 90
+budget_seconds = 300
 artifacts = ["names.py"]
 fail_to_pass = ["test_leading_and_trailing_acronyms", "test_internal_acronym_boundary", "test_digits_next_to_acronyms"]
 
