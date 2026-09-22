@@ -242,9 +242,23 @@ async def _evolve(args: argparse.Namespace) -> int:
         policy=policy,
         config=config,
     )
+    if candidate.status not in {"cold", "verified"}:
+        # A rejected or superseded candidate is terminal: the product path never
+        # re-evaluates it, and its stored report id may no longer exist under this
+        # output root. Say so instead of failing later on a missing file.
+        raise CandidateError(
+            f"candidate {candidate.candidate_id} is {candidate.status}; the product path only "
+            "evaluates cold or verified candidates, so propose a new candidate from a committed "
+            "run instead of re-running a terminal one"
+        )
     evaluated = await evolution.evaluate(candidate.candidate_id)
     if evaluated.report_id is None:
         raise RuntimeError("evolution evaluation produced no report")
+    if not (service.output_root / evaluated.report_id / "report.json").is_file():
+        raise CandidateError(
+            f"evaluation report {evaluated.report_id} of candidate {candidate.candidate_id} is "
+            f"not under {service.output_root}; point --output-root at the campaign that holds it"
+        )
     report = await service.report(evaluated.report_id)
     publication = None
     if report.passed:
