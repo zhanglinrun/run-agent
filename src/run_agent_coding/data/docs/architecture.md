@@ -27,6 +27,8 @@ The durable transcript is not the Provider request. The loop first applies exten
 3. old retained ToolResults become digest-bearing previews;
 4. persistent LLM compaction is used only when the cheap layers cannot satisfy the reserve target.
 
+`compaction.strategy=four-layer` replaces steps 1-4 with an extension-owned path: the core performs no L1-L4 preparation of its own, an extension decides and rewrites the request in `before_provider_request`, and requests the durable commit over `session_compact_request` (validated by the core, which still writes the single `CompactionEntry`). Steps 1-3 are skipped and the hard window guard is unchanged: a request still above the model window is refused with `ContextBudgetExceeded` before physical Provider I/O.
+
 The final detached request and layer report are frozen in the model-input snapshot before physical Provider I/O. A request still above the hard model window is refused. Context blobs are derived caches and can be rebuilt from JSONL history.
 
 ## Extension lifecycle
@@ -47,4 +49,4 @@ Extension tasks are in memory and do not survive a process crash. Candidate and 
 
 AgentHarness owns transcript state, steering/follow-up queues, listeners and cancellation. Tool batches run in parallel only when every call declares parallel execution; mixing any sequential tool serializes the batch and results are returned in source order. This is a correctness policy, not an original scheduling algorithm.
 
-Settings merge `~/.run/settings.json` with trusted project settings. `shellCommandPrefix` and `defaultProjectTrust` are user-only. Projects may set queue modes, `compaction.enabled` and `compaction.strategy`; provider, model and thinking remain environment-based.
+Settings merge `~/.run/settings.json` with trusted project settings. `shellCommandPrefix` and `defaultProjectTrust` are user-only. Projects may set queue modes, `compaction.enabled` and `compaction.strategy` (`cheap-first`, `summary-only` or `four-layer`); provider, model and thinking remain environment-based.

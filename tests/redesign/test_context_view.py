@@ -148,6 +148,41 @@ def test_summary_only_reports_need_without_mutating(tmp_path: Path) -> None:
     assert prepared.request.messages[0].text == "x" * 5000  # type: ignore[union-attr]
 
 
+def test_four_layer_prepares_nothing_and_still_refuses_an_oversized_view(tmp_path: Path) -> None:
+    """`four-layer` hands L1-L4 to an extension but keeps the hard window guard."""
+    payload = "x" * 5000
+    request = _request([UserMessage(content="start"), *_tool_group("call-1", payload)])
+    pipeline = ContextViewPipeline(
+        cwd=tmp_path,
+        context_window_tokens=100,
+        reserve_tokens=10,
+        strategy="four-layer",
+        spill_chars=50,
+        keep_recent_tokens=10,
+    )
+
+    prepared = pipeline.prepare(request)
+
+    assert prepared.layers == (), "the core must not apply L3/L1/L2 under four-layer"
+    assert prepared.artifacts == (), "no blob is written for a view nobody rewrote"
+    assert prepared.tokens_after == prepared.tokens_before
+    assert prepared.needs_l4 is True
+    assert prepared.request.messages[2].text == payload  # type: ignore[union-attr]
+    assert not (tmp_path / ".run" / "context" / "blobs").exists()
+    with pytest.raises(ContextBudgetExceeded):
+        pipeline.require_hard_limit(prepared)
+
+
+def test_an_unknown_context_strategy_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="Unknown context strategy"):
+        ContextViewPipeline(
+            cwd=tmp_path,
+            context_window_tokens=100,
+            reserve_tokens=10,
+            strategy="magic",  # type: ignore[arg-type]
+        )
+
+
 def _parallel_group(call_ids: tuple[str, ...], texts: tuple[str, ...]) -> list[object]:
     """One assistant message with several tool calls, then their results in order."""
     return [

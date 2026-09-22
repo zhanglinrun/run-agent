@@ -27,6 +27,8 @@ from run_agent_coding.extensions.api import (
     BeforeAgentStartResult,
     BeforeProviderHeadersEvent,
     BeforeProviderRequestEvent,
+    BeforeProviderRequestResult,
+    CompactionCommitRequest,
     ContextEvent,
     ContextHookResult,
     CustomMessageView,
@@ -1240,7 +1242,23 @@ class ExtensionRuntime:
 
     async def apply_before_provider_request(self, request: ModelRequest) -> ModelRequest:
         """Chain `before_provider_request` replacements onto one model request."""
+        current, _commits = await self.apply_before_provider_request_with_commits(request)
+        return current
+
+    async def apply_before_provider_request_with_commits(
+        self, request: ModelRequest
+    ) -> tuple[ModelRequest, tuple[CompactionCommitRequest, ...]]:
+        """Chain `before_provider_request`, also collecting compaction commits.
+
+        A handler may return a `ModelRequest` (as before) or a
+        `BeforeProviderRequestResult` that replaces the request and/or carries one
+        `CompactionCommitRequest` for the `session_compact_request` channel. This
+        method only chains requests and collects commits in handler order; the
+        host validates and either commits each one or ignores it with a
+        diagnostic, so nothing is persisted here.
+        """
         current = request
+        commits: list[CompactionCommitRequest] = []
         for owner, handler in self._handlers_for("before_provider_request"):
             event = BeforeProviderRequestEvent(payload=current)
             try:
@@ -1250,11 +1268,18 @@ class ExtensionRuntime:
                 continue
             if result is None:
                 continue
+            if isinstance(result, BeforeProviderRequestResult):
+                if result.compaction is not None:
+                    commits.append(result.compaction)
+                if result.request is None:
+                    continue
+                current = result.request
+                continue
             if not isinstance(result, ModelRequest):
                 self._record_bad_result(owner.name, "before_provider_request", result)
                 continue
             current = result
-        return current
+        return current, tuple(commits)
 
     async def prepare_provider_headers(self, headers: dict[str, str]) -> None:
         """Let `before_provider_headers` handlers mutate request headers in place."""

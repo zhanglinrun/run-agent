@@ -71,6 +71,11 @@ HOOK_EVENT_TYPES: frozenset[str] = frozenset(
         "message_end",
     }
 )
+# `session_compact_request` is a commit channel, not a subscribable event: an
+# extension asks the core to persist a compaction by returning
+# `BeforeProviderRequestResult(compaction=CompactionCommitRequest(...))` from
+# `before_provider_request`. There is no dispatch in that direction, so the name
+# deliberately stays out of HOOK_EVENT_TYPES.
 # Aliases: observation names used to live in AGENT_EVENT_TYPES, hooks in LIFECYCLE.
 AGENT_EVENT_TYPES = OBSERVATION_EVENT_TYPES
 LIFECYCLE_EVENT_TYPES = HOOK_EVENT_TYPES
@@ -489,6 +494,60 @@ class BeforeProviderRequestEvent:
 
     payload: ModelRequest
     type: Literal["before_provider_request"] = field(default="before_provider_request", init=False)
+
+
+# Why an extension compacted: `auto` is budget-driven (reported as the core
+# `threshold` reason), `manual` is the user asking for it, and `reactive` is
+# recovery from a provider error or an estimate already past the window
+# (reported as the core `overflow` reason).
+CompactionTrigger = Literal["auto", "manual", "reactive"]
+
+
+@dataclass(frozen=True, slots=True)
+class CompactionCommitRequest:
+    """One durable compaction an extension asks the core to commit.
+
+    Carried by :class:`BeforeProviderRequestResult.compaction` from a
+    `before_provider_request` handler over the ``session_compact_request``
+    channel. The extension owns the four-layer decision and the summary text;
+    the core owns the durable commit: it validates the request against the
+    active branch, then appends the same ``CompactionEntry`` + ``LeafEntry``
+    pair manual and automatic compaction write.
+
+    Core validation, all of it before any write: ``summary`` must not be blank,
+    ``tokens_before`` must be positive, and ``first_kept_entry_id`` must be an
+    active context entry with at least one active context entry before it (those
+    earlier entries are exactly the replaced prefix, so the boundary can never
+    name an entry outside the branch or the head). A rejected request is ignored
+    with a diagnostic and is never half-committed; the stored summary is
+    stripped, as every core summary is.
+
+    ``metadata`` is advisory extension bookkeeping (for example the layer
+    decision that produced the summary): the durable ``CompactionEntry`` has no
+    free-form field, so nothing here reaches the session file. Keep durable
+    extension state in ``api.append_entry``.
+    """
+
+    summary: str
+    first_kept_entry_id: str
+    tokens_before: int
+    trigger: CompactionTrigger
+    metadata: Mapping[str, JSONValue] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BeforeProviderRequestResult:
+    """Result of a `before_provider_request` handler.
+
+    ``request`` replaces the pending provider request and chains across handlers
+    exactly like returning a :class:`ModelRequest` directly (which keeps
+    working). ``compaction`` requests one durable compaction commit on the
+    ``session_compact_request`` channel; the core validates it and commits it, or
+    ignores it with a diagnostic.
+    """
+
+    request: ModelRequest | None = None
+    compaction: CompactionCommitRequest | None = None
 
 
 @dataclass(frozen=True, slots=True)

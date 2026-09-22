@@ -1,4 +1,18 @@
-"""Protocol-aware cheap-first views over an immutable session transcript."""
+"""Protocol-aware views over an immutable session transcript.
+
+Three strategies share one hard rule: :meth:`ContextViewPipeline.require_hard_limit`
+refuses a physical request that still exceeds the model window, whatever produced
+the view.
+
+* ``cheap-first`` (default): the core applies its own free L3/L1/L2 rewrites and
+  reports ``needs_l4`` when the view still cannot satisfy the reserve target.
+* ``summary-only``: the core applies no rewrite at all and only reports.
+* ``four-layer``: the core applies no rewrite and never compacts on its own - the
+  extension that owns L1-L4 does it in the ``before_provider_request`` rewrite
+  and commits the result over ``session_compact_request``. The hard window guard
+  stays in force and is not bypassable: an oversized view still raises
+  :class:`ContextBudgetExceeded` before any provider I/O.
+"""
 
 from __future__ import annotations
 
@@ -31,7 +45,10 @@ from run_agent_core.messages import (
 )
 from run_agent_core.provider import ModelRequest
 
-ContextStrategy = Literal["cheap-first", "summary-only"]
+ContextStrategy = Literal["cheap-first", "summary-only", "four-layer"]
+
+# `four-layer` leaves the L1-L4 decision to an extension; the core keeps only the
+# hard window guard above (`require_hard_limit`) and the durable commit path.
 
 # A compaction replay writes "Previous conversation summary:"; a user message that
 # already carries the provider-native summary wrapper is a persisted prefix as well.
@@ -71,7 +88,14 @@ class PreparedContext:
 
 
 class ContextViewPipeline:
-    """Create a bounded Provider view without rewriting durable messages."""
+    """Create a bounded Provider view without rewriting durable messages.
+
+    ``cheap-first`` is the only strategy that rewrites anything. ``summary-only``
+    and ``four-layer`` pass the transcript through unchanged and only report
+    ``needs_l4``: under ``four-layer`` an extension's ``before_provider_request``
+    rewrite plus a ``session_compact_request`` commit is the whole L1-L4 path,
+    while :meth:`require_hard_limit` still refuses an oversized physical request.
+    """
 
     def __init__(
         self,
@@ -88,7 +112,7 @@ class ContextViewPipeline:
     ) -> None:
         if context_window_tokens < 1 or reserve_tokens < 0:
             raise ValueError("Context window must be positive and reserve must be non-negative")
-        if strategy not in {"cheap-first", "summary-only"}:
+        if strategy not in {"cheap-first", "summary-only", "four-layer"}:
             raise ValueError(f"Unknown context strategy: {strategy}")
         self.cwd = cwd.resolve()
         self.context_window_tokens = context_window_tokens
@@ -110,7 +134,7 @@ class ContextViewPipeline:
         original = tuple(message.model_copy(deep=True) for message in request.messages)
         before = self._tokens(request, original)
         stable_digest = _stable_prefix_digest(request.system, original)
-        if before <= self.target_tokens or self.strategy == "summary-only":
+        if before <= self.target_tokens or self.strategy != "cheap-first":
             copied = replace(request, messages=original)
             return PreparedContext(
                 copied, before, before, (), (), stable_digest, before > self.target_tokens

@@ -60,6 +60,7 @@ from run_agent_coding.extensions.adoption import (
     stage_branch_reuse,
 )
 from run_agent_coding.extensions.api import (
+    CompactionCommitRequest,
     ModelSelectEvent,
     ResourcesDiscoverResult,
     SessionCompactEvent,
@@ -318,6 +319,24 @@ class CompactionPlan:
     messages_to_summarize: tuple[AgentMessage, ...]
 
 
+# `CompactionCommitRequest.trigger` (extension vocabulary) mapped onto the
+# reasons the core already reports on `session_compact`/`session_compact_failed`.
+# An unknown trigger is a rejected request, not a default.
+_COMPACTION_TRIGGER_REASONS: dict[str, CompactionReason] = {
+    "auto": "threshold",
+    "manual": "manual",
+    "reactive": "overflow",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class _CompactionCommitPlan:
+    """A validated `session_compact_request`: what to replace and why."""
+
+    replace_entry_ids: tuple[str, ...]
+    reason: CompactionReason
+
+
 @dataclass(frozen=True, slots=True)
 class ManualCompactionResult:
     """Structured result from one manual compaction."""
@@ -484,6 +503,9 @@ class CodingSession:
         self._completion_entries: list[SessionEntry] = []
         self._completion_expected_head: str | None = None
         self._last_completion: CompletionReceipt | None = None
+        # `session_compact_request` commits are queued while an agent loop is
+        # live (it holds its own transcript list) and applied once it is over.
+        self._pending_compaction_commits: list[CompactionCommitRequest] = []
         self._last_snapshot_id: str | None = None
         self._resource_snapshot_id: str | None = None
         self._resource_start_reason = "startup"
@@ -627,17 +649,31 @@ class CodingSession:
     async def _record_model_context(
         self, request: ModelRequest, *, purpose: str = "agent"
     ) -> ModelRequest | None:
-        """Freeze the exact bounded Provider view before physical I/O."""
+        """Freeze the exact bounded Provider view before physical I/O.
+
+        `before_provider_request` runs first, because under the `four-layer`
+        strategy the extension's rewrite is the only L1-L4 preparation there is.
+        A compaction commit it requests is accepted only after
+        `require_hard_limit` accepted the view, so an unsendable request never
+        leaves a commit behind.
+        """
         bind_provider_http_hooks(self._extension_runtime)
-        request = await self._extension_runtime.apply_before_provider_request(request)
+        (
+            chained,
+            commit_requests,
+        ) = await self._extension_runtime.apply_before_provider_request_with_commits(request)
         pipeline = ContextViewPipeline(
             cwd=self.cwd,
             context_window_tokens=self.context_window_tokens,
             reserve_tokens=DEFAULT_COMPACTION_RESERVE_TOKENS,
             strategy=self._config.compaction_strategy,
         )
-        prepared = pipeline.prepare(request, self.session_id)
+        prepared = pipeline.prepare(chained, self.session_id)
         pipeline.require_hard_limit(prepared)
+        if commit_requests:
+            await self._queue_compaction_commits(
+                commit_requests, context=self._diagnostic_context()
+            )
         report: dict[str, JSONValue] = {
             "strategy": self._config.compaction_strategy,
             "tokens_before": prepared.tokens_before,
@@ -3482,7 +3518,15 @@ class CodingSession:
                 if self.storage.token.run_id == run_id:
                     if write_context_token is None:
                         write_context_token = self._write_context.set(self.storage.token)
+                    # The loop is over, so the harness holds no private transcript
+                    # list: extension-requested compactions commit here, while the
+                    # run's write qualification is still live, and the run commit
+                    # then closes over them.
+                    await self._commit_pending_compaction_requests(context=context)
                     settled_event, _ = await settle(self._finish_run(events, context=context))
+                else:
+                    # A revoked or replaced run leaves nothing to commit against.
+                    self._pending_compaction_commits.clear()
             finally:
                 self._reset_run_prompt()
                 if write_context_token is not None:
@@ -3550,7 +3594,13 @@ class CodingSession:
                 if self.storage.token.run_id == run_id:
                     if write_context_token is None:
                         write_context_token = self._write_context.set(self.storage.token)
+                    # See prompt(): the loop is over, so queued compaction commits
+                    # can replace the harness transcript before the run commits.
+                    await self._commit_pending_compaction_requests(context=context)
                     settled_event, _ = await settle(self._finish_run(events, context=context))
+                else:
+                    # A revoked or replaced run leaves nothing to commit against.
+                    self._pending_compaction_commits.clear()
             finally:
                 self._reset_run_prompt()
                 if write_context_token is not None:
@@ -3982,6 +4032,11 @@ class CodingSession:
         *,
         context: AgentCallDiagnosticContext,
     ) -> bool:
+        # `four-layer` hands L1-L4 to an extension: the core never summarizes
+        # behind its back, so a provider overflow it did not pre-empt stays
+        # visible (and the extension's next request rewrite is the recovery).
+        if self._config.compaction_strategy == "four-layer":
+            return False
         if await self._extension_runtime.emit_session_before_compact("overflow", will_retry=True):
             await self._notify_compaction_failure("overflow", aborted=True, will_retry=True)
             return False
@@ -4110,6 +4165,10 @@ class CodingSession:
     async def _maybe_auto_compact(self) -> bool:
         threshold = self.auto_compact_token_threshold
         if threshold is None or threshold <= 0:
+            return False
+        if self._config.compaction_strategy == "four-layer":
+            # The extension owns L1-L4: no core preview, no core summarizer.
+            # `require_hard_limit` still refuses an oversized view.
             return False
         if self._config.compaction_strategy == "cheap-first":
             request = ModelRequest(
@@ -4263,6 +4322,125 @@ class CodingSession:
     def _active_context_rows(self) -> tuple[tuple[str, AgentMessage], ...]:
         return tuple(zip(self._state.context_entry_ids, self._state.messages, strict=True))
 
+    async def _queue_compaction_commits(
+        self,
+        requests: Sequence[CompactionCommitRequest],
+        *,
+        context: AgentCallDiagnosticContext,
+    ) -> None:
+        """Commit requested compactions now when idle, or when the run is over.
+
+        A live agent loop holds its own transcript list, so replacing the
+        messages while it runs would desynchronize the harness from the session:
+        a request made during a run is committed as soon as that run's loop is
+        over (before the run commit, and long before the next request is built),
+        and one made while idle - a manual compaction request, for instance - is
+        committed immediately.
+        """
+        self._pending_compaction_commits.extend(requests)
+        if not self._harness.is_running:
+            await self._commit_pending_compaction_requests(context=context)
+
+    async def _commit_pending_compaction_requests(
+        self,
+        *,
+        context: AgentCallDiagnosticContext,
+    ) -> None:
+        """Commit every queued `session_compact_request` against the live state."""
+        requests = tuple(self._pending_compaction_commits)
+        self._pending_compaction_commits.clear()
+        if requests:
+            await self._commit_requested_compactions(requests, context=context)
+
+    async def _commit_requested_compactions(
+        self,
+        requests: Sequence[CompactionCommitRequest],
+        *,
+        context: AgentCallDiagnosticContext,
+    ) -> None:
+        """Persist extension-requested compactions through the normal commit path.
+
+        The extension decided the boundary and wrote the summary in
+        `before_provider_request`; the core still owns the durable commit. A
+        valid request goes through :meth:`_append_compaction`, so it writes the
+        same `CompactionEntry` + `LeafEntry` pair, keeps the same
+        `replaces_entry_ids`/`first_kept_entry_id`/`tokens_before` semantics and
+        is as atomic as any other compaction. An invalid request is ignored with
+        a diagnostic and never half-committed; a commit that fails (for example a
+        CAS conflict) is diagnosed and reported on `session_compact_failed`
+        instead of failing the run that requested it. The extension already
+        decided, so no `session_before_compact` gate runs for it.
+        """
+        for request in requests:
+            plan = self._validate_compaction_commit(request)
+            if isinstance(plan, str):
+                self._last_diagnostic_log_path = self._diagnostic_logger.log_exception(
+                    context=context,
+                    phase="session_compact_request",
+                    exc=ValueError(plan),
+                )
+                continue
+            try:
+                await self._append_compaction(
+                    request.summary.strip(),
+                    replace_entry_ids=plan.replace_entry_ids,
+                    first_kept_entry_id=request.first_kept_entry_id,
+                    tokens_before=request.tokens_before,
+                    compact_reason=plan.reason,
+                    from_extension=True,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                await self._notify_compaction_failure(
+                    plan.reason,
+                    error_message=str(exc) or type(exc).__name__,
+                    from_extension=True,
+                )
+                self._last_diagnostic_log_path = self._diagnostic_logger.log_exception(
+                    context=context,
+                    phase="session_compact_request",
+                    exc=exc,
+                )
+
+    def _validate_compaction_commit(
+        self,
+        request: CompactionCommitRequest,
+    ) -> _CompactionCommitPlan | str:
+        """Return the commit plan, or the reason the request must be ignored.
+
+        The boundary is re-derived from the active branch rather than trusted:
+        `first_kept_entry_id` must be an active context entry, and at least one
+        active context entry must precede it, because those earlier entries are
+        exactly the replaced prefix. This makes an out-of-branch or head boundary
+        unrepresentable, and keeps a rejected request from costing a single write.
+        """
+        reason = _COMPACTION_TRIGGER_REASONS.get(request.trigger)
+        if reason is None:
+            return f"unknown compaction trigger: {request.trigger!r}"
+        if not request.summary.strip():
+            return "compaction summary must not be empty"
+        if request.tokens_before <= 0:
+            return f"tokens_before must be positive, got {request.tokens_before}"
+        rows = self._active_context_rows()
+        index = next(
+            (
+                position
+                for position, (entry_id, _message) in enumerate(rows)
+                if entry_id == request.first_kept_entry_id
+            ),
+            -1,
+        )
+        if index <= 0:
+            return (
+                f"first_kept_entry_id {request.first_kept_entry_id!r} is not an active "
+                "context entry after a replaced prefix"
+            )
+        return _CompactionCommitPlan(
+            replace_entry_ids=tuple(entry_id for entry_id, _message in rows[:index]),
+            reason=reason,
+        )
+
     async def _append_compaction(
         self,
         summary: str,
@@ -4272,6 +4450,7 @@ class CodingSession:
         tokens_before: int | None = None,
         compact_reason: CompactionReason = "manual",
         will_retry: bool = False,
+        from_extension: bool = False,
     ) -> CompactionEntry:
         if not replace_entry_ids:
             raise ValueError("No active context messages to compact")
@@ -4290,7 +4469,11 @@ class CodingSession:
         self._harness.replace_messages(self._state.messages)
         self._invalidate_context_usage_cache()
         await self._extension_runtime.emit_event(
-            SessionCompactEvent(reason=compact_reason, will_retry=will_retry)
+            SessionCompactEvent(
+                reason=compact_reason,
+                will_retry=will_retry,
+                from_extension=from_extension,
+            )
         )
         return compaction
 
@@ -4301,6 +4484,7 @@ class CodingSession:
         aborted: bool = False,
         will_retry: bool = False,
         error_message: str | None = None,
+        from_extension: bool = False,
     ) -> None:
         await self._extension_runtime.emit_event(
             SessionCompactFailedEvent(
@@ -4308,6 +4492,7 @@ class CodingSession:
                 aborted=aborted,
                 will_retry=will_retry,
                 error_message=error_message,
+                from_extension=from_extension,
             )
         )
 
