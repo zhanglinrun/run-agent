@@ -60,8 +60,9 @@ PROPOSER_SYSTEM = (
     '"new_text": "..."}], "claims": [{"text": "...", "probe_paths": ["relative/path"]}]}. '
     "Use at most 8 operations and keep the total changed characters under 2000. An add "
     "without old_text appends. A replace or delete must quote old_text exactly once. Cite "
-    "a project fact only when a relative path inside the project proves it. If the run "
-    "teaches nothing reusable, reply with an empty operations list."
+    "a project fact only when one relative file path inside the project proves it, and list "
+    "that file in probe_paths: a probe path must name a regular file you read, never a "
+    "directory. If the run teaches nothing reusable, reply with an empty operations list."
 )
 
 
