@@ -21,6 +21,7 @@ from run_agent_coding.paths import RunAgentPaths
 from run_agent_coding.project_trust import TrustDefault
 
 QueueMode = Literal["one_at_a_time", "all"]
+CompactionStrategy = Literal["cheap-first", "summary-only"]
 
 _USER_ONLY_KEYS = frozenset({"shellCommandPrefix", "shell_command_prefix", "defaultProjectTrust"})
 
@@ -38,6 +39,7 @@ class Settings:
     steering_mode: QueueMode = "one_at_a_time"
     follow_up_mode: QueueMode = "one_at_a_time"
     compaction_enabled: bool = True
+    compaction_strategy: CompactionStrategy = "cheap-first"
 
     def to_json(self) -> dict[str, Any]:
         """Serialize the non-default settings to the on-disk shape."""
@@ -50,8 +52,11 @@ class Settings:
             result["steeringMode"] = _mode_to_json(self.steering_mode)
         if self.follow_up_mode != "one_at_a_time":
             result["followUpMode"] = _mode_to_json(self.follow_up_mode)
-        if not self.compaction_enabled:
-            result["compaction"] = {"enabled": False}
+        if not self.compaction_enabled or self.compaction_strategy != "cheap-first":
+            result["compaction"] = {
+                "enabled": self.compaction_enabled,
+                "strategy": self.compaction_strategy,
+            }
         return result
 
 
@@ -96,6 +101,9 @@ def settings_from_json(data: dict[str, Any]) -> Settings:
     enabled = compaction.get("enabled", True)
     if not isinstance(enabled, bool):
         raise SettingsError("compaction.enabled must be true or false")
+    strategy = compaction.get("strategy", "cheap-first")
+    if strategy not in {"cheap-first", "summary-only"}:
+        raise SettingsError("compaction.strategy must be cheap-first or summary-only")
 
     return Settings(
         shell_command_prefix=prefix,
@@ -103,6 +111,7 @@ def settings_from_json(data: dict[str, Any]) -> Settings:
         steering_mode=_mode_from_json(data.get("steeringMode"), "steeringMode"),
         follow_up_mode=_mode_from_json(data.get("followUpMode"), "followUpMode"),
         compaction_enabled=enabled,
+        compaction_strategy=strategy,
     )
 
 

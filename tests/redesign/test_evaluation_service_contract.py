@@ -21,6 +21,7 @@ from run_agent_coding.host.evaluation import (
     EvaluationRequest,
     EvaluationUnavailable,
 )
+from run_agent_coding.session_manager import SessionManager
 
 
 @pytest.fixture
@@ -54,6 +55,31 @@ async def test_local_host_reports_evaluation_unavailable_not_success(tmp_path, e
         assert evaluation.available is False
         with pytest.raises(EvaluationUnavailable):
             await evaluation.submit(request())
+
+
+async def test_injected_evaluation_is_published_to_extensions(tmp_path, extension):
+    class Evaluation:
+        available = True
+
+        async def submit(self, frozen: EvaluationRequest) -> str:
+            return frozen.candidate_id
+
+        async def report(self, report_id: str) -> EvaluationReport:
+            frozen = request(candidate_id=report_id)
+            return EvaluationReport(report_id, frozen, frozen.content_hash, True, {})
+
+    opts = replace(options(tmp_path), extension_paths=(extension,))
+    manager = SessionManager(opts.paths, evaluation=Evaluation())
+    try:
+        async with await CodingApplication.open(
+            opts, provider=ReplyProvider(), manager=manager
+        ) as app:
+            await app.start()
+            evaluation = context(app).services.evaluation
+            assert evaluation.available is True
+            assert await evaluation.submit(request()) == "candidate-1"
+    finally:
+        await manager.aclose()
 
 
 def test_evaluation_request_carries_no_caller_controlled_threshold_or_grader():

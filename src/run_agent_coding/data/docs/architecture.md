@@ -1,28 +1,50 @@
 # Architecture
 
-Run Agent has four layers: Provider, Core, Coding and Gateway. Observability and Evals are supporting modules. Do not add a fifth runtime package or introduce Gateway imports into Coding's application, storage or host contracts.
+Run Agent has three runtime layers: Provider, Core and Coding. Observability and Evals are supporting modules. Do not introduce higher-level host imports into Core or make Coding depend on a concrete evaluator implementation.
 
 | Layer | Responsibility |
 | --- | --- |
-| `run_agent_ai` | Two provider transports (OpenAI-compatible, Anthropic Messages) configured from the environment, request retries, streaming and usage |
-| `run_agent_core` | Messages, the Pi-shaped agent (`AgentHarness`) and loop, tool contracts, cancellation, generic session contracts |
-| `run_agent_coding` | CodingSession, unified terminal, application lifecycle, resources, extensions and JSONL session trees |
-| `run_agent_gateway` | Feishu channel adapter, chat-to-session routing and a per-chat agent cache |
+| `run_agent_ai` | OpenAI-compatible and Anthropic transports, retries, streaming and usage |
+| `run_agent_core` | Provider-neutral messages, AgentHarness/loop, tool transactions and generic session contracts |
+| `run_agent_coding` | CodingSession, CLI/TUI, resources, extension host, Context View and JSONL session tree |
 
-`run_agent_entry.py` routes `run`, `run gateway` and `run bench` without eagerly loading other hosts. `CodingApplication` owns startup and shutdown and executes parsed command intents asynchronously. Interactive and print modes differ in presentation. The Gateway opens one `CodingApplication` per active chat on a shared SessionManager and closes it after the chat has been idle.
+`run_agent_entry.py` routes `run` and `run bench`. `CodingApplication` owns startup/shutdown and every interactive, print or benchmark session uses the same CodingSession lifecycle.
 
-Core cannot import Coding's filesystem layout or UI. Its `SessionStorage` contract is append-only: `append`, `append_batch` and `read_all`. Coding writes one JSONL file per conversation under `<cwd>/.run/sessions/`, with `index.jsonl` listing sessions for that workspace and a catalog at `~/.run/sessions/index.jsonl`. Recovery is replaying the file. Old `state.sqlite3` files are not sessions.
+## Durable session model
 
-Each single entry is appended to the session file and `fsync`'d. `append_batch` concatenates the new lines onto the previous bytes, then publishes with a temporary file, `fsync` and `os.replace`. The session tree is `SessionEntry` (`id`, `parent_id`) plus a trailing `LeafEntry` pointer (last leaf wins; older files may still carry `session_info.current_id`). `/rewind` appends a new leaf and keeps abandoned branches; `/fork` copies the root-to-entry path into a new session file; `/tree` still appends a resource-safe in-place branch. `SessionState.from_entries` rebuilds the active timeline. `agent_settled` fires after the harness is idle and those writes have landed.
+Core does not import Coding paths or UI. `SessionStorage.compare_and_append(entries, expected_head)` is the atomic write seam: the JSONL adapter takes one cross-process lock, reads the active leaf, checks the expected head and parents, assigns sequence numbers, then commits. Single rows use tail append plus `fsync`; batches use a same-directory temporary file, `fsync`, `os.replace` and directory `fsync`.
 
-Extension tasks stay in an in-memory queue and are not replayed after a crash. Experience assets remain Markdown (`USER.md`, `MEMORY.md`, Skill directories). Observations append to `~/.run/logs/observations.jsonl`. Backups copy `sessions/` and `gateway/*.jsonl`.
+A session is a parent-linked tree plus append-only `LeafEntry` pointers. `/rewind` appends a pointer and preserves abandoned branches. `/fork` copies the selected root path, including resource activation, compaction and associated `RunCommitEntry` records. A run commit fixes its start/end, status, snapshot and error; `agent_settled` is emitted only after that fact is durable. `HistoryService.read_completed_run(run_id)` reads exactly the committed interval, not the later session transcript.
 
-Session extensions export `setup(api)` and load in every host, including the Gateway. New sessions load all four built-ins under `run_agent_extensions`: `experience`, `mcp`, `permission_policy` and `plan_mode`. Plan mode starts off. Permission is my-pi-agent `PermissionGate` (`review` / `yolo` / `strict`). MCP connects stdio servers from `<cwd>/.mcp.json` on `session_start` and registers each remote tool by name. Saved sessions retain their extension snapshot until `--refresh-resources`; `--no-extensions` disables default and discovered extensions while explicit names or paths still load. Event tracing is a session option (`--trace`, `/trace`), not an extension. UI extensions use notifications, confirmation/input/selection and source-owned status text; they cannot mount framework widgets. Reload retires old API generations and clears their status. This is lifecycle management, not an OS sandbox.
+Workspace `index.jsonl` and the user catalog are append-only last-write-wins metadata logs with lock-protected compaction. Project indexes are authoritative; the catalog is a rebuildable discovery cache. Old `state.sqlite3` files are not sessions.
 
-Core follows Pi's agent package. `AgentHarness` is the analogue of Pi's `Agent`: it owns the transcript, independent steering and follow-up queues (`steeringMode` / `followUpMode` in settings), listeners and cancellation, and exposes `prompt`, `continue_`, `steer`, `follow_up`, `abort`, `wait_for_idle` and `reset`. The loop applies `transform_context` then `convert_to_llm` (summaries wrapped in `<summary>`, shell executions rendered as transcripts, `exclude_from_context` honoured), validates tool arguments against each tool's JSON schema before execution, and refuses to continue from an assistant message unless a queued message can become the next prompt. A loop exception propagates by default so the durable host records the run as failed; `run_failure="message"` selects Pi's behaviour of ending the run with an error assistant message instead.
+## Provider context
 
-Settings live in `~/.run/settings.json` with `<cwd>/.run/settings.json` deep-merged over it, as in Pi. `shellCommandPrefix` and `defaultProjectTrust` are user-level only; `steeringMode`, `followUpMode` and `compaction.enabled` may be set per project. Provider, model and thinking level are not settings: they come from the environment (docs/models.md).
+The durable transcript is not the Provider request. The loop first applies extension context transforms and provider-safe tool-history repair. Coding then applies `ContextViewPipeline` as the final request builder:
 
-The default coding tools are `read`, `write`, `edit` and `bash`; `grep`, `find` and `ls` make up the read-only set (`create_read_only_tools`), and `create_all_tools` exposes all seven by name. The existing tool batching behavior remains: bounded pure-read concurrency and serial execution for batches containing mutation-capable calls. Improvements are evaluated against real tasks and failure cases, not presented as an original scheduling algorithm.
+1. large ToolResults become SHA-256 addressed local artifacts;
+2. completed middle turns are folded without splitting Assistant/ToolResult groups;
+3. old retained ToolResults become digest-bearing previews;
+4. persistent LLM compaction is used only when the cheap layers cannot satisfy the reserve target.
 
-The Gateway follows the Hermes gateway shape: a `BasePlatformAdapter` turns platform messages into `MessageEvent`s and serializes turns per chat (`/stop`, `/new`, `/status` and `/help` bypass a busy chat); `build_session_key` maps a chat, thread and sender to a stable key; `SessionStore` keeps key-to-session-ID mappings in `~/.run/gateway/sessions.jsonl` (last line per key wins; a leftover `sessions.json` is imported once) and applies the idle/daily reset policy; `GatewayRunner` authorizes the sender against `FEISHU_ALLOWED_USERS`, resolves the coding session, runs the agent and returns the reply text. Around that: `SessionTurnLeaseRegistry` serializes turns per resolved session ID with generation-scoped tokens and fail-closed timeouts; `DeliveryLedger` appends reply state changes to `~/.run/gateway/deliveries.jsonl` with the owner's process identity, and startup resends rows whose owner is gone; `HeartbeatStore` and `HeartbeatScheduler` fire durable scheduled prompts as internal events; `StallMonitor` turns observed agent events into a notify-once stall policy. Only the Feishu adapter is implemented; configuration is environment-only (docs/cli.md).
+The final detached request and layer report are frozen in the model-input snapshot before physical Provider I/O. A request still above the hard model window is refused. Context blobs are derived caches and can be rebuilt from JSONL history.
+
+## Extension lifecycle
+
+Session extensions export synchronous `setup(api)`. Every registration belongs to a source and generation. Failed setup removes that source's tools, commands, hooks, providers, status and task handlers.
+
+Reload and session replacement use a staged runtime. The old generation remains active until successor host publication commits. It then enters a read-only retiring state, receives shutdown notification, clears source-owned UI, retires registrations and drains explicit disposers in reverse order. MCP connection closure is a disposer responsibility. Direct Python file/network effects remain outside this lifecycle and cannot be rolled back; extensions are trusted code, not sandboxed code.
+
+## Experience and evaluation
+
+Experience is an extension. USER.md and MEMORY.md remain bounded Markdown stores. Formal Skill content is immutable to ordinary model tools: `skill_manage propose` creates a loader-invisible candidate bound to a committed run, base digest and bounded operations. Project claims require trusted read-only probes.
+
+`EvaluationService` is a host contract. Local CLI sessions expose an unavailable implementation, which keeps candidates cold. The eval host may inject a paired evaluator; reports bind request, baseline and measured candidate hashes. Publication rechecks report, probes, ownership, pin and base digest under the Skill root lock before atomically replacing one SKILL.md and recording the ledger.
+
+Extension tasks are in memory and do not survive a process crash. Candidate and session logs are durable. Observations append under the configured state root. Backups contain session/index files only; Experience assets are ordinary user/project files and follow their own ownership policy.
+
+## Remaining runtime behavior
+
+AgentHarness owns transcript state, steering/follow-up queues, listeners and cancellation. Tool batches run in parallel only when every call declares parallel execution; mixing any sequential tool serializes the batch and results are returned in source order. This is a correctness policy, not an original scheduling algorithm.
+
+Settings merge `~/.run/settings.json` with trusted project settings. `shellCommandPrefix` and `defaultProjectTrust` are user-only. Projects may set queue modes, `compaction.enabled` and `compaction.strategy`; provider, model and thinking remain environment-based.

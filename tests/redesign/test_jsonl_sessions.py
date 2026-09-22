@@ -6,14 +6,23 @@ from pathlib import Path
 
 import pytest
 
+from run_agent_coding import session_manager as session_manager_module
 from run_agent_coding.paths import RunAgentPaths
+from run_agent_coding.session import _entries_for_fork
 from run_agent_coding.session_manager import SessionManager
 from run_agent_core.messages import AssistantMessage, TextContent, UserMessage
 from run_agent_core.session.contracts import RunOutcome, SessionConflict, StaleRunToken
-from run_agent_core.session.entries import CustomEntry, LeafEntry, MessageEntry, SessionInfoEntry
+from run_agent_core.session.entries import (
+    CompactionEntry,
+    CustomEntry,
+    LeafEntry,
+    MessageEntry,
+    RunCommitEntry,
+    SessionInfoEntry,
+)
 from run_agent_core.session.jsonl import entry_from_json_line, entry_to_json_line
 from run_agent_core.session.storage import JsonlSessionStorage
-from run_agent_core.session.tree import SessionTree, resolve_active_leaf_id
+from run_agent_core.session.tree import SessionTree, path_to_entry, resolve_active_leaf_id
 
 
 def _paths(tmp_path: Path) -> RunAgentPaths:
@@ -146,6 +155,54 @@ async def test_retired_run_token_cannot_append(tmp_path: Path) -> None:
         assert (await writer.begin_run("run-two")).generation > token.generation
     finally:
         await manager.aclose()
+
+
+async def test_session_index_is_append_only_lww_and_compacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(session_manager_module, "_INDEX_COMPACTION_MIN_RECORDS", 1)
+    manager = SessionManager(_paths(tmp_path))
+    try:
+        record = await manager.create_session(
+            cwd=tmp_path, model="old", title="old", session_id="index-test"
+        )
+        project_index = manager.project_index_path(tmp_path)
+        assert len(project_index.read_text(encoding="utf-8").splitlines()) == 1
+        for index in range(4):
+            updated = await manager.touch_session(record.id, model="new", title=f"title-{index}")
+        assert updated.model == "new"
+        assert updated.title == "title-3"
+        assert await manager.get_session(record.id) == updated
+        assert len(project_index.read_text(encoding="utf-8").splitlines()) == 1
+    finally:
+        await manager.aclose()
+
+
+def test_fork_path_keeps_resources_compaction_and_run_commit() -> None:
+    resource = CustomEntry(namespace="run.resources", data={})
+    message = MessageEntry(parent_id=resource.id, message=UserMessage(content="completed run"))
+    commit = RunCommitEntry(
+        parent_id=message.id,
+        run_id="run-one",
+        branch_id="main",
+        status="succeeded",
+        start_entry_id=resource.id,
+        end_entry_id=message.id,
+    )
+    compaction = CompactionEntry(
+        parent_id=message.id, summary="summary", replaces_entry_ids=[message.id]
+    )
+    abandoned = CustomEntry(parent_id=message.id, namespace="abandoned", data={})
+    entries = (resource, message, commit, compaction, abandoned)
+
+    copied = _entries_for_fork(entries, path_to_entry(list(entries), compaction.id))
+
+    assert [entry.id for entry in copied] == [
+        resource.id,
+        message.id,
+        commit.id,
+        compaction.id,
+    ]
 
 
 def test_jsonl_round_trip_preserves_entry_identity() -> None:

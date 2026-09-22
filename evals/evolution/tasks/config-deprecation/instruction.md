@@ -1,0 +1,1 @@
+`config.resolve()` supports deprecated key `endpoint` as an alias for `base_url`. Whenever `endpoint` is present, emit exactly one `DeprecationWarning`; if both keys are present, `base_url` wins. Using only the canonical key must not warn. Do not modify tests.

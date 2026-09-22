@@ -1,10 +1,4 @@
-"""The experience extension over a real session: Markdown memory and managed Skills.
-
-Memory follows my-pi-agent: two entry-delimited files with a character budget, a
-prompt snapshot that is frozen for the life of the session, and a controlled tool
-that adds, replaces and removes single entries. Skills follow hermes-agent's
-``skill_manage``: a SKILL.md directory the ordinary loader picks up on reload.
-"""
+"""The experience extension keeps memory and published Skill reads session-scoped."""
 
 from dataclasses import replace
 from pathlib import Path
@@ -165,61 +159,36 @@ async def test_the_model_can_write_memory_through_a_tool_call(tmp_path):
         )
 
 
-async def test_skill_manage_writes_a_loadable_skill_and_refuses_bad_paths(tmp_path):
+async def test_skill_manage_proposes_from_the_last_committed_run_without_publishing(tmp_path):
+    content = (
+        "---\nname: deploy\ndescription: Deploy safely.\ncreated_by: evolution\n---\n\n"
+        "# Deploy\n\n## Procedure\nRun tests.\n"
+    )
     async with await CodingApplication.open(opts(tmp_path), provider=ReplyProvider()) as app:
         await app.start()
         skills = tool(app, "skill_manage")
-        created = await skills.execute(
-            "1",
-            {
-                "action": "create",
-                "name": "deploy",
-                "description": "Deploy the service safely",
-                "body": "# Deploy\n\n## Procedure\n1. Run the tests.\n",
-            },
-        )
-        assert created.details["accepted"] is True
-        skill_file = tmp_path / ".run" / "skills" / "deploy" / "SKILL.md"
-        text = skill_file.read_text(encoding="utf-8")
-        assert "description: Deploy the service safely" in text
-        assert "created_by: agent" in text
+        arguments = {
+            "action": "propose",
+            "name": "deploy",
+            "operations": [{"action": "add", "new_text": content}],
+            "candidate_content": content,
+        }
+        before_run = await skills.execute("before-run", arguments)
+        assert not before_run.details["accepted"]
+        assert "committed source run" in before_run.text
 
-        assert "deploy" not in app.session.system_prompt
-        await app.command("/reload")
-        assert "deploy" in app.session.system_prompt
-        assert "Deploy the service safely" in app.session.system_prompt
-
-        patched = await skills.execute(
-            "2",
-            {
-                "action": "patch",
-                "name": "deploy",
-                "old_text": "1. Run the tests.",
-                "new_text": "1. Run the tests.\n2. Tag the release.",
-            },
-        )
-        assert patched.details["accepted"] is True
-        assert "Tag the release" in skill_file.read_text(encoding="utf-8")
-
-        written = await skills.execute(
-            "3",
-            {
-                "action": "write_file",
-                "name": "deploy",
-                "file_path": "references/checklist.md",
-                "content": "- verify\n",
-            },
-        )
-        assert written.details["accepted"] is True
-        escaped = await skills.execute(
-            "4",
-            {"action": "write_file", "name": "deploy", "file_path": "../evil.md", "content": "x"},
-        )
-        assert escaped.details["accepted"] is False
-        viewed = await skills.execute("5", {"action": "view", "name": "deploy"})
-        assert "Tag the release" in viewed.text
-        deleted = await skills.execute("6", {"action": "delete", "name": "deploy"})
-        assert deleted.details["accepted"] is True and not skill_file.exists()
+        settled = [event async for event in app.prompt("establish evidence")][-1]
+        proposed = await skills.execute("after-run", arguments)
+        assert proposed.details["accepted"] and proposed.details["status"] == "cold"
+        candidate_id = proposed.details["candidate_id"]
+        assert settled.run_id in (
+            tmp_path / "state" / "experience" / "candidates" / "candidates.jsonl"
+        ).read_text(encoding="utf-8")
+        assert not (tmp_path / ".run" / "skills" / "deploy" / "SKILL.md").exists()
+        listed = (await app.command("/evolve candidates cold")).message
+        assert candidate_id in listed and "project/deploy" in listed
+        refused = (await app.command(f"/evolve publish {candidate_id}")).message
+        assert refused.startswith("Refused:") and "EvaluationService" in refused
 
 
 async def test_no_memory_is_written_while_writeback_is_off(tmp_path):

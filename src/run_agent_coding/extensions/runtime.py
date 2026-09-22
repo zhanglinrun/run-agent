@@ -304,12 +304,16 @@ class ExtensionRuntime:
 
     @property
     def active(self) -> bool:
-        """Return whether this runtime generation still owns live registrations."""
+        """Return whether this runtime generation still owns mutation authority."""
         return self._generation.active
+
+    def begin_retiring(self) -> None:
+        """Enter committed read-only shutdown without removing registrations."""
+        self._generation.begin_retiring()
 
     def retire(self) -> None:
         """Invalidate this generation and release all source-owned work."""
-        if not self._generation.active:
+        if self._generation.state == "retired":
             return
         # Replacement callers clear host UI before a successor uses the shared
         # bridge; clearing here could erase that successor's freshly mounted UI.

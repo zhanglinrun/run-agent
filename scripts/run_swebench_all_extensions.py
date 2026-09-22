@@ -25,10 +25,8 @@ EXTENSIONS = ("experience", "mcp", "permission_policy", "plan_mode")
 SAFE_FIELDS = ("instance_id", "repo", "base_commit", "problem_statement")
 POLICY = {
     "RUN_AGENT_PERMISSION_MODE": "yolo",
-    "EXPERIENCE_REVIEW_ENABLED": "true",
     "EXPERIENCE_MEMORY_ENABLED": "true",
     "EXPERIENCE_USER_PROFILE_ENABLED": "true",
-    "EXPERIENCE_CURATOR_ENABLED": "true",
     "EXPERIENCE_SKILL_LEDGER": "true",
     "EXPERIENCE_MEMORY_WRITE_APPROVAL": "false",
     "EXPERIENCE_SKILLS_WRITE_APPROVAL": "false",
@@ -130,14 +128,12 @@ def prepare(args):
         "samples": args.samples,
         "concurrency": args.concurrency,
         "solve_timeout": args.solve_timeout,
-        "review_timeout": args.review_timeout,
         "extensions": list(EXTENSIONS),
         "environment": dict(POLICY),
-        "initial_experience": "empty and private per task/sample; no cross-trial learning",
+        "initial_experience": "empty and private per task/sample; writeback disabled",
         "tool_python_environment": "private per-trial venv; pip installs cannot alter the grader",
         "mcp_service_count": 0,
         "plan_initial_mode": "off",
-        "review_cadence": "project defaults",
         "python": sys.executable,
         "grader_python": str(args.grader_python),
         "repo_root": str(ROOT),
@@ -349,36 +345,16 @@ async def application_child(campaign, trial, *, probe=False):
             raise
         if receipt is None:
             raise RuntimeError("Solver exited without a durable completion receipt")
-        review_source = next(
+        experience_source = next(
             row["source_id"] for row in sources if "/experience/" in str(row["source_id"])
         )
-        services = runtime.host_services_for_source(review_source)
-        started = time.monotonic()
-        reviews = []
-        while True:
-            rows = await services.scope().state.list(prefix="review-task:")
-            reviews = [await services.tasks.status(row.value["task_id"]) for row in rows]
-            active = [
-                row for row in reviews if row.status not in {"succeeded", "failed", "cancelled"}
-            ]
-            if not active:
-                break
-            if time.monotonic() - started >= config["review_timeout"]:
-                reviews = [
-                    await services.tasks.cancel(row.task_id) if row in active else row
-                    for row in reviews
-                ]
-                break
-            await asyncio.sleep(0.5)
         write(
-            trial / "review.json",
+            trial / "experience.json",
             {
-                "tasks": [dataclasses.asdict(row) for row in reviews],
-                "wait_outcome": "no_trigger"
-                if not reviews
-                else ("timeout_cancel_requested" if active else "settled"),
-                "wait_seconds": time.monotonic() - started,
-                "status": (await app.command("/review status")).message,
+                "source_id": experience_source,
+                "origin": "evaluation",
+                "writeback": "disabled",
+                "candidate_updates": 0,
             },
         )
         write(trial / "child-result.json", {"receipt": receipt, "cost_usd": None})
@@ -595,12 +571,10 @@ def solve_trial(campaign, config, sample, task):
         )
         write(trial / "process.json", {"pid": process.pid, "started": time.time()})
         try:
-            stdout, _ = process.communicate(
-                timeout=config["solve_timeout"] + config["review_timeout"]
-            )
+            stdout, _ = process.communicate(timeout=config["solve_timeout"])
             outcome["status"] = "completed" if process.returncode == 0 else "error"
         except subprocess.TimeoutExpired:
-            # Kill this new trial's process tree, not the gateway or other campaign tasks.
+            # Kill only this trial's process tree, without affecting other campaign tasks.
             if os.name == "nt":
                 subprocess.run(
                     ["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True
@@ -803,7 +777,6 @@ def main():
     parser.add_argument("--samples", type=int, choices=[3], default=3)
     parser.add_argument("--concurrency", type=int, choices=range(1, 9), default=4)
     parser.add_argument("--solve-timeout", type=int, default=5400)
-    parser.add_argument("--review-timeout", type=int, default=300)
     parser.add_argument("--trial", type=Path)
     parser.add_argument("--probe", action="store_true")
     args = parser.parse_args()

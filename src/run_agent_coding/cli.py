@@ -76,7 +76,7 @@ def main(
         bool, typer.Option("--tui/--no-tui", help="Use the full-screen terminal interface.")
     ] = True,
 ) -> None:
-    """Run Agent: an interactive coding harness. Also: run gateway, run bench."""
+    """Run Agent: an interactive coding harness. Also: run bench."""
     cwd = cwd.resolve()
     if refresh_resources and resume is None:
         raise typer.BadParameter("--refresh-resources requires --session")
@@ -110,11 +110,8 @@ def main(
             cwd=cwd,
             paths=paths,
             provider_name=provider,
-            # `run bench` and `run gateway` both read MODEL, and this host is the one a
-            # person runs by hand. Ignoring it meant a .env naming a model the endpoint
-            # serves still sent DEFAULT_MODEL, and the provider's 503 named the model it
-            # had used - never the one that was configured - so the cause was invisible.
-            # Read after load_dotenv above, so a .env value counts.
+            # `run bench` also reads MODEL. Read it after load_dotenv above so a .env
+            # value counts, while an explicit CLI option still takes precedence.
             model=model or os.environ.get("MODEL"),
             resume=resume,
             refresh_resources=refresh_resources,

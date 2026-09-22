@@ -16,20 +16,24 @@ REQUIRED = (
     "run_agent_ai/__init__.py",
     "run_agent_core/__init__.py",
     "run_agent_coding/__init__.py",
-    "run_agent_gateway/__init__.py",
     "run_agent_observability/__init__.py",
     "run_agent_evals/__init__.py",
     "run_agent_extensions/__init__.py",
     "run_agent_entry.py",
 )
 LEAK_SUFFIXES = ("/builtins/mem0_memory.py", "/builtins/harness_features.py")
+STALE_PACKAGE_PREFIXES = ("agents/", "run_agent_gateway/")
 
 
 def audit(wheel: Path) -> list[str]:
     """Return every wheel layout problem, empty when the layout is correct."""
     names = set(zipfile.ZipFile(wheel).namelist())
     problems = [f"missing from wheel: {name}" for name in REQUIRED if name not in names]
-    problems += [f"stale agents package: {n}" for n in sorted(names) if n.startswith("agents/")]
+    problems += [
+        f"stale package: {name}"
+        for name in sorted(names)
+        if name.startswith(STALE_PACKAGE_PREFIXES)
+    ]
     problems += [
         f"development file leaked into the wheel: {n}" for n in sorted(names) if _leaked(n)
     ]

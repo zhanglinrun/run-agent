@@ -1,0 +1,10 @@
+[task]
+id = "normalization-idempotence"
+version = "1"
+kind = "bug-fix"
+budget_seconds = 90
+artifacts = ["keys.py"]
+fail_to_pass = ["test_already_normalized_key_is_unchanged", "test_normalization_is_idempotent", "test_repeated_prefixes_collapse", "test_empty_value_is_idempotent"]
+
+[grader]
+command = ["{python}", "-m", "pytest", "-q", "grader"]

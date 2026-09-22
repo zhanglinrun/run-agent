@@ -1,6 +1,6 @@
 """CLI acceptance.
 
-- The Coding CLI reads and manages experience without loading the Gateway.
+- The Coding CLI reads and manages experience in an isolated process.
 - Redirected stdin without --print is refused instead of waiting for input, and
   Ctrl+C maps to exit code 130. "No control codes in machine output" is asserted
   by test_print_sqlite.
@@ -51,16 +51,15 @@ async def main():
     await app.start()
     result = await app.command("/memory show")
     tools = sorted(tool.name for tool in app.session.extension_runtime.extension_tools)
-    gateway_loaded = "run_agent_gateway" in sys.modules
     await app.aclose()
-    print(json.dumps({"handled": result.handled, "tools": tools, "gateway_loaded": gateway_loaded}))
+    print(json.dumps({"handled": result.handled, "tools": tools}))
 
 
 asyncio.run(main())
 """
 
 
-def test_coding_cli_manages_experience_without_loading_the_gateway(tmp_path):
+def test_coding_cli_manages_experience_in_an_isolated_process(tmp_path):
     probe = tmp_path / "experience_probe.py"
     probe.write_text(EXPERIENCE_PROBE, encoding="utf-8")
     completed = subprocess.run(
@@ -76,7 +75,6 @@ def test_coding_cli_manages_experience_without_loading_the_gateway(tmp_path):
     payload = json.loads(completed.stdout.strip().splitlines()[-1])
     assert payload["handled"] is True
     assert "memory" in payload["tools"]
-    assert payload["gateway_loaded"] is False
 
 
 def test_redirected_stdin_without_print_is_refused_not_awaited(tmp_path):
@@ -114,7 +112,7 @@ def test_version_still_exits_zero_after_the_interrupt_mapping():
     assert run_agent_entry.main(["--version"]) == 0
 
 
-@pytest.mark.parametrize("obsolete", ["run-agent", "run-agent-gateway", "run-agent-bench"])
+@pytest.mark.parametrize("obsolete", ["run-agent", "run-agent-bench"])
 def test_no_obsolete_console_script_is_registered(obsolete):
     from importlib.metadata import PackageNotFoundError, distribution
 

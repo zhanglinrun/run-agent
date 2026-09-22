@@ -1,0 +1,1 @@
+Migrate the configuration key `api_host` to `base_url` in both `settings.py` and `client.py`. `settings.resolve()` must return only the new schema, ignore the removed key, preserve `retries`, and default `base_url` to `https://local.invalid`. `client.endpoint()` must use the new key. Do not modify tests.

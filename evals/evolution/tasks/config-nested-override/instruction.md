@@ -1,0 +1,1 @@
+Make `config.resolve()` recursively merge nested override mappings into `DEFAULTS`. A partial nested override must retain sibling defaults, unknown keys are allowed, and returned nested mappings must not share mutable state with defaults or inputs. Do not modify tests.

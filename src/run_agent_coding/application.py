@@ -1,4 +1,4 @@
-"""Shared application lifecycle for terminal, print, Gateway and evaluation hosts."""
+"""Shared application lifecycle for terminal, print and evaluation hosts."""
 
 from __future__ import annotations
 
@@ -155,6 +155,7 @@ class CodingApplication:
                     steering_mode=shell.steering_mode,
                     follow_up_mode=shell.follow_up_mode,
                     auto_compact_enabled=shell.compaction_enabled,
+                    compaction_strategy=shell.compaction_strategy,
                 )
             )
             return cls(session, manager, owns_manager=owns_manager)

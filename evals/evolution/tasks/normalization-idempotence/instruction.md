@@ -1,0 +1,1 @@
+Make `keys.normalize_key()` idempotent. It should lowercase a key, collapse non-alphanumeric runs to `-`, and ensure exactly one `key-` prefix. Applying it repeatedly must return the same value, and repeated existing prefixes must collapse. The empty normalized value is `key`. Do not modify tests.

@@ -1,4 +1,4 @@
-"""Copy session trees and gateway JSONL files into a verified backup directory."""
+"""Copy session trees into a verified backup directory."""
 
 from __future__ import annotations
 
@@ -14,7 +14,8 @@ from typing import Any
 
 from run_agent_coding.storage.canonical import canonical_json
 
-BACKUP_SCHEMA = "run.backup.v2"
+BACKUP_SCHEMA = "run.backup.v3"
+SUPPORTED_BACKUP_SCHEMAS = frozenset({"run.backup.v2", BACKUP_SCHEMA})
 
 
 def _digest(path: Path) -> str:
@@ -44,18 +45,12 @@ def _assert_index_complete(index_path: Path) -> None:
 
 
 def _collect_files(home: Path) -> list[Path]:
-    files: list[Path] = []
     sessions = home / "sessions"
-    if sessions.exists():
-        for path in sessions.rglob("*"):
-            if path.is_file() and not path.name.startswith("."):
-                files.append(path)
-    gateway = home / "gateway"
-    if gateway.exists():
-        for name in ("sessions.jsonl", "deliveries.jsonl"):
-            candidate = gateway / name
-            if candidate.is_file():
-                files.append(candidate)
+    files = (
+        [path for path in sessions.rglob("*") if path.is_file() and not path.name.startswith(".")]
+        if sessions.exists()
+        else []
+    )
     collected = sorted(files)
     for path in collected:
         if path.name == "index.jsonl":
@@ -64,7 +59,7 @@ def _collect_files(home: Path) -> list[Path]:
 
 
 async def create_backup(home: str | Path, destination: str | Path) -> Path:
-    """Publish a complete copy of sessions/ and gateway JSONL files."""
+    """Publish a complete copy of the session tree."""
     home = Path(home).resolve()
     destination = Path(destination).resolve()
     if destination.exists():
@@ -76,7 +71,7 @@ async def create_backup(home: str | Path, destination: str | Path) -> Path:
         def snapshot() -> None:
             files = _collect_files(home)
             if not files:
-                raise FileNotFoundError(f"No session or gateway JSONL files under {home}")
+                raise FileNotFoundError(f"No session files under {home}")
             entries: list[dict[str, Any]] = []
             for path in files:
                 relative = path.relative_to(home).as_posix()
@@ -115,13 +110,18 @@ async def verify_backup(source: str | Path) -> dict[str, Any]:
 
 def _verify_backup(source: Path) -> dict[str, Any]:
     manifest = json.loads((source / "manifest.json").read_text(encoding="utf-8"))
-    if not isinstance(manifest, dict) or manifest.get("schema") != BACKUP_SCHEMA:
+    if not isinstance(manifest, dict) or manifest.get("schema") not in SUPPORTED_BACKUP_SCHEMAS:
         raise ValueError("Unsupported backup manifest")
     declared = manifest.get("files")
     if not isinstance(declared, list) or not declared:
         raise ValueError("Backup manifest lists no files")
     for item in declared:
-        path = source / str(item["path"])
+        relative = Path(str(item["path"]))
+        if manifest["schema"] == BACKUP_SCHEMA and (
+            not relative.parts or relative.parts[0] != "sessions"
+        ):
+            raise ValueError("run.backup.v3 manifests may only contain session files")
+        path = source / relative
         if not path.is_file():
             raise FileNotFoundError(f"Backup is missing {item['path']}")
         if _digest(path) != item.get("sha256") or path.stat().st_size != item.get("size"):

@@ -1,0 +1,10 @@
+[task]
+id = "normalization-delimiter-collision"
+version = "1"
+kind = "bug-fix"
+budget_seconds = 90
+artifacts = ["keycodec.py"]
+fail_to_pass = ["test_delimiter_inputs_do_not_collide", "test_delimiter_values_round_trip", "test_empty_and_delimiter_values_round_trip", "test_empty_list_round_trip"]
+
+[grader]
+command = ["{python}", "-m", "pytest", "-q", "grader"]

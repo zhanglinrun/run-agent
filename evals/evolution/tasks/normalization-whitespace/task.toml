@@ -1,0 +1,10 @@
+[task]
+id = "normalization-whitespace"
+version = "1"
+kind = "bug-fix"
+budget_seconds = 90
+artifacts = ["textnorm.py"]
+fail_to_pass = ["test_long_ascii_run_collapses", "test_tabs_and_newlines_collapse", "test_unicode_whitespace_collapses"]
+
+[grader]
+command = ["{python}", "-m", "pytest", "-q", "grader"]

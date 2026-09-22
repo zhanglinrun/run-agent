@@ -12,8 +12,10 @@ from pathlib import Path
 from typing import BinaryIO, Protocol
 from uuid import uuid4
 
+from run_agent_core.session.contracts import SessionConflict
 from run_agent_core.session.entries import SessionEntry
 from run_agent_core.session.jsonl import entries_from_json_lines, entry_to_json_line
+from run_agent_core.session.tree import resolve_active_leaf_id
 
 
 class SessionStorage(Protocol):
@@ -32,6 +34,12 @@ class SessionStorage(Protocol):
         """Atomically append a complete batch of entries."""
         ...
 
+    async def compare_and_append(
+        self, entries: Sequence[SessionEntry], expected_head: str | None
+    ) -> list[SessionEntry]:
+        """Validate and append under one lock, returning the numbered committed snapshot."""
+        ...
+
     async def read_all(self) -> list[SessionEntry]:
         """Read all entries in storage order."""
         ...
@@ -44,6 +52,37 @@ async def load_session_entries(storage: SessionStorage) -> list[SessionEntry]:
 
 def _encoded_entries(entries: Sequence[SessionEntry]) -> bytes:
     return b"".join(entry_to_json_line(entry).encode("utf-8") for entry in entries)
+
+
+def _prepare_compare_and_append(
+    existing: Sequence[SessionEntry],
+    entries: Sequence[SessionEntry],
+    expected_head: str | None,
+) -> tuple[list[SessionEntry], tuple[SessionEntry, ...]]:
+    numbered = [
+        entry.model_copy(deep=True, update={"seq": index})
+        for index, entry in enumerate(existing, start=1)
+    ]
+    if resolve_active_leaf_id(numbered) != expected_head:
+        raise SessionConflict("expected_head mismatch")
+
+    known: set[str] = set()
+    for entry in numbered:
+        if entry.id in known:
+            raise SessionConflict(f"Duplicate session entry id: {entry.id}")
+        known.add(entry.id)
+
+    appended: list[SessionEntry] = []
+    for entry in entries:
+        if entry.id in known:
+            raise SessionConflict(f"Duplicate session entry id: {entry.id}")
+        if entry.parent_id is not None and entry.parent_id not in known:
+            raise SessionConflict(f"Invalid parent_id: {entry.parent_id}")
+        committed = entry.model_copy(deep=True, update={"seq": len(numbered) + 1})
+        numbered.append(committed)
+        appended.append(committed)
+        known.add(entry.id)
+    return numbered, tuple(appended)
 
 
 class InMemorySessionStorage:
@@ -66,6 +105,15 @@ class InMemorySessionStorage:
             return
         async with self._lock:
             self.entries.extend(batch)
+
+    async def compare_and_append(
+        self, entries: Sequence[SessionEntry], expected_head: str | None
+    ) -> list[SessionEntry]:
+        batch = tuple(entries)
+        async with self._lock:
+            numbered, appended = _prepare_compare_and_append(self.entries, batch, expected_head)
+            self.entries.extend(appended)
+            return numbered
 
     async def read_all(self) -> list[SessionEntry]:
         async with self._lock:
@@ -108,6 +156,21 @@ class JsonlSessionStorage:
             self._remove_incomplete_temp()
             previous = self.path.read_bytes() if self.path.exists() else b""
             self._atomic_replace(previous + encoded)
+
+    async def compare_and_append(
+        self, entries: Sequence[SessionEntry], expected_head: str | None
+    ) -> list[SessionEntry]:
+        """Compare the active head and atomically append while holding the file lock."""
+        batch = tuple(entries)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self._locked(exclusive=True):
+            self._remove_incomplete_temp()
+            existing = self._read_unlocked()
+            numbered, appended = _prepare_compare_and_append(existing, batch, expected_head)
+            if appended:
+                previous = self.path.read_bytes() if self.path.exists() else b""
+                self._atomic_replace(previous + _encoded_entries(appended))
+            return numbered
 
     async def read_all(self) -> list[SessionEntry]:
         """Read all entries in file order; missing files are empty sessions."""

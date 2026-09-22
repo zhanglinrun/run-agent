@@ -1,5 +1,7 @@
-"""Backups copy session trees and gateway JSONL files."""
+"""Backups copy session trees and preserve v2 restore compatibility."""
 
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -15,27 +17,42 @@ def _write_tree(home: Path) -> None:
         encoding="utf-8",
     )
     (session_dir / "s1.jsonl").write_text('{"type":"message","id":"a"}\n', encoding="utf-8")
-    gateway = home / "gateway"
-    gateway.mkdir()
-    (gateway / "sessions.jsonl").write_text(
+    legacy = home / "gateway"
+    legacy.mkdir()
+    (legacy / "sessions.jsonl").write_text(
         '{"session_key":"chat","session_id":"s1"}\n', encoding="utf-8"
     )
-    (gateway / "deliveries.jsonl").write_text(
+    (legacy / "deliveries.jsonl").write_text(
         '{"obligation_id":"o1","status":"pending"}\n', encoding="utf-8"
     )
 
 
-async def test_backup_restores_sessions_and_gateway_jsonl(tmp_path):
+def _add_legacy_files_to_v2_manifest(backup: Path, home: Path) -> None:
+    manifest_path = backup / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["schema"] = "run.backup.v2"
+    for relative in ("gateway/sessions.jsonl", "gateway/deliveries.jsonl"):
+        payload = (home / relative).read_bytes()
+        target = backup / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(payload)
+        manifest["files"].append(
+            {"path": relative, "sha256": hashlib.sha256(payload).hexdigest(), "size": len(payload)}
+        )
+    manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+
+
+async def test_backup_v3_restores_only_sessions(tmp_path):
     home = tmp_path / "live"
     _write_tree(home)
     destination = await create_backup(home, tmp_path / "backup")
     manifest = await verify_backup(destination)
-    assert {item["path"] for item in manifest["files"]} >= {
+    assert manifest["schema"] == "run.backup.v3"
+    assert {item["path"] for item in manifest["files"]} == {
         "sessions/demo-abc123/index.jsonl",
         "sessions/demo-abc123/s1.jsonl",
-        "gateway/sessions.jsonl",
-        "gateway/deliveries.jsonl",
     }
+    assert not (destination / "gateway").exists()
     (home / "sessions" / "demo-abc123" / "s1.jsonl").write_text(
         '{"type":"message","id":"after"}\n', encoding="utf-8"
     )
@@ -45,7 +62,21 @@ async def test_backup_restores_sessions_and_gateway_jsonl(tmp_path):
         .read_text(encoding="utf-8")
         .startswith('{"type":"message","id":"a"}')
     )
+    assert not (restored / "gateway").exists()
+
+
+async def test_verify_and_restore_accept_v2_manifests_with_legacy_files(tmp_path):
+    home = tmp_path / "live"
+    _write_tree(home)
+    backup = await create_backup(home, tmp_path / "backup")
+    _add_legacy_files_to_v2_manifest(backup, home)
+
+    manifest = await verify_backup(backup)
+    assert manifest["schema"] == "run.backup.v2"
+    restored = await restore_backup(backup, tmp_path / "restored")
+    assert (restored / "sessions/demo-abc123/s1.jsonl").is_file()
     assert (restored / "gateway/sessions.jsonl").is_file()
+    assert (restored / "gateway/deliveries.jsonl").is_file()
 
 
 async def test_missing_file_fails_backup_without_publishing_partial_package(tmp_path):
@@ -73,13 +104,14 @@ async def test_tampered_backup_fails_before_creating_restore_target(tmp_path):
     assert not (tmp_path / "restored").exists()
 
 
-async def test_restore_does_not_replace_existing_directory(tmp_path):
+async def test_restore_does_not_replace_existing_directory_or_remove_legacy_state(tmp_path):
     home = tmp_path / "live"
     _write_tree(home)
     backup = await create_backup(home, tmp_path / "backup")
     target = tmp_path / "existing"
-    target.mkdir()
-    (target / "keep").write_text("existing state")
+    legacy = target / "gateway" / "keep"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("existing state")
     with pytest.raises(FileExistsError):
         await restore_backup(backup, target)
-    assert (target / "keep").read_text() == "existing state"
+    assert legacy.read_text() == "existing state"

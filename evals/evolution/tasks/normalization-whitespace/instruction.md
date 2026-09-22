@@ -1,0 +1,1 @@
+Fix `textnorm.normalize_whitespace()` so every run of Unicode whitespace becomes one ASCII space and leading/trailing whitespace is removed. Empty or whitespace-only input returns an empty string. Do not modify tests.

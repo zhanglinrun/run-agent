@@ -1,0 +1,1 @@
+Fix `unicode_name.normalize_name()` to apply Unicode NFKC normalization followed by Unicode case folding. Canonically equivalent and compatibility-equivalent input must normalize identically. Use only the Python standard library and do not modify tests.

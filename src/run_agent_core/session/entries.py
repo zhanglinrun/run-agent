@@ -104,6 +104,37 @@ class LeafEntry(BaseSessionEntry):
     )
 
 
+class RunCommitEntry(BaseSessionEntry):
+    """Durable boundary for one completed agent run."""
+
+    type: Literal["run_commit"] = "run_commit"
+    run_id: str = Field(
+        validation_alias=AliasChoices("run_id", "runId"),
+        serialization_alias="runId",
+    )
+    branch_id: str = Field(
+        validation_alias=AliasChoices("branch_id", "branchId"),
+        serialization_alias="branchId",
+    )
+    status: Literal["succeeded", "failed", "cancelled", "interrupted", "outcome_unknown"]
+    start_entry_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("start_entry_id", "startEntryId"),
+        serialization_alias="startEntryId",
+    )
+    end_entry_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("end_entry_id", "endEntryId"),
+        serialization_alias="endEntryId",
+    )
+    snapshot_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("snapshot_id", "snapshotId"),
+        serialization_alias="snapshotId",
+    )
+    error: str | None = None
+
+
 class SessionInfoEntry(BaseSessionEntry):
     """Basic session metadata entry."""
 
@@ -135,6 +166,7 @@ type SessionEntry = Annotated[
     | LabelEntry
     | LeafEntry
     | SessionInfoEntry
+    | RunCommitEntry
     | CustomEntry,
     Field(discriminator="type"),
 ]

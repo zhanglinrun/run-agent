@@ -1,0 +1,10 @@
+[task]
+id = "config-deprecation"
+version = "1"
+kind = "bug-fix"
+budget_seconds = 90
+artifacts = ["config.py"]
+fail_to_pass = ["test_deprecated_key_emits_warning", "test_canonical_key_wins_when_both_are_present"]
+
+[grader]
+command = ["{python}", "-m", "pytest", "-q", "grader"]

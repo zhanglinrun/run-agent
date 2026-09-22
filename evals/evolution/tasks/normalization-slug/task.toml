@@ -1,0 +1,10 @@
+[task]
+id = "normalization-slug"
+version = "1"
+kind = "bug-fix"
+budget_seconds = 90
+artifacts = ["slug.py"]
+fail_to_pass = ["test_punctuation_becomes_one_separator", "test_existing_separator_runs_collapse", "test_edge_separators_are_removed", "test_empty_value_stays_empty"]
+
+[grader]
+command = ["{python}", "-m", "pytest", "-q", "grader"]

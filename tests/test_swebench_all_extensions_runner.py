@@ -56,10 +56,26 @@ def test_prepare_refuses_old_artifacts(tmp_path):
 
 
 def test_required_extension_policy_and_secret_redaction():
+    from run_agent_extensions.experience.config import load_experience_config
+
     assert set(runner.EXTENSIONS) == {"mcp", "experience", "permission_policy", "plan_mode"}
     assert runner.POLICY["RUN_AGENT_PERMISSION_MODE"] == "yolo"
     assert "RUN_AGENT_MCP_SERVERS" not in runner.POLICY
-    assert runner.POLICY["EXPERIENCE_REVIEW_ENABLED"] == "true"
+    # Every Experience switch the campaign pins must still be one the extension honours,
+    # so a renamed or dropped setting cannot silently become a no-op in the campaign.
+    pinned = {
+        "EXPERIENCE_MEMORY_ENABLED": "memory_enabled",
+        "EXPERIENCE_USER_PROFILE_ENABLED": "user_profile_enabled",
+        "EXPERIENCE_SKILL_LEDGER": "skill_ledger",
+        "EXPERIENCE_MEMORY_WRITE_APPROVAL": "memory_write_approval",
+        "EXPERIENCE_SKILLS_WRITE_APPROVAL": "skills_write_approval",
+    }
+    assert {key for key in runner.POLICY if key.startswith("EXPERIENCE_")} == set(pinned)
+    defaults = load_experience_config({})
+    for key, attribute in pinned.items():
+        override = "false" if getattr(defaults, attribute) else "true"
+        loaded = load_experience_config({key: override})
+        assert getattr(loaded, attribute) is not getattr(defaults, attribute)
     assert (
         runner.redact("credential-secret", {"OPENAI_API_KEY": "credential-secret"}) == "[REDACTED]"
     )

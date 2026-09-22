@@ -1,0 +1,1 @@
+`config.resolve()` has canonical key `color` and must remain backward compatible with the `colour` alias. Use `colour` only when `color` is absent, let the canonical key win when both are present, and never include `colour` in the returned mapping. Preserve other options. Do not modify tests.

@@ -25,6 +25,17 @@ or exfiltration sandbox. Extensions execute arbitrary Python. Use an OS
 sandbox, container, VM, remote environment, and restricted credentials/network
 when isolation is required.
 
+Staged extension adoption protects the live registration set, but setup imports and trusted
+extension code can still perform direct file or network effects before publication. Only
+source-owned registrations, managed tasks and callbacks explicitly registered with
+`register_disposer()` participate in retirement. A failed publication preserves the old
+runtime and cleans the staged runtime; it cannot undo arbitrary Python effects.
+
+Experience project probes are read-only and require trusted project inputs. Probe paths must
+be relative UTF-8 files inside the canonical cwd; absolute paths, `..`, symlinks/junctions,
+oversized files, shell and network access are refused. A matching SHA-256 proves only that
+the probed bytes did not drift; it does not prove a natural-language claim is semantically true.
+
 Review extension code before loading it and keep secrets out of project files
 and diagnostics.
 
@@ -33,5 +44,4 @@ The default `permission_policy` extension is my-pi-agent's `PermissionGate` on
 prefixes, then prompts when a UI is attached; `yolo`/`autonomous` allows all;
 `strict` prompts every tool including reads. Missing confirm callback allows the
 call. This is not an OS sandbox. The `bash` tool has no default timeout: callers
-must supply one when a command needs a time limit. Gateway stall notices do not
-provide a shell timeout.
+must supply one when a command needs a time limit.

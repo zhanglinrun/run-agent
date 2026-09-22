@@ -19,7 +19,7 @@ def test_version_is_available_without_loading_business_layers():
 import sys
 from run_agent_entry import main
 assert main(['--version']) == 0
-assert not any(name.startswith(('run_agent_coding', 'run_agent_gateway', 'run_agent_evals'))
+assert not any(name.startswith(('run_agent_coding', 'run_agent_evals'))
                for name in sys.modules)
 """
     result = subprocess.run([sys.executable, "-c", code], text=True, capture_output=True)
@@ -34,14 +34,14 @@ from run_agent_coding.jsonl_storage import SessionWriter
 from run_agent_core.session.storage import JsonlSessionStorage
 assert 'run_agent_coding.session' not in sys.modules
 assert 'run_agent_coding.cli' not in sys.modules
-assert not any(name.startswith(('run_agent_gateway', 'run_agent_evals')) for name in sys.modules)
+assert not any(name.startswith('run_agent_evals') for name in sys.modules)
 """
     result = subprocess.run([sys.executable, "-c", code], text=True, capture_output=True)
     assert result.returncode == 0, result.stderr
 
 
 def test_host_help_routes():
-    for args in (["--help"], ["gateway", "--help"], ["bench", "--help"]):
+    for args in (["--help"], ["bench", "--help"]):
         result = subprocess.run(
             [sys.executable, "-m", "run_agent_entry", *args],
             text=True,

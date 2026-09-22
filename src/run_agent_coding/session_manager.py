@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
-from collections.abc import Sequence
+import tempfile
+from collections.abc import Iterable, Iterator, Sequence
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from time import time
 from uuid import uuid4
 
+from run_agent_coding.host.evaluation import EvaluationService
 from run_agent_coding.jsonl_storage import SessionWriter
 from run_agent_coding.paths import RunAgentPaths
 from run_agent_coding.storage.host import MemoryHostServices
@@ -19,7 +23,12 @@ from run_agent_coding.storage.skill_packages import SkillPackageStore
 from run_agent_coding.storage.telemetry import JsonlTelemetrySink
 from run_agent_core.session.contracts import SessionConflict
 from run_agent_core.session.entries import LeafEntry, SessionEntry
-from run_agent_core.session.storage import JsonlSessionStorage
+from run_agent_core.session.storage import (
+    JsonlSessionStorage,
+    _fsync_directory,
+    _lock_file,
+    _unlock_file,
+)
 
 _MAX_SESSION_ID_BYTES = 128
 _RESERVED_SESSION_IDS = frozenset({"default", "index"})
@@ -29,6 +38,7 @@ _WINDOWS_RESERVED_FILE_STEMS = frozenset(
     | {f"lpt{index}" for index in range(1, 10)}
 )
 _SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
+_INDEX_COMPACTION_MIN_RECORDS = 1024
 
 
 def normalize_session_name(value: str) -> str:
@@ -102,10 +112,12 @@ class SessionManager:
         *,
         principal_id: str = "local",
         owner_id: str | None = None,
+        evaluation: EvaluationService | None = None,
     ) -> None:
         self.paths = paths or RunAgentPaths()
         self.principal_id = principal_id
         self.owner_id = owner_id or uuid4().hex
+        self._evaluation = evaluation
         self._lock = asyncio.Lock()
         self._handle_lock = asyncio.Lock()
         self._handles: dict[str, SessionWriter] = {}
@@ -127,6 +139,7 @@ class SessionManager:
                 self.owner_id,
                 isolation_key=str(self.paths.home.resolve()),
                 principal_id=self.principal_id,
+                evaluation=self._evaluation,
             )
         return self._services
 
@@ -274,20 +287,8 @@ class SessionManager:
         return record
 
     def _read_index(self, path: Path) -> list[CodingSessionRecord]:
-        if not path.exists():
-            return []
-        records: list[CodingSessionRecord] = []
-        for line in path.read_text(encoding="utf-8").split("\n"):
-            stripped = line.strip()
-            if not stripped:
-                continue
-            try:
-                payload = json.loads(stripped)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(payload, dict):
-                records.append(CodingSessionRecord.from_json(payload))
-        return records
+        with self._locked_index(path, exclusive=False):
+            return list(_read_index_unlocked(path).values())
 
     def _read_project_records(self, cwd: Path) -> list[CodingSessionRecord]:
         resolved = cwd.resolve()
@@ -299,22 +300,73 @@ class SessionManager:
 
     def _read_all_records(self) -> list[CodingSessionRecord]:
         records = self._read_index(self._catalog_path())
-        for index_path in self.paths.sessions_dir.glob("*/index.jsonl"):
+        for index_path in self.paths.sessions_dir.rglob("index.jsonl"):
             records.extend(self._read_index(index_path))
         return _deduplicate_records(records)
+
+    def rebuild_catalog(self, cwds: Iterable[Path]) -> list[CodingSessionRecord]:
+        """Rebuild the derived catalog cache from the project indexes.
+
+        The project indexes are the source of truth and the catalog is only a cache, so
+        rebuilding it requires the caller to supply the working directories to replay.
+        """
+        for cwd in cwds:
+            for record in self._read_project_records(cwd):
+                self._write_index(self._catalog_path(), record)
+        return self._read_index(self._catalog_path())
 
     def _upsert(self, record: CodingSessionRecord) -> None:
         self._write_index(self.project_index_path(record.cwd), record)
         self._write_index(self._catalog_path(), record)
 
     def _write_index(self, path: Path, record: CodingSessionRecord) -> None:
-        records = [item for item in self._read_index(path) if item.id != record.id]
-        records.append(record)
         path.parent.mkdir(parents=True, exist_ok=True)
-        content = "\n".join(json.dumps(item.to_json(), ensure_ascii=False) for item in records)
-        if content:
-            content += "\n"
-        path.write_text(content, encoding="utf-8")
+        encoded = (json.dumps(record.to_json(), ensure_ascii=False) + "\n").encode("utf-8")
+        with self._locked_index(path, exclusive=True):
+            records, row_count = _read_index_state_unlocked(path)
+            with path.open("ab") as file:
+                file.write(encoded)
+                file.flush()
+                os.fsync(file.fileno())
+            records[record.id] = record
+            if row_count + 1 > max(_INDEX_COMPACTION_MIN_RECORDS, 4 * len(records)):
+                self._compact_index_unlocked(path, records.values())
+
+    @contextmanager
+    def _locked_index(self, path: Path, *, exclusive: bool) -> Iterator[None]:
+        lock_path = path.with_name(f".{path.name}.lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+b") as lock_file:
+            os.chmod(lock_path, 0o600)
+            lock_file.seek(0, os.SEEK_END)
+            if lock_file.tell() == 0:
+                lock_file.write(b"\0")
+                lock_file.flush()
+            lock_file.seek(0)
+            _lock_file(lock_file, exclusive=exclusive)
+            try:
+                yield
+            finally:
+                _unlock_file(lock_file)
+
+    def _compact_index_unlocked(self, path: Path, records: Iterable[CodingSessionRecord]) -> None:
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+        )
+        temporary_path = Path(temporary)
+        try:
+            with os.fdopen(descriptor, "wb") as file:
+                for record in records:
+                    line = json.dumps(record.to_json(), ensure_ascii=False) + "\n"
+                    file.write(line.encode("utf-8"))
+                file.flush()
+                os.fsync(file.fileno())
+            os.replace(temporary_path, path)
+            _fsync_directory(path.parent)
+        except BaseException:
+            with suppress(OSError):
+                temporary_path.unlink()
+            raise
 
     async def aclose(self) -> None:
         if self._close_task is None:
@@ -350,6 +402,31 @@ class SessionManager:
         finally:
             if self._telemetry is not None:
                 await self._telemetry.aclose()
+
+
+def _read_index_unlocked(path: Path) -> dict[str, CodingSessionRecord]:
+    records, _ = _read_index_state_unlocked(path)
+    return records
+
+
+def _read_index_state_unlocked(path: Path) -> tuple[dict[str, CodingSessionRecord], int]:
+    records: dict[str, CodingSessionRecord] = {}
+    row_count = 0
+    if not path.exists():
+        return records, row_count
+    for line in path.read_text(encoding="utf-8").split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            record = CodingSessionRecord.from_json(payload)
+            records[record.id] = record
+            row_count += 1
+    return records, row_count
 
 
 def _deduplicate_records(records: list[CodingSessionRecord]) -> list[CodingSessionRecord]:

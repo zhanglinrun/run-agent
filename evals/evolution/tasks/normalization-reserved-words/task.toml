@@ -1,0 +1,10 @@
+[task]
+id = "normalization-reserved-words"
+version = "1"
+kind = "bug-fix"
+budget_seconds = 90
+artifacts = ["identifiers.py"]
+fail_to_pass = ["test_class_keyword_gets_suffix", "test_for_keyword_gets_suffix", "test_yield_keyword_gets_suffix"]
+
+[grader]
+command = ["{python}", "-m", "pytest", "-q", "grader"]

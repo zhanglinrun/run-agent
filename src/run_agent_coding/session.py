@@ -23,8 +23,10 @@ from run_agent_coding.commands import (
     create_default_command_registry,
 )
 from run_agent_coding.context import discover_project_context_with_diagnostics
+from run_agent_coding.context_view import ContextStrategy, ContextViewPipeline
 from run_agent_coding.context_window import (
     DEFAULT_COMPACTION_KEEP_RECENT_TOKENS,
+    DEFAULT_COMPACTION_RESERVE_TOKENS,
     DEFAULT_CONTEXT_WINDOW_TOKENS,
     SUMMARIZATION_SYSTEM_PROMPT,
     ContextUsageEstimate,
@@ -52,6 +54,7 @@ from run_agent_coding.events import (
     SessionInfoChangedEvent,
     ThinkingLevelSelectEvent,
 )
+from run_agent_coding.extensions.adoption import finish_committed_adoption
 from run_agent_coding.extensions.api import (
     ModelSelectEvent,
     ResourcesDiscoverResult,
@@ -177,6 +180,7 @@ from run_agent_core.session import (
     LeafEntry,
     MessageEntry,
     ModelChangeEntry,
+    RunCommitEntry,
     SessionInfoEntry,
     SessionState,
     ThinkingLevelChangeEntry,
@@ -228,28 +232,6 @@ async def _await_cleanup_completion[CleanupResult](
         except BaseException:  # cleanup outcome is inspected by its owner
             pass
         return cancelled
-
-
-async def _finish_adopted_runtime_close(runtime: ExtensionRuntime) -> str | None:
-    """Finish outgoing cleanup after publication without failing adoption."""
-    task = asyncio.create_task(
-        runtime.aclose(),
-        name="run-agent-adopted-extension-runtime-close",
-    )
-    await _await_cleanup_completion(task)
-    # Publication is already committed. Cleanup cancellation/failure must not
-    # masquerade as rollback while the task's outcome still gets retrieved.
-    try:
-        result = task.result()
-    except BaseException as exc:
-        return f"Previous extension cleanup failed: {type(exc).__name__}: {exc}"
-    if not result.drained:
-        return (
-            f"Previous extension cleanup is still pending: {result.contained_managed_tasks} "
-            f"managed tasks, {result.contained_discovery_tasks} provider callbacks, "
-            f"{result.contained_disposers} disposers; {'; '.join(result.cleanup_errors)}"
-        )
-    return None
 
 
 async def _finish_aborted_session_close(session: CodingSession) -> None:
@@ -383,6 +365,7 @@ class CodingSessionConfig:
     provider_transform: Callable[[ModelProvider, str], ModelProvider] | None = None
     auto_compact_token_threshold: int | None = None
     auto_compact_enabled: bool = True
+    compaction_strategy: ContextStrategy = "cheap-first"
     thinking_level: ThinkingLevel = DEFAULT_THINKING_LEVEL
     thinking_level_override: ThinkingLevel | None = None
     """One-shot startup override (e.g. ``--thinking``) for the session's level.
@@ -640,11 +623,40 @@ class CodingSession:
     async def _record_model_context(
         self, request: ModelRequest, *, purpose: str = "agent"
     ) -> ModelRequest | None:
-        """Commit the exact model input before handing it to a physical Provider."""
+        """Freeze the exact bounded Provider view before physical I/O."""
         bind_provider_http_hooks(self._extension_runtime)
         request = await self._extension_runtime.apply_before_provider_request(request)
-        await self._record_context_snapshot(request, purpose=purpose)
-        return request
+        pipeline = ContextViewPipeline(
+            cwd=self.cwd,
+            context_window_tokens=self.context_window_tokens,
+            reserve_tokens=DEFAULT_COMPACTION_RESERVE_TOKENS,
+            strategy=self._config.compaction_strategy,
+        )
+        prepared = pipeline.prepare(request, self.session_id)
+        pipeline.require_hard_limit(prepared)
+        report: dict[str, JSONValue] = {
+            "strategy": self._config.compaction_strategy,
+            "tokens_before": prepared.tokens_before,
+            "tokens_after": prepared.tokens_after,
+            "layers": list(prepared.layers),
+            "stable_prefix_digest": prepared.stable_prefix_digest,
+            "needs_l4": prepared.needs_l4,
+            "artifacts": [
+                {
+                    "sha256": item.digest,
+                    "path": item.relative_path,
+                    "chars": item.original_chars,
+                    "tool_call_id": item.tool_call_id,
+                }
+                for item in prepared.artifacts
+            ],
+        }
+        await self._record_context_snapshot(
+            prepared.request,
+            purpose=purpose,
+            generation_controls={"context_view": report},
+        )
+        return prepared.request
 
     async def _record_context_snapshot(
         self,
@@ -1643,8 +1655,7 @@ class CodingSession:
         manager = self._config.session_manager
         if manager is None:
             raise ValueError("Session manager is not available")
-        path = list(self._tree.path(entry_id))
-        path = [entry for entry in path if not isinstance(entry, LeafEntry)]
+        path = _entries_for_fork(tuple(self._entries.values()), self._tree.path(entry_id))
         if not any(isinstance(entry, SessionInfoEntry) for entry in path):
             path.insert(0, SessionInfoEntry(cwd=str(self.cwd)))
         record = await manager.fork_session(
@@ -2613,11 +2624,8 @@ class CodingSession:
                 )
             )
 
-        # Outgoing shutdown runs before publication. The staged runtime gains
-        # writable services only at the atomic binding commit below.
+        # The outgoing runtime remains fully active until successor publication.
         old_runtime = self._extension_runtime
-        await old_runtime.emit_session_shutdown("reload")
-        old_runtime.clear_ui_status()
         staged_runtime.set_ui_bridge(previous_ui)
         staged_runtime.bind(self)
         activation = await self._prepare_resource_activation(
@@ -2636,6 +2644,7 @@ class CodingSession:
         except BaseException:
             await settle(staged_runtime.aclose())
             raise
+        cleanup = await finish_committed_adoption(old_runtime, "reload")
 
         # Publication is synchronous: cancellation can no longer report failure
         # after only part of the live snapshot or trust cache was adopted.
@@ -2643,7 +2652,6 @@ class CodingSession:
         if coordinator is not None and trust_summary is not None:
             assert staged_resolution is not None
             coordinator.commit(trust_summary.cwd, staged_resolution)
-        old_runtime.retire()
         self._resource_paths = staged_paths
         self._config = replace(
             self._config,
@@ -2671,17 +2679,11 @@ class CodingSession:
         if system_prompt_rebuilt:
             self._invalidate_context_usage_cache()
         staged_runtime.attach_harness_listener(self._harness.subscribe)
-        # Retirement invalidates publication synchronously; async close then
-        # waits for cooperative provider callback cleanup or reports bounded
-        # containment while the outgoing runtime still owns every task handle.
-        # Caller cancellation at this committed seam is contained so reload
-        # cannot report failure after the fresh snapshot became active.
-        cleanup_notice = await _finish_adopted_runtime_close(old_runtime)
-        if cleanup_notice:
+        if cleanup.notice:
             self._resource_diagnostics += (
-                ResourceDiagnostic(kind="extension", message=cleanup_notice, severity="error"),
+                ResourceDiagnostic(kind="extension", message=cleanup.notice, severity="error"),
             )
-            previous_ui.notify(cleanup_notice, level="warning")
+            previous_ui.notify(cleanup.notice, level="warning")
 
         await settle(staged_runtime.emit_session_start("reload"))
         self._ingest_discovered_resources(
@@ -2933,7 +2935,7 @@ class CodingSession:
         self,
         replacement: CodingSession,
         *,
-        reason: Literal["new", "resume", "branch"],
+        reason: Literal["new", "resume"],
     ) -> None:
         """Adopt a replacement session's state and re-bind the extension runtime.
 
@@ -2956,10 +2958,6 @@ class CodingSession:
             # its shutdown path.
             await replacement._commit_prepared_entries()
 
-            # The replacement remains the explicit owner of its providers
-            # through every cancellable/erroring pre-publication seam.
-            await old_runtime.emit_session_shutdown(reason)
-            old_runtime.clear_ui_status()
             activation = await replacement._prepare_resource_activation(reason)
             _, receipt = await replacement._extension_runtime.publish_host_services(
                 expected_generation=(
@@ -2969,17 +2967,16 @@ class CodingSession:
                 ),
                 activation=activation,
             )
-            replacement._apply_resource_activation(activation, receipt)
-            replacement._refresh_runtime_inputs()
-            replacement._commit_project_trust_resolution()
-            replacement._session_start_pending = False
         except BaseException:
             await _finish_aborted_session_close(replacement)
             raise
 
-        # Every cancellable boundary has completed. Adopt synchronously so a
-        # reported cancellation cannot expose only part of the destination.
-        old_runtime.retire()
+        cleanup = await finish_committed_adoption(old_runtime, reason)
+        replacement._apply_resource_activation(activation, receipt)
+        replacement._refresh_runtime_inputs()
+        replacement._commit_project_trust_resolution()
+        replacement._session_start_pending = False
+        # Publication and outgoing cleanup are committed. Adopt synchronously.
         self._config = replacement._config
         self._state = replacement._state
         self._tree = replacement._tree
@@ -3045,15 +3042,11 @@ class CodingSession:
         self._session_start_pending = False
         self._extension_runtime.bind(self)
         self._extension_runtime.attach_harness_listener(self._harness.subscribe)
-        # Adoption is already committed. Finish outgoing cleanup under a
-        # shielded owner and contain cancellation rather than reporting that
-        # the requested destination failed to replace the source session.
-        cleanup_notice = await _finish_adopted_runtime_close(old_runtime)
-        if cleanup_notice:
+        if cleanup.notice:
             self._resource_diagnostics += (
-                ResourceDiagnostic(kind="extension", message=cleanup_notice, severity="error"),
+                ResourceDiagnostic(kind="extension", message=cleanup.notice, severity="error"),
             )
-            self._extension_runtime.ui.notify(cleanup_notice, level="warning")
+            self._extension_runtime.ui.notify(cleanup.notice, level="warning")
         await old_storage.aclose()
         await settle(self._extension_runtime.emit_session_start(reason))
         self._ingest_discovered_resources(
@@ -3158,6 +3151,10 @@ class CodingSession:
         error: BaseException | None = None
         try:
             if self._extension_runtime.active:
+                # Enter committed read-only shutdown first: the quit notice is an
+                # observation, so a handler must not register or mutate the host
+                # while the runtime it observes is already being torn down.
+                self._extension_runtime.begin_retiring()
                 await self._extension_runtime.emit_session_shutdown("quit")
         except BaseException as exc:
             error = exc
@@ -3638,6 +3635,8 @@ class CodingSession:
         self._completion_entries.clear()
         self._completion_expected_head = None
         self._last_completion = receipt
+        await self._reload_entry_cache()
+        self._last_parent_id = receipt.head_id
         await self._refresh_persisted_state(leaf_id=receipt.head_id)
         # Settled hooks receive idle authority. Tasks spawned during the run keep
         # their old ContextVar token, which the completion transaction retired.
@@ -4109,10 +4108,25 @@ class CodingSession:
         threshold = self.auto_compact_token_threshold
         if threshold is None or threshold <= 0:
             return False
-        if len(self._state.context_entry_ids) < 2:
-            return False
-        if self.context_token_estimate <= threshold:
-            return False
+        if self._config.compaction_strategy == "cheap-first":
+            request = ModelRequest(
+                self.model,
+                self._harness.config.system,
+                tuple(self._harness.messages),
+                tuple(self._harness.config.tools),
+                self.session_id,
+            )
+            preview = ContextViewPipeline(
+                cwd=self.cwd,
+                context_window_tokens=self.context_window_tokens,
+                reserve_tokens=DEFAULT_COMPACTION_RESERVE_TOKENS,
+                strategy="cheap-first",
+            ).prepare(request, self.session_id)
+            # L3/L1/L2 are free. Summarize when the free view still overflows, which is
+            # exactly `needs_l4` (window - reserve). A looser caller threshold must not
+            # mask that: this flag is then the only remaining signal to compact here.
+            if not preview.needs_l4 and preview.tokens_after <= threshold:
+                return False
         plan = self._recent_preserving_compaction_plan()
         if plan is None:
             return False
@@ -4347,6 +4361,23 @@ def is_context_overflow_error(message: AssistantMessage) -> bool:
         "exceeded the limit",
     )
     return any(marker in normalized for marker in markers)
+
+
+def _entries_for_fork(
+    entries: Sequence[SessionEntry], target_path: Sequence[SessionEntry]
+) -> list[SessionEntry]:
+    target_ids = {entry.id for entry in target_path}
+    return [
+        entry
+        for entry in entries
+        if not isinstance(entry, LeafEntry)
+        and (
+            entry.id in target_ids
+            or isinstance(entry, RunCommitEntry)
+            and entry.end_entry_id in target_ids
+            and (entry.start_entry_id is None or entry.start_entry_id in target_ids)
+        )
+    ]
 
 
 def _with_tip_leaf(entries: Sequence[SessionEntry]) -> tuple[SessionEntry, ...]:

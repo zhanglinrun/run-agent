@@ -1,0 +1,1 @@
+Make `keycodec.encode(parts)` collision-free and reversible for arbitrary string parts, including `|`, `:`, and empty strings. Keep `decode(encode(parts)) == parts`. A deterministic length-prefixed representation using character counts is sufficient. Reject malformed payloads with `ValueError`. Do not modify tests.

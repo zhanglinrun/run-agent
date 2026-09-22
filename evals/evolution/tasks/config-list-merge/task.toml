@@ -1,0 +1,10 @@
+[task]
+id = "config-list-merge"
+version = "1"
+kind = "bug-fix"
+budget_seconds = 90
+artifacts = ["config.py"]
+fail_to_pass = ["test_plugins_are_a_stable_union", "test_plugins_merge_when_runtime_is_missing", "test_duplicate_plugins_are_removed"]
+
+[grader]
+command = ["{python}", "-m", "pytest", "-q", "grader"]

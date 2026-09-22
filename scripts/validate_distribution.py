@@ -3,7 +3,6 @@
 import argparse
 import hashlib
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -24,8 +23,6 @@ from run_agent_coding.host.contracts import StateChange, HeadChange
 from run_agent_coding.storage.telemetry import JsonlTelemetrySink
 from run_agent_core.messages import AssistantMessage, TextContent
 from run_agent_core.provider_events import AssistantDoneEvent
-from run_agent_gateway import BasePlatformAdapter, FeishuConfig, GatewayConfig
-from run_agent_gateway import GatewayRunner, MessageEvent, SendResult, SessionSource
 scripts = {e.name:e.value for e in distribution('run-agent-harness').entry_points
            if e.group == 'console_scripts'}
 assert scripts == {'run':'run_agent_entry:main'}, scripts
@@ -50,40 +47,6 @@ async def check():
         async def stream_response(self, **kwargs):
             yield AssistantDoneEvent(reason='stop', message=AssistantMessage(
                 content=[TextContent(text='installed-wheel')], model='test', stop_reason='stop'))
-    class Adapter(BasePlatformAdapter):
-        name = 'installed'
-        def __init__(self):
-            super().__init__()
-            self.sent = []
-        async def connect(self):
-            return True
-        async def disconnect(self):
-            await self.cancel_background_tasks()
-        async def send(self, chat_id, content, *, reply_to=None, thread_id=None):
-            self.sent.append((chat_id, content, reply_to))
-            return SendResult(success=True, message_id=str(len(self.sent)))
-    gateway_paths = RunAgentPaths(home=pathlib.Path('gateway'), agents_home=pathlib.Path('agents'))
-    gateway_options = ApplicationOptions(cwd=pathlib.Path.cwd(), paths=gateway_paths,
-        model='test', provider_name='test', extensions_enabled=False)
-    config = GatewayConfig(feishu=FeishuConfig('app', 'secret', allowed_users=frozenset({'ou_1'})))
-    adapter = Adapter()
-    runner = GatewayRunner(config, gateway_options, adapter, provider_factory=lambda: Provider())
-    await runner.start()
-    try:
-        source = SessionSource('installed', 'chat', 'dm', user_id='ou_1', user_name='One')
-        await adapter.handle_message(MessageEvent('installed prompt', source, message_id='m1'))
-        await adapter.wait_idle()
-        assert adapter.sent == [('chat', 'installed-wheel', 'm1')], adapter.sent
-        first = runner.store.get('installed:dm:chat').session_id
-        await adapter.handle_message(MessageEvent('/new', source, message_id='m2'))
-        await adapter.wait_idle()
-        assert runner.store.get('installed:dm:chat').session_id != first
-        await adapter.handle_message(MessageEvent('again', source, message_id='m3'))
-        await adapter.wait_idle()
-        assert adapter.sent[-1][1] == 'installed-wheel'
-        assert (gateway_paths.home / 'gateway' / 'sessions.jsonl').is_file()
-    finally:
-        await runner.stop()
     paths = RunAgentPaths(home=pathlib.Path('application'), agents_home=pathlib.Path('agents'))
     skill_root = paths.home / 'skills' / 'installed'
     skill_root.mkdir(parents=True)
@@ -159,8 +122,7 @@ print(json.dumps({'entry_module':run_agent_entry.__file__, 'python_prefix':sys.p
                   'jsonl_telemetry':True, 'no_sqlite_output':True,
                   'host_services_and_reload':True, 'context_snapshot':True,
                   'skill_package_and_resume':True, 'extension_disposer':True,
-                  'extension_resource_capture_reload_resume':True,
-                  'gateway_runner_session_store_and_reply':True}))
+                  'extension_resource_capture_reload_resume':True}))
 """
 
 
@@ -193,7 +155,6 @@ def main() -> None:
         for argv in [
             ["--version"],
             ["--help"],
-            ["gateway", "--help"],
             ["bench", "--help"],
         ]:
             result = subprocess.run(
@@ -213,21 +174,8 @@ def main() -> None:
                     "stderr": result.stderr,
                 }
             )
-        for obsolete in ["run-agent", "run-agent-gateway", "run-agent-bench"]:
+        for obsolete in ["run-agent", "run-agent-bench"]:
             assert not launcher.with_name(obsolete + launcher.suffix).exists()
-        missing = subprocess.run(
-            [str(launcher), "gateway", "--cwd", directory],
-            cwd=directory,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=30,
-            env={k: v for k, v in os.environ.items() if not k.startswith("FEISHU_")},
-        )
-        assert (
-            missing.returncode != 0 and "FEISHU_APP_ID" in Text.from_ansi(missing.stderr).plain
-        ), missing.stderr
-        report["gateway_requires_feishu_credentials"] = True
         refreshed = subprocess.run(
             [str(launcher), "--refresh-resources", "--print", "unused"],
             cwd=directory,

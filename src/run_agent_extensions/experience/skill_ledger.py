@@ -1,8 +1,7 @@
 """An append-only audit ledger of every skill mutation, with single-edit rollback.
 
-Every change to a skill directory, whoever made it, appends one JSONL entry to
-``<skills-dir>/.ledger.jsonl`` naming the actor (``agent``, ``review``, ``curator`` or
-``user``), the action, and before/after file manifests. File contents are stored
+Every formal Skill change appends one JSONL entry to ``<skills-dir>/.ledger.jsonl``
+naming the actor and before/after file manifests. File contents are stored
 content-addressed under ``<skills-dir>/.blobs/<sha256>``, so identical content across
 entries is stored once and a mutation that touches one file costs one small blob.
 
@@ -29,7 +28,9 @@ logger = logging.getLogger(__name__)
 
 LEDGER_FILE = ".ledger.jsonl"
 BLOBS_DIR = ".blobs"
-VALID_ACTORS = frozenset({"agent", "review", "curator", "user"})
+# Actors a *new* entry may claim. Reading an existing ledger never consults this set, so
+# historical entries written by a retired control loop keep loading and displaying.
+VALID_ACTORS = frozenset({"agent", "user", "evolution"})
 
 
 @dataclass(frozen=True, slots=True)

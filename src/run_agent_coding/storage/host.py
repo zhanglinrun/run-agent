@@ -33,7 +33,8 @@ from run_agent_coding.jsonl_storage import SessionWriter
 from run_agent_coding.storage.canonical import canonical_json
 from run_agent_coding.storage.tasks import BoundTaskService, LocalTaskManager
 from run_agent_core.session.contracts import SessionConflict
-from run_agent_core.session.entries import CustomEntry, LeafEntry, SessionEntry
+from run_agent_core.session.entries import CustomEntry, LeafEntry, RunCommitEntry, SessionEntry
+from run_agent_core.session.tree import SessionTreeError, path_to_entry
 from run_agent_core.types import JSONValue
 
 # Process-local backing stores, isolated by application home so two SessionManagers
@@ -55,11 +56,13 @@ class MemoryHostServices:
         *,
         isolation_key: str = "",
         principal_id: str = "local",
+        evaluation: EvaluationService | None = None,
     ) -> None:
         self.owner_id = owner_id
         self.isolation_key = isolation_key or owner_id
         self.principal_id = principal_id
         self.tasks = LocalTaskManager()
+        self.evaluation: EvaluationService = evaluation or UnavailableEvaluation()
         self.maintenance = MaintenanceRegistry()
         self.fault: Callable[[str], None] | None = None
         self._writers: dict[str, SessionWriter] = {}
@@ -140,6 +143,7 @@ class MemoryHostServices:
                 self._scope_bundle(session_id, source, assert_active),
                 writer,
                 inference=inference,
+                evaluation=self.evaluation,
                 maintenance=self.maintenance,
             )
             for source in sources
@@ -246,9 +250,35 @@ class WriterHistory:
         raise KeyError("Entry is missing or belongs to another session")
 
     async def read_completed_run(self, run_id: str) -> Sequence[SessionEntry]:
-        del run_id
         self._assert_active()
-        return tuple(await self._entries())
+        entries = await self._entries()
+        commits = [
+            entry
+            for entry in entries
+            if isinstance(entry, RunCommitEntry) and entry.run_id == run_id
+        ]
+        if not commits:
+            raise KeyError(f"Unknown or incomplete run: {run_id}")
+        if len(commits) > 1:
+            raise KeyError(f"Ambiguous completed run: {run_id}")
+        commit = commits[0]
+        if commit.end_entry_id is None:
+            if commit.start_entry_id is None:
+                return ()
+            raise KeyError(f"Run has invalid durable boundaries: {run_id}")
+        try:
+            path = path_to_entry(entries, commit.end_entry_id)
+        except SessionTreeError as exc:
+            raise KeyError(f"Run has invalid durable boundaries: {run_id}") from exc
+        if commit.start_entry_id is None:
+            return tuple(path)
+        try:
+            start_index = next(
+                index for index, entry in enumerate(path) if entry.id == commit.start_entry_id
+            )
+        except StopIteration as exc:
+            raise KeyError(f"Run has invalid durable boundaries: {run_id}") from exc
+        return tuple(path[start_index + 1 :])
 
 
 class WriterSnapshots:

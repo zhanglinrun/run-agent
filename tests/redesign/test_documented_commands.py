@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[2]
-OBSOLETE = ("run-agent", "run-agent-gateway", "run-agent-bench")
+OBSOLETE = ("run-agent", "run-agent-bench")
 TEXT_SUFFIXES = {".md", ".py", ".toml", ".ps1", ".sh", ".yml", ".yaml", ".txt", ".cfg", ".ini"}
 SKIP_DIRS = {".git", ".venv", ".run", "__pycache__"}
 

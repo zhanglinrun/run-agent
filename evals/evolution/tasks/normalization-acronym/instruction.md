@@ -1,0 +1,1 @@
+Fix `names.to_snake()` so CamelCase names with acronym runs split at the word boundary: `HTTPServerURL` becomes `http_server_url` and `parseXMLDocument` becomes `parse_xml_document`. Spaces and hyphens still normalize to underscores. Do not modify tests.

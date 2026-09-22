@@ -1,4 +1,4 @@
-"""Where the Markdown memory and the managed Skills live for one session."""
+"""Resolved memory, formal Skills and isolated candidate storage for one session."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from pathlib import Path
 
 from run_agent_coding.paths import RunAgentPaths
 
+from .candidates import SkillCandidateStore
 from .config import ExperienceConfig
 from .memory import MemoryScope, MemoryStore, MemoryTarget, format_memory_context
 from .skill_manager import SkillManager, SkillRoots
@@ -14,20 +15,10 @@ from .skill_manager import SkillManager, SkillRoots
 
 @dataclass(frozen=True, slots=True)
 class ExperienceStores:
-    """Both memory scopes and the skill manager, resolved from the host paths.
-
-    User-scope files sit next to the other user resources under the Run Agent home
-    (``~/.run/USER.md``, ``~/.run/MEMORY.md``, ``~/.run/skills/``); project-scope files
-    sit under the project's ``.run`` directory, which is where the skill loader already
-    looks for project skills.
-    """
-
     memory: dict[MemoryScope, MemoryStore]
     skills: SkillManager
+    candidates: SkillCandidateStore
     config: ExperienceConfig
-    # Project-local files share the project trust gate with every other project input:
-    # an untrusted working directory contributes nothing to the prompt and accepts no
-    # writes, so a checkout cannot plant memory the agent then treats as its own.
     project_enabled: bool = True
 
     @classmethod
@@ -38,6 +29,7 @@ class ExperienceStores:
         *,
         config: ExperienceConfig | None = None,
         project_enabled: bool = True,
+        session_id: str | None = None,
     ) -> ExperienceStores:
         chosen = config or ExperienceConfig()
         limits: dict[MemoryTarget, int] = {
@@ -53,7 +45,10 @@ class ExperienceStores:
                 SkillRoots(user=paths.user_skills_dir, project=paths.project_skills_dir(cwd)),
                 guard=chosen.skill_guard,
                 ledger=chosen.skill_ledger,
+                session_id=session_id,
             ),
+            # Deliberately outside every Skill discovery root.
+            candidates=SkillCandidateStore(paths.home / "experience" / "candidates"),
             config=chosen,
             project_enabled=project_enabled,
         )
@@ -72,7 +67,9 @@ class ExperienceStores:
             if scope == "project" and not self.project_enabled:
                 continue
             blocks = store.snapshot()
-            result[scope] = {t: text for t, text in blocks.items() if self.target_enabled(t)}
+            result[scope] = {
+                target: text for target, text in blocks.items() if self.target_enabled(target)
+            }
         return result
 
     def prompt_block(self) -> str | None:
@@ -83,7 +80,6 @@ class ExperienceStores:
             store.reset_turn()
 
     def scope_for(self, target: MemoryTarget, scope: MemoryScope | None) -> MemoryScope:
-        """USER.md defaults to the user scope, MEMORY.md to the project."""
         chosen = scope if scope is not None else ("user" if target == "user" else "project")
         self.require_scope(chosen)
         return chosen

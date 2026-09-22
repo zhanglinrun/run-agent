@@ -1,11 +1,11 @@
-"""The Coding CLI must resolve its model from ``MODEL``, like the other two hosts.
+"""The Coding CLI must resolve its model from ``MODEL``, like the evaluation host.
 
 Found by running the shipped CLI against a real endpoint: ``.env`` carried
 ``MODEL=gpt-5.6-luna``, the run used ``gpt-5.4``, and the provider answered 503
 ``model_not_found``. The error names the model that was used and says nothing about the
 one that was asked for, so the cause is invisible from the failure.
 
-``run bench`` and ``run gateway`` already read the variable. The Coding host passed its
+``run bench`` already reads the variable. The Coding host passed its
 ``--model`` default of ``None`` straight through to the provider config, which then fell
 back to ``DEFAULT_MODEL``.
 

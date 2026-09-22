@@ -1,0 +1,1 @@
+Fix `shortname.shorten()` so long normalized names cannot collide when they share a prefix. For names longer than `max_length`, append `-` plus the first eight lowercase hex digits of SHA-256 over the full normalized name, while keeping the result within the limit. Reject `max_length < 10` with `ValueError`; short names remain unchanged. Do not modify tests.

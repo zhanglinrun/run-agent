@@ -1,0 +1,1 @@
+Implement precedence and type conversion in `cli_config.resolve(cli, env, file_values)`: defaults < file < `APP_PORT`/`APP_DEBUG` environment values < CLI. CLI supports `--port N`, `--debug`, and `--no-debug`. Parse environment booleans from `1/true/yes/on` and `0/false/no/off` (case-insensitive), raising `ValueError` otherwise. Do not modify tests.

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "run-agent-harness"
 version = "0.5.0"
-description = "An extensible local agent harness with interactive coding, persistent sessions, a Feishu gateway, and evaluation."
+description = "An extensible local agent harness with interactive coding, persistent sessions, and evaluation."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -24,9 +24,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-feishu = [
-    "lark-oapi>=1.7.3,<2",
-]
 dev = [
     "build>=1.2",
     "mypy>=1.10",
@@ -39,7 +36,7 @@ dev = [
 run = "run_agent_entry:main"
 
 [tool.hatch.build.targets.wheel]
-only-include = ["src/run_agent_entry.py", "src/run_agent_ai", "src/run_agent_core", "src/run_agent_coding", "src/run_agent_gateway", "src/run_agent_observability", "src/run_agent_evals", "src/run_agent_extensions"]
+only-include = ["src/run_agent_entry.py", "src/run_agent_ai", "src/run_agent_core", "src/run_agent_coding", "src/run_agent_observability", "src/run_agent_evals", "src/run_agent_extensions"]
 sources = ["src"]
 
 [tool.ruff]
@@ -67,7 +64,7 @@ indent-style = "space"
 [tool.mypy]
 python_version = "3.12"
 strict = true
-packages = ["run_agent_ai", "run_agent_core", "run_agent_coding", "run_agent_gateway", "run_agent_observability", "run_agent_evals", "run_agent_extensions"]
+packages = ["run_agent_ai", "run_agent_core", "run_agent_coding", "run_agent_observability", "run_agent_evals", "run_agent_extensions"]
 
 [[tool.mypy.overrides]]
 module = "pygments.*"
@@ -75,10 +72,6 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = "mcp.*"
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = "lark_oapi.*"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

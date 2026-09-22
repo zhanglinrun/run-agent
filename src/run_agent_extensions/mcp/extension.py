@@ -1,4 +1,4 @@
-"""MCP extension aligned with my-pi-agent: ``cwd/.mcp.json`` + per-tool registration."""
+"""MCP extension: ``cwd/.mcp.json`` plus per-tool registration."""
 
 from __future__ import annotations
 
@@ -9,14 +9,13 @@ from run_agent_coding.extensions import (
     ExtensionCommandContext,
     ExtensionContext,
     ExtensionHandler,
-    SessionShutdownEvent,
 )
 
 from .client import MCPClientManager
 
 
 def setup(api: ExtensionAPI) -> None:
-    """On ``session_start``, load ``.mcp.json``, connect stdio servers, register remote tools."""
+    """Load MCP servers at session start and release them through one disposer."""
     manager = MCPClientManager()
     registered_tools: list[str] = []
     started = False
@@ -52,10 +51,6 @@ def setup(api: ExtensionAPI) -> None:
                         level="warning",
                     )
 
-    async def on_shutdown(event: SessionShutdownEvent, context: ExtensionContext) -> None:
-        del event, context
-        await manager.close_all()
-
     async def dispose() -> None:
         await manager.close_all()
 
@@ -72,7 +67,6 @@ def setup(api: ExtensionAPI) -> None:
 
     api.register_disposer(dispose)
     api.on("session_start", cast(ExtensionHandler, on_start))
-    api.on("session_shutdown", cast(ExtensionHandler, on_shutdown))
     api.register_command(
         "mcp",
         mcp_status,

@@ -142,20 +142,18 @@ _STALE_MESSAGE = (
 class ExtensionGeneration:
     """Liveness token for one extension load generation.
 
-    Ports Pi's ``assertActive``/``invalidate`` staleness guard: every
-    :class:`ExtensionAPI` method and every :class:`ExtensionContext`/
-    :class:`ExtensionUi` read checks this token before touching the runtime,
-    so state captured before a `/reload` fails loudly instead of silently
-    acting against the new registration set. Replacement and close invalidate
-    captured contexts. Per-source guards share the runtime identity and can
-    reject failed setup without invalidating unrelated extensions.
+    ``retiring`` is a committed, read-only notification phase: captured contexts
+    may still inspect immutable session metadata, while every API, UI, task, and
+    host-service mutation is rejected. ``retired`` rejects both reads and writes.
+    Child generations inherit the strictest state from their parent.
     """
 
-    __slots__ = ("_id", "_parent", "_stale_message")
+    __slots__ = ("_id", "_parent", "_state", "_stale_message")
 
     def __init__(self, *, parent: ExtensionGeneration | None = None) -> None:
         self._parent = parent
         self._id = parent.id if parent is not None else uuid4().hex
+        self._state: Literal["active", "retiring", "retired"] = "active"
         self._stale_message: str | None = None
 
     @property
@@ -164,21 +162,40 @@ class ExtensionGeneration:
         return self._id
 
     @property
+    def state(self) -> Literal["active", "retiring", "retired"]:
+        if self._parent is not None and self._parent.state != "active":
+            return self._parent.state
+        return self._state
+
+    @property
     def active(self) -> bool:
-        """Return whether this generation is still the live one."""
-        return self._stale_message is None and (self._parent is None or self._parent.active)
+        """Return whether this generation can still mutate runtime state."""
+        return self.state == "active"
+
+    def begin_retiring(self) -> None:
+        """Enter the committed read-only shutdown phase."""
+        if self._state == "active":
+            self._state = "retiring"
 
     def invalidate(self, message: str | None = None) -> None:
-        """Mark this generation stale; the first message wins (Pi parity)."""
+        """Retire this generation; the first diagnostic message wins."""
+        self._state = "retired"
         if self._stale_message is None:
             self._stale_message = message or _STALE_MESSAGE
 
+    def assert_readable(self) -> None:
+        """Allow immutable reads during shutdown, but never after retirement."""
+        if self._parent is not None:
+            self._parent.assert_readable()
+        if self._state == "retired":
+            raise ExtensionError(self._stale_message or _STALE_MESSAGE)
+
     def assert_active(self) -> None:
-        """Raise :class:`ExtensionError` when this generation is stale."""
+        """Raise unless this generation still owns mutation authority."""
         if self._parent is not None:
             self._parent.assert_active()
-        if self._stale_message is not None:
-            raise ExtensionError(self._stale_message)
+        if self._state != "active":
+            raise ExtensionError(self._stale_message or _STALE_MESSAGE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -758,12 +775,11 @@ class ExtensionUi:
 
 
 class ExtensionContext:
-    """Read-only session context exposed to extensions.
+    """Session context exposed to extensions.
 
-    Every property (trivial reads included, matching Pi's context getters)
-    asserts the owning load generation is still active, so a context captured
-    before a `/reload` raises :class:`ExtensionError` instead of reading the
-    reloaded world.
+    Immutable metadata remains readable while a committed runtime is retiring.
+    Telemetry, host services, and UI operations always require active mutation
+    authority. Once retired, every captured context fails loudly.
     """
 
     def __init__(
@@ -780,30 +796,25 @@ class ExtensionContext:
 
     @property
     def is_active(self) -> bool:
-        """Return whether this captured context generation is still live."""
         return self._generation.active
 
     @property
     def generation_id(self) -> str:
-        """Return the stable id of this context generation."""
-        self._generation.assert_active()
+        self._generation.assert_readable()
         return self._generation.id
 
     @property
     def cwd(self) -> Path:
-        """Return the session working directory."""
-        self._generation.assert_active()
+        self._generation.assert_readable()
         return self._runtime.session_view.cwd
 
     @property
     def project_resources_enabled(self) -> bool:
-        """Whether project-local inputs are trusted; extension project files share the gate."""
-        self._generation.assert_active()
+        self._generation.assert_readable()
         return self._runtime.session_view.project_resources_enabled
 
     @property
     def telemetry(self) -> TelemetrySink:
-        """The host's observation sink; extensions do not open database connections."""
         self._generation.assert_active()
         session = self._runtime.session_view
         prefix = sha256(f"{session.session_id}\0{self._source_id}".encode()).hexdigest() + ":"
@@ -816,50 +827,42 @@ class ExtensionContext:
 
     @property
     def paths(self) -> RunAgentPaths:
-        """Return canonical host storage paths for extension-owned artifacts."""
-        self._generation.assert_active()
+        self._generation.assert_readable()
         return self._runtime.paths
 
     @property
     def environment(self) -> Mapping[str, str]:
-        """Return the immutable environment snapshot captured for this runtime."""
-        self._generation.assert_active()
+        self._generation.assert_readable()
         return self._runtime.environment
 
     @property
     def model(self) -> str:
-        """Return the active model name."""
-        self._generation.assert_active()
+        self._generation.assert_readable()
         return self._runtime.session_view.model
 
     @property
     def provider_name(self) -> str:
-        """Return the active provider name."""
-        self._generation.assert_active()
+        self._generation.assert_readable()
         return self._runtime.session_view.provider_name
 
     @property
     def session_id(self) -> str | None:
-        """Return the current session id, if the session is indexed."""
-        self._generation.assert_active()
+        self._generation.assert_readable()
         return self._runtime.session_view.session_id
 
     @property
     def current_snapshot_id(self) -> str | None:
-        """Latest actual model input, recorded before its tools can run."""
-        self._generation.assert_active()
+        self._generation.assert_readable()
         return self._runtime.session_view.current_snapshot_id
 
     @property
     def skills(self) -> tuple[Skill, ...]:
-        """Selected, frozen Skill metadata, including its original source path."""
-        self._generation.assert_active()
+        self._generation.assert_readable()
         return tuple(getattr(self._runtime.session_view, "skills", ()))
 
     @property
     def resource_snapshot(self) -> ExtensionResourceSnapshot:
-        """Read fixed contributions belonging to this extension source only."""
-        self._generation.assert_active()
+        self._generation.assert_readable()
         snapshot = self._runtime.context_resources.snapshot
         if snapshot is None:
             raise ExtensionError("Resources are available after Session resource preparation")
@@ -876,57 +879,37 @@ class ExtensionContext:
 
     @property
     def session_name(self) -> str | None:
-        """Return the session's human-friendly name, if it has one."""
-        self._generation.assert_active()
+        self._generation.assert_readable()
         return self._runtime.session_view.session_name
 
     @property
     def thinking_level(self) -> str:
-        """Return the active thinking mode for future turns."""
-        self._generation.assert_active()
+        self._generation.assert_readable()
         return self._runtime.session_view.thinking_level
 
     @property
     def system_prompt(self) -> str:
-        """Return the active system prompt."""
-        self._generation.assert_active()
+        self._generation.assert_readable()
         return self._runtime.session_view.system_prompt
 
     @property
     def is_running(self) -> bool:
-        """Return whether an agent run is currently active."""
-        self._generation.assert_active()
+        self._generation.assert_readable()
         return self._runtime.session_view.is_running
 
     @property
     def transcript(self) -> tuple[AgentMessage, ...]:
-        """Return the active-path parent conversation as read-only copies.
-
-        Mirrors the read access Pi extensions get via
-        ``ctx.sessionManager.getBranch()``: the user/assistant/tool messages on
-        the current branch, with compaction and branch summaries already folded
-        in as ``UserMessage`` entries (Run Agent has no separate summary message
-        type). Each message is deep-copied so an extension mutating a returned
-        object cannot corrupt the live session transcript.
-        """
-        self._generation.assert_active()
+        self._generation.assert_readable()
         messages = self._runtime.session_view.messages
         return tuple(message.model_copy(deep=True) for message in messages)
 
     @property
     def has_ui(self) -> bool:
-        """Return whether an interactive UI is attached."""
-        self._generation.assert_active()
+        self._generation.assert_readable()
         return self._runtime.ui.has_ui
 
     @property
     def ui(self) -> ExtensionUi:
-        """Return the interactive UI facade (Pi's `ctx.ui`).
-
-        Use `await context.ui.select/confirm/input(...)` to drive dialogs.
-        Because command handlers are sync (see the docs), a `/command` that
-        needs a dialog should spawn a loop task that awaits `context.ui`.
-        """
         self._generation.assert_active()
         return self._ui
 

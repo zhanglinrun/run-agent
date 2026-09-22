@@ -23,16 +23,21 @@ A higher-precedence skill with the same name overrides the lower one. Run Agent 
 
 Project Skills require project trust. Loaded Skill packages are frozen in the session's
 resource snapshot; edits become available after `/reload` or a new session. The default
-experience extension exposes `skill_manage` for creation and maintenance, plus `/curator`
-for pinning, adoption, recoverable restore and ledger rollback. Autonomous review cannot
-modify pinned or user-owned Skills. Ownership checks always apply; optional content
-scanning requires `EXPERIENCE_SKILL_GUARD=true`.
+experience extension exposes `skill_manage` only for `list`, `view`, and `propose`.
 
-Explicit `/skill:<name>` invocation and successful `read` calls on the selected `SKILL.md`
-record consultations. Uses are deduplicated per Skill per user run; shell reads and arbitrary
-custom readers are not inferred as usage. Review may save reusable procedures after an
-eligible completed task, but neither review admission nor a saved Skill proves future
-task improvement.
+`propose` writes an immutable candidate outside every Skill loader root. A candidate remains
+`cold` when the host has no `EvaluationService`; it becomes publishable only after a passed
+report binds the exact candidate digest. Existing Skills are user-owned unless their
+frontmatter says `created_by: evolution` or the user explicitly runs `/evolve adopt <name>`.
+Pinned Skills, changed base digests, changed project probes, and mismatched evaluation reports
+are refused.
+
+Use `/evolve status|candidates|show|adopt|publish|reject|ledger|rollback` to inspect and control
+the formal lifecycle. Publication revalidates the candidate, report, base, ownership and
+trusted-project probe digests under the Skill root lock, then atomically replaces one
+`SKILL.md` and appends report/run/probe provenance to the ledger. Candidate evolution changes
+exactly one formal `SKILL.md`; support files remain unchanged. Old usage, archive and ledger
+data remain readable for migration and rollback.
 
 A skill with `disable-model-invocation: true` in its `SKILL.md` frontmatter is excluded from the system prompt entirely, so the model cannot invoke it on its own. The skill stays loaded and remains available through explicit `/skill:<name>` invocation and the `/skills` picker.
 

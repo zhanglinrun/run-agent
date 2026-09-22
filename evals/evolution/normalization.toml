@@ -1,0 +1,66 @@
+schema = "run-agent.evolution-suite"
+version = "1"
+family = "normalization"
+
+[[tasks]]
+id = "normalization-slug"
+family = "normalization"
+split = "train"
+topic = "slug"
+path = "tasks/normalization-slug"
+
+[[tasks]]
+id = "normalization-unicode"
+family = "normalization"
+split = "train"
+topic = "unicode"
+path = "tasks/normalization-unicode"
+
+[[tasks]]
+id = "normalization-whitespace"
+family = "normalization"
+split = "train"
+topic = "whitespace"
+path = "tasks/normalization-whitespace"
+
+[[tasks]]
+id = "normalization-delimiter-collision"
+family = "normalization"
+split = "selection"
+topic = "delimiter-collision"
+path = "tasks/normalization-delimiter-collision"
+
+[[tasks]]
+id = "normalization-acronym"
+family = "normalization"
+split = "selection"
+topic = "acronym"
+path = "tasks/normalization-acronym"
+
+[[tasks]]
+id = "normalization-reserved-words"
+family = "normalization"
+split = "selection"
+topic = "reserved-words"
+path = "tasks/normalization-reserved-words"
+
+[[tasks]]
+id = "normalization-path-segment"
+family = "normalization"
+split = "test"
+topic = "path-segment"
+path = "tasks/normalization-path-segment"
+
+[[tasks]]
+id = "normalization-max-length-collision"
+family = "normalization"
+split = "test"
+topic = "max-length-collision"
+path = "tasks/normalization-max-length-collision"
+
+[[tasks]]
+id = "normalization-idempotence"
+family = "normalization"
+split = "test"
+topic = "idempotence"
+path = "tasks/normalization-idempotence"

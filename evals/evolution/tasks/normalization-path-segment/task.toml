@@ -1,0 +1,10 @@
+[task]
+id = "normalization-path-segment"
+version = "1"
+kind = "bug-fix"
+budget_seconds = 90
+artifacts = ["pathnorm.py"]
+fail_to_pass = ["test_parent_segment_is_neutralized", "test_backslash_is_not_a_separator", "test_windows_device_name_is_prefixed", "test_trailing_dots_and_spaces_are_removed"]
+
+[grader]
+command = ["{python}", "-m", "pytest", "-q", "grader"]

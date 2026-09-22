@@ -1,0 +1,1 @@
+Harden `pathnorm.normalize_segment()` for one portable path segment. Replace path separators and Windows-invalid/control characters with `_`, trim trailing/leading spaces and dots, map empty/`.`/`..` to `_`, and prefix Windows device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`, case-insensitive) with `_`. Do not modify tests.

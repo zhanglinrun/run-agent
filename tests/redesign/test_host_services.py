@@ -137,6 +137,48 @@ async def test_failed_host_publication_keeps_live_runtime_and_namespace(
         assert (await app.command("/remember")).message == "still live"
 
 
+async def test_failed_publish_does_not_shutdown_or_dispose_live_runtime(tmp_path, monkeypatch):
+    shutdown_marker = tmp_path / "shutdown.txt"
+    dispose_marker = tmp_path / "dispose.txt"
+    source = tmp_path / "lifecycle.py"
+    source.write_text(
+        f"""from pathlib import Path
+
+def setup(api):
+    generation = api.context.generation_id
+
+    async def ping(args, context):
+        return "live"
+
+    async def shutdown(event, context):
+        Path({str(shutdown_marker)!r}).write_text(event.reason, encoding="utf-8")
+
+    async def dispose():
+        Path({str(dispose_marker)!r}).write_text(generation, encoding="utf-8")
+
+    api.register_command("ping", ping)
+    api.on("session_shutdown", shutdown)
+    api.register_disposer(dispose)
+""",
+        encoding="utf-8",
+    )
+    opts = replace(options(tmp_path), extension_paths=(source,))
+    async with await CodingApplication.open(opts, provider=ReplyProvider()) as app:
+        await app.start()
+        old_generation = app.session.extension_runtime._generation.id
+
+        async def fail(*args, **kwargs):
+            raise OSError("publish failed")
+
+        monkeypatch.setattr(app.session.host_services, "publish", fail)
+        with pytest.raises(OSError, match="publish failed"):
+            await app.command("/reload")
+
+        assert not shutdown_marker.exists()
+        assert dispose_marker.read_text(encoding="utf-8") != old_generation
+        assert (await app.command("/ping")).message == "live"
+
+
 async def test_cancel_at_binding_commit_finishes_one_consistent_reload(
     tmp_path, extension, monkeypatch
 ):

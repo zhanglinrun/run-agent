@@ -1,8 +1,4 @@
-"""The ``memory`` and ``skill_manage`` tools, and the result shapes they answer with.
-
-Both tools are thin: argument validation, the write gate, one call into the store, and
-a result the model can act on. Everything that makes a write safe lives in the stores.
-"""
+"""Foreground memory updates and read/propose-only Skill management."""
 
 from __future__ import annotations
 
@@ -12,7 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from run_agent_coding.extensions import ExtensionAPI
-from run_agent_coding.host.learning import LearnerOwnedAsset, LearningWritebackDisabled
+from run_agent_coding.host.learning import LearningWritebackDisabled
 from run_agent_core.messages import TextContent
 from run_agent_core.tools import (
     AgentTool,
@@ -22,15 +18,19 @@ from run_agent_core.tools import (
 )
 from run_agent_core.types import JSONValue
 
+from .candidates import CandidateError, CandidateOperation
 from .config import ExperienceConfig
+from .evolution import SkillEvolution
 from .memory import MemoryScope, MemoryTarget, MemoryWrite
 from .mutation import MutationRejected, require_mutation
-from .skill_manager import SkillAction, SkillWriteError, SkillWriteResult
+from .skill_manager import SkillAction, SkillWriteError
 from .stores import ExperienceStores
 from .write_approval import approve_write
 
 StoresGetter = Callable[[], ExperienceStores]
 ConfigGetter = Callable[[], ExperienceConfig]
+EvolutionGetter = Callable[[], SkillEvolution]
+SourceRunGetter = Callable[[], str]
 
 
 class MemoryOperation(BaseModel):
@@ -54,43 +54,45 @@ class MemoryCall(BaseModel):
     scope: MemoryScope | None = None
 
 
+class SkillOperationCall(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["add", "delete", "replace"]
+    old_text: str = ""
+    new_text: str = ""
+
+
+class SkillClaimCall(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str
+    probe_paths: list[str] = Field(min_length=1)
+
+
 class SkillCall(BaseModel):
     model_config = ConfigDict(extra="forbid")
     action: SkillAction
     name: str = Field(default="", max_length=64)
     scope: MemoryScope = "project"
-    description: str = ""
-    body: str = ""
     file_path: str = "SKILL.md"
-    old_text: str = ""
-    new_text: str | None = None
-    replace_all: bool = False
-    content: str = ""
-    absorbed_into: str = ""
+    operations: list[SkillOperationCall] = Field(default_factory=list, max_length=8)
+    claims: list[SkillClaimCall] = Field(default_factory=list)
+    candidate_content: str | None = None
 
 
 MEMORY_TOOL_DESCRIPTION = (
     "Manage long-term memory across sessions. Target 'user' for who the user is "
     "and how they want you to work (USER.md, user scope by default); 'memory' for "
-    "durable facts about this project and its environment (MEMORY.md, project "
-    "scope by default). Actions: add (content), replace (old_text, new_content), "
-    "remove (old_text), or batch (operations: a list of those) applied "
-    "all-or-nothing against the final budget. old_text is a short unique "
-    "substring of the entry. Keep entries short; when near the limit, consolidate "
-    "with replace or remove in the same batch instead of retrying. new_text is an "
-    "alias for content, including in batch operations. A success "
-    "response is final: do not repeat the write."
+    "durable facts about this project and its environment (MEMORY.md, project scope "
+    "by default). Actions: add, replace, remove, or an all-or-nothing batch."
 )
 
 SKILL_TOOL_DESCRIPTION = (
-    "Create, list, view, edit, patch or delete a Skill (a SKILL.md directory "
-    "under the project or user skills directory). Skills are procedural memory: "
-    "how to do a class of task. Name them at the class level; the description "
-    "is one sentence under 60 characters. Support files go under references/, "
-    "templates/, scripts/ or assets/ via write_file. Every write is scanned and "
-    "recorded in an audit ledger. A new or changed Skill loads on the next "
-    "session or /reload. Patch requires old_text and new_text (empty deletes the match); "
-    "use a unique match, or explicitly set replace_all=true for every occurrence."
+    "Inspect published Skills or propose one immutable candidate. Actions: list; view "
+    "with name/scope/file_path; propose with name, scope, at most 8 ordered add/delete/replace "
+    "operations, optional candidate_content, and optional project "
+    "claims backed by relative probe_paths. Total changed text is limited to 2000 "
+    "characters. Propose never edits a published Skill. Existing Skills must already be "
+    "evolution-owned and unpinned; otherwise the user must run /evolve adopt. A candidate "
+    "stays cold when no host EvaluationService is available."
 )
 
 
@@ -100,7 +102,6 @@ async def run_memory_tool(
     *,
     approval_granted: bool = False,
 ) -> AgentToolResult:
-    """Execute one ``memory`` call against the stores; shared by the tool and the review."""
     call = MemoryCall.model_validate(arguments)
     if not stores.target_enabled(call.target):
         return refused(f"{call.target} memory is disabled in this profile")
@@ -116,7 +117,9 @@ async def run_memory_tool(
     content = call.content or call.new_content or call.new_text
     try:
         if call.operations or call.action == "batch":
-            result = memory_file.apply_batch([op.model_dump() for op in call.operations])
+            result = memory_file.apply_batch(
+                [operation.model_dump() for operation in call.operations]
+            )
         elif call.action == "add":
             result = memory_file.add(content)
         elif call.action == "replace":
@@ -134,80 +137,91 @@ async def run_skill_tool(
     stores: ExperienceStores,
     arguments: Mapping[str, JSONValue],
     *,
+    evolution: SkillEvolution | None = None,
+    source_session: str = "",
+    source_run: str = "",
     approval_granted: bool = False,
 ) -> AgentToolResult:
-    """Execute one ``skill_manage`` call; shared by the tool, the review and the curator."""
     call = SkillCall.model_validate(arguments)
     manager = stores.skills
     try:
         if call.action == "list":
-            lines = []
+            lines: list[str] = []
             for scope in ("user", "project"):
                 if scope == "project" and not stores.project_enabled:
                     continue
                 for info in manager.describe(scope):
-                    flags = []
+                    flags: list[str] = []
                     if info.managed:
-                        flags.append("managed")
+                        flags.append("evolution-owned")
                     if info.pinned:
                         flags.append("pinned")
-                    if info.state != "active":
-                        flags.append(info.state)
                     tag = f" [{', '.join(flags)}]" if flags else ""
                     lines.append(f"{scope}/{info.name}: {info.description}{tag}")
             text = "\n".join(lines) or "No skills yet."
             return AgentToolResult(content=[TextContent(text=text)], details={"accepted": True})
         if not call.name:
             return refused("name is required")
-        if (
-            stores.config.skills_write_approval
-            and call.action not in {"list", "view"}
-            and not approval_granted
-        ):
-            return refused("skill write requires explicit approval")
-        if call.action not in {"list", "view"}:
-            require_mutation("skill")
         stores.require_scope(call.scope)
         if call.action == "view":
             text = manager.view(call.scope, call.name, call.file_path)
             return AgentToolResult(content=[TextContent(text=text)], details={"accepted": True})
-        lock_scopes = (
-            ("user", "project")
-            if call.action == "create" and stores.project_enabled
-            else (call.scope,)
+        if evolution is None:
+            return refused("Skill evolution is not available")
+        if stores.config.skills_write_approval and not approval_granted:
+            return refused("candidate proposal requires explicit approval")
+        require_mutation("candidate")
+        if not source_session:
+            return refused("candidate source session is unavailable")
+        if not source_run:
+            return refused("propose requires a previously committed source run")
+        candidate = await evolution.propose(
+            scope=call.scope,
+            name=call.name,
+            source_session=source_session,
+            source_run=source_run,
+            operations=tuple(
+                CandidateOperation(operation.action, operation.old_text, operation.new_text)
+                for operation in call.operations
+            ),
+            claims=tuple((claim.text, tuple(claim.probe_paths)) for claim in call.claims),
+            candidate_content=call.candidate_content,
         )
-        with manager.write_scope(*lock_scopes):
-            if call.action == "create":
-                outcome = manager.create(call.scope, call.name, call.description, call.body)
-            elif call.action == "edit":
-                outcome = manager.edit(call.scope, call.name, call.description or None, call.body)
-            elif call.action == "patch":
-                if call.new_text is None:
-                    return refused("patch requires new_text; pass an empty string to delete text")
-                outcome = manager.patch(
-                    call.scope,
-                    call.name,
-                    call.file_path,
-                    call.old_text,
-                    call.new_text,
-                    replace_all=call.replace_all,
-                )
-            elif call.action == "write_file":
-                outcome = manager.write_file(call.scope, call.name, call.file_path, call.content)
-            elif call.action == "remove_file":
-                outcome = manager.remove_file(call.scope, call.name, call.file_path)
-            else:
-                outcome = manager.delete(
-                    call.scope, call.name, absorbed_into=call.absorbed_into or None
-                )
-    except (SkillWriteError, LearnerOwnedAsset, LearningWritebackDisabled, ValueError) as exc:
+    except (
+        CandidateError,
+        SkillWriteError,
+        LearningWritebackDisabled,
+        MutationRejected,
+        ValueError,
+    ) as exc:
         return refused(f"{type(exc).__name__}: {exc}")
-    return skill_result(outcome)
+    report = f"; report={candidate.report_id}" if candidate.report_id else ""
+    return AgentToolResult(
+        content=[
+            TextContent(
+                text=(
+                    f"Proposed candidate {candidate.candidate_id} for "
+                    f"{candidate.scope}/{candidate.name}; status={candidate.status}{report}."
+                )
+            )
+        ],
+        details={
+            "accepted": True,
+            "candidate_id": candidate.candidate_id,
+            "status": candidate.status,
+            "candidate_digest": candidate.candidate_digest,
+            "report_id": candidate.report_id,
+        },
+    )
 
 
-def register_tools(api: ExtensionAPI, stores: StoresGetter, config: ConfigGetter) -> None:
-    """Register the two tools on the extension API."""
-
+def register_tools(
+    api: ExtensionAPI,
+    stores: StoresGetter,
+    config: ConfigGetter,
+    evolution: EvolutionGetter,
+    source_run: SourceRunGetter,
+) -> None:
     async def confirm_write(title: str, message: str) -> bool:
         return await approve_write(
             required=True,
@@ -223,6 +237,7 @@ def register_tools(api: ExtensionAPI, stores: StoresGetter, config: ConfigGetter
         signal: ToolCancellationToken | None = None,
         on_update: ToolUpdateCallback | None = None,
     ) -> AgentToolResult:
+        del tool_call_id, signal, on_update
         current = stores()
         call = MemoryCall.model_validate(arguments)
         approved = False
@@ -240,16 +255,24 @@ def register_tools(api: ExtensionAPI, stores: StoresGetter, config: ConfigGetter
         signal: ToolCancellationToken | None = None,
         on_update: ToolUpdateCallback | None = None,
     ) -> AgentToolResult:
+        del tool_call_id, signal, on_update
         current = stores()
         call = SkillCall.model_validate(arguments)
         approved = False
-        if config().skills_write_approval and call.action not in {"list", "view"}:
+        if config().skills_write_approval and call.action == "propose":
             approved = await confirm_write(
-                "Approve Skill write", f"Allow {call.action} for {call.scope}/{call.name}?"
+                "Approve Skill candidate", f"Propose a candidate for {call.scope}/{call.name}?"
             )
             if not approved:
-                return refused("skill write was not approved")
-        return await run_skill_tool(current, arguments, approval_granted=approved)
+                return refused("candidate proposal was not approved")
+        return await run_skill_tool(
+            current,
+            arguments,
+            evolution=evolution(),
+            source_session=api.context.session_id or "",
+            source_run=source_run(),
+            approval_granted=approved,
+        )
 
     api.register_tool(
         AgentTool(
@@ -294,25 +317,7 @@ def memory_result(result: MemoryWrite, scope: MemoryScope, target: MemoryTarget)
     return AgentToolResult(content=[TextContent(text=result.message)], details=details)
 
 
-def skill_result(outcome: SkillWriteResult) -> AgentToolResult:
-    lines = [outcome.message]
-    if outcome.lint:
-        lines.append("Advisory lint findings (fix with patch; not blockers):")
-        lines.extend(f"  {item}" for item in outcome.lint)
-    details: dict[str, JSONValue] = {
-        "accepted": True,
-        "path": str(outcome.path),
-        "changed": outcome.changed,
-    }
-    if outcome.ledger_id:
-        details["ledger_id"] = outcome.ledger_id
-    if outcome.scan and "caution" in outcome.scan:
-        lines.append(outcome.scan)
-    return AgentToolResult(content=[TextContent(text="\n".join(lines))], details=details)
-
-
 def scope_of(stores: ExperienceStores, name: str, preferred: MemoryScope) -> MemoryScope:
-    """Where a named skill lives; the preferred scope wins when both have it."""
     order: tuple[MemoryScope, ...] = (preferred, "user" if preferred == "project" else "project")
     for scope in order:
         if scope == "project" and not stores.project_enabled:
@@ -328,11 +333,12 @@ __all__ = [
     "MemoryCall",
     "MemoryOperation",
     "SkillCall",
+    "SkillClaimCall",
+    "SkillOperationCall",
     "memory_result",
     "refused",
     "register_tools",
     "run_memory_tool",
     "run_skill_tool",
     "scope_of",
-    "skill_result",
 ]

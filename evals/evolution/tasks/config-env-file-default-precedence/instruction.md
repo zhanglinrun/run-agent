@@ -1,0 +1,1 @@
+Fix `config.resolve(file_values, env)` so configuration precedence is defaults, then file values, then environment values. A value's presence decides precedence, so falsey environment values such as `0` must still override the file. Do not mutate either input and do not modify tests.

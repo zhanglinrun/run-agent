@@ -1,0 +1,1 @@
+Fix `config.resolve(file_values, overrides)` so `plugins` is a stable union across defaults, file values, and runtime overrides. Keep first occurrence order and remove duplicates; other keys still use normal defaults < file < runtime precedence. Do not mutate inputs or tests.

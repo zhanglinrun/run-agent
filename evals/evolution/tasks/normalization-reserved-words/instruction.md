@@ -1,0 +1,1 @@
+Fix `identifiers.to_identifier()` so normalized Python keywords (as defined by `keyword.iskeyword`) receive a trailing underscore. Existing behavior for punctuation, whitespace, and leading digits must remain. Do not modify tests.

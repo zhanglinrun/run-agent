@@ -9,12 +9,20 @@ import os
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 from dotenv import load_dotenv
 
+from run_agent_coding.paths import RunAgentPaths
 from run_agent_coding.thinking import normalize_thinking_level
 from run_agent_evals.campaign import CampaignConfig, EvaluationCampaign, rebuild_campaign
 from run_agent_evals.coding import CodingTaskExecutor
+from run_agent_evals.context_bench import rebuild_context_benchmark, run_context_benchmark
+from run_agent_evals.evolution import (
+    CodingExecutor,
+    EvolutionEvaluationService,
+    rebuild_evolution_report,
+)
 from run_agent_evals.runtime_bench import (
     RuntimeBenchmarkConfig,
     rebuild_runtime_benchmark,
@@ -23,6 +31,11 @@ from run_agent_evals.runtime_bench import (
 from run_agent_evals.suite import report_for_directory
 from run_agent_evals.task_loading import load_tasks
 from run_agent_extensions import resolve_extension_path
+from run_agent_extensions.experience.candidates import CandidateError, ProjectProbe, SkillCandidate
+from run_agent_extensions.experience.config import load_experience_config
+from run_agent_extensions.experience.evolution import EvolutionPolicy, SkillEvolution
+from run_agent_extensions.experience.memory import MemoryScope
+from run_agent_extensions.experience.stores import ExperienceStores
 
 
 async def _run(args: argparse.Namespace) -> int:
@@ -65,6 +78,142 @@ def _rebuild(args: argparse.Namespace) -> int:
     report = rebuild_campaign(args.output_root)
     print(json.dumps(asdict(report.summary), ensure_ascii=False, indent=2))
     print(f"Evidence verified: {report.root}")
+    return 0
+
+
+def _context(args: argparse.Namespace) -> int:
+    if args.output_root is not None and args.output_root_flag is not None:
+        raise ValueError("context output root may be supplied only once")
+    root = args.output_root_flag or args.output_root
+    if root is None:
+        root = (
+            Path(".run") / "benchmarks" / "context" / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        )
+    report = run_context_benchmark(root)
+    print(json.dumps(report.summary, ensure_ascii=False, indent=2))
+    print(f"Evidence: {report.root}")
+    return 0
+
+
+def _context_rebuild(args: argparse.Namespace) -> int:
+    report = rebuild_context_benchmark(args.output_root)
+    print(json.dumps(report.summary, ensure_ascii=False, indent=2))
+    print(f"Evidence verified: {report.root}")
+    return 0
+
+
+def _candidate_for(
+    stores: ExperienceStores,
+    *,
+    scope: MemoryScope,
+    name: str,
+    candidate_id: str | None,
+) -> SkillCandidate:
+    if candidate_id is not None:
+        candidate = stores.candidates.require(candidate_id)
+        if candidate.scope != scope or candidate.name != name:
+            raise CandidateError(
+                f"candidate {candidate_id} belongs to {candidate.scope}/{candidate.name}"
+            )
+        return candidate
+    pending = next(
+        (
+            item
+            for item in stores.candidates.list()
+            if item.scope == scope and item.name == name and item.status in {"cold", "verified"}
+        ),
+        None,
+    )
+    if pending is None:
+        raise CandidateError(f"no pending candidate found for {scope}/{name}")
+    return pending
+
+
+async def _evolve(args: argparse.Namespace) -> int:
+    load_dotenv(Path.cwd() / ".env", override=False)
+    home = args.state_root.resolve() if args.state_root else RunAgentPaths().home
+    paths = RunAgentPaths(
+        home=home,
+        agents_home=(home / ".agents" if args.state_root else RunAgentPaths().agents_home),
+    )
+    config = load_experience_config(os.environ)
+    stores = ExperienceStores.resolve(
+        paths,
+        Path.cwd(),
+        config=config,
+        project_enabled=args.trust_project,
+    )
+    scope = cast(MemoryScope, args.scope)
+    candidate = _candidate_for(
+        stores,
+        scope=scope,
+        name=args.skill,
+        candidate_id=args.candidate_id,
+    )
+    requested_thinking = args.thinking or os.environ.get("REASONING_EFFORT")
+    executor = CodingExecutor(
+        provider_name=args.provider,
+        model=args.model or os.environ.get("MODEL"),
+        thinking_level_override=(
+            normalize_thinking_level(requested_thinking) if requested_thinking else None
+        ),
+    )
+    service = EvolutionEvaluationService(
+        suite=args.suite,
+        output_root=args.output_root,
+        candidates=stores.candidates,
+        skills=stores.skills,
+        executor=executor,
+    )
+    policy = EvolutionPolicy(
+        suite=service.suite.family,
+        suite_version=service.suite.version,
+        budget_seconds=args.budget_seconds or config.evolution_budget_seconds,
+    )
+    evolution = SkillEvolution(
+        candidates=stores.candidates,
+        skills=stores.skills,
+        probe=ProjectProbe(Path.cwd(), trusted=args.trust_project),
+        evaluation=service,
+        project_enabled=args.trust_project,
+        policy=policy,
+        config=config,
+    )
+    evaluated = await evolution.evaluate(candidate.candidate_id)
+    if evaluated.report_id is None:
+        raise RuntimeError("evolution evaluation produced no report")
+    report = await service.report(evaluated.report_id)
+    publication = None
+    if report.passed:
+        publication = (await evolution.publish(candidate.candidate_id)).message
+    root = service.output_root / report.report_id
+    print(
+        json.dumps(
+            {
+                "candidate_id": candidate.candidate_id,
+                "status": stores.candidates.require(candidate.candidate_id).status,
+                "passed": report.passed,
+                "summary": report.summary,
+                "publication": publication,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    print(f"Evidence: {root}")
+    return 0 if report.passed else 2
+
+
+def _evolve_rebuild(args: argparse.Namespace) -> int:
+    root = args.output_root.resolve()
+    if not (root / "report.json").is_file():
+        candidates = [path.parent for path in root.glob("*/report.json")]
+        if len(candidates) != 1:
+            raise ValueError("evolve-rebuild needs a report directory or a unique report child")
+        root = candidates[0]
+    report = rebuild_evolution_report(root)
+    print(json.dumps(report["summary"], ensure_ascii=False, indent=2))
+    print(f"Evidence verified: {root}")
     return 0
 
 
@@ -145,6 +294,37 @@ def _parser() -> argparse.ArgumentParser:
         help="Verify a frozen runtime benchmark and rebuild its summary.",
     )
     runtime_rebuild.add_argument("output_root", type=Path)
+    context = commands.add_parser(
+        "context",
+        help="Compare summary-only and cheap-first context preparation offline.",
+    )
+    context.add_argument("output_root", nargs="?", type=Path)
+    context.add_argument("--output-root", dest="output_root_flag", type=Path)
+    context_rebuild = commands.add_parser(
+        "context-rebuild",
+        help="Verify context benchmark evidence and rebuild its report offline.",
+    )
+    context_rebuild.add_argument("output_root", type=Path)
+    evolve = commands.add_parser(
+        "evolve",
+        help="Evaluate and publish one pending Skill candidate through paired hidden graders.",
+    )
+    evolve.add_argument("suite", type=Path)
+    evolve.add_argument("--skill", required=True)
+    evolve.add_argument("--scope", choices=("user", "project"), default="user")
+    evolve.add_argument("--candidate-id")
+    evolve.add_argument("--state-root", type=Path)
+    evolve.add_argument("--output-root", type=Path, required=True)
+    evolve.add_argument("--provider")
+    evolve.add_argument("--model")
+    evolve.add_argument("--thinking")
+    evolve.add_argument("--budget-seconds", type=float)
+    evolve.add_argument("--trust-project", action="store_true")
+    evolve_rebuild = commands.add_parser(
+        "evolve-rebuild",
+        help="Verify frozen Skill-evolution evidence and rebuild its gate offline.",
+    )
+    evolve_rebuild.add_argument("output_root", type=Path)
     return parser
 
 
@@ -159,7 +339,15 @@ def main(argv: list[str] | None = None) -> int:
             return _suite(args)
         if args.command == "runtime":
             return asyncio.run(_runtime(args))
-        return _runtime_rebuild(args)
+        if args.command == "runtime-rebuild":
+            return _runtime_rebuild(args)
+        if args.command == "context":
+            return _context(args)
+        if args.command == "context-rebuild":
+            return _context_rebuild(args)
+        if args.command == "evolve":
+            return asyncio.run(_evolve(args))
+        return _evolve_rebuild(args)
     except (OSError, RuntimeError, ValueError) as exc:
         raise SystemExit(f"Evaluation failed: {exc}") from exc
 

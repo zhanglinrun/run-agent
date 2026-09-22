@@ -1,0 +1,66 @@
+schema = "run-agent.evolution-suite"
+version = "1"
+family = "config"
+
+[[tasks]]
+id = "config-env-file-default-precedence"
+family = "config"
+split = "train"
+topic = "env-file-default-precedence"
+path = "tasks/config-env-file-default-precedence"
+
+[[tasks]]
+id = "config-key-migration"
+family = "config"
+split = "train"
+topic = "key-migration"
+path = "tasks/config-key-migration"
+
+[[tasks]]
+id = "config-alias"
+family = "config"
+split = "train"
+topic = "alias"
+path = "tasks/config-alias"
+
+[[tasks]]
+id = "config-nested-override"
+family = "config"
+split = "selection"
+topic = "nested-override"
+path = "tasks/config-nested-override"
+
+[[tasks]]
+id = "config-null-vs-missing"
+family = "config"
+split = "selection"
+topic = "null-vs-missing"
+path = "tasks/config-null-vs-missing"
+
+[[tasks]]
+id = "config-deprecation"
+family = "config"
+split = "selection"
+topic = "deprecation"
+path = "tasks/config-deprecation"
+
+[[tasks]]
+id = "config-list-merge"
+family = "config"
+split = "test"
+topic = "list-merge"
+path = "tasks/config-list-merge"
+
+[[tasks]]
+id = "config-cli-env-file"
+family = "config"
+split = "test"
+topic = "cli-env-file"
+path = "tasks/config-cli-env-file"
+
+[[tasks]]
+id = "config-round-trip"
+family = "config"
+split = "test"
+topic = "round-trip"
+path = "tasks/config-round-trip"

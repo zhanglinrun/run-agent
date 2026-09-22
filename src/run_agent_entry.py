@@ -7,7 +7,7 @@ from importlib.metadata import PackageNotFoundError, version
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Start the Coding, Gateway or evaluation host without cross-layer imports."""
+    """Start the Coding or evaluation host without cross-layer imports."""
     for stream in (sys.stdin, sys.stdout, sys.stderr):
         configure = getattr(stream, "reconfigure", None)
         if configure is not None:
@@ -20,10 +20,6 @@ def main(argv: list[str] | None = None) -> int:
             release = "development"
         print(f"Run Agent {release}")
         return 0
-    if args and args[0] == "gateway":
-        from run_agent_gateway.cli import main as gateway_main
-
-        return gateway_main(args[1:])
     if args and args[0] == "bench":
         from run_agent_evals.cli import main as bench_main
 

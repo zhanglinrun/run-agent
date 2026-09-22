@@ -1,0 +1,10 @@
+[task]
+id = "normalization-max-length-collision"
+version = "1"
+kind = "bug-fix"
+budget_seconds = 90
+artifacts = ["shortname.py"]
+fail_to_pass = ["test_equal_prefixes_do_not_collide", "test_long_name_has_hash_suffix", "test_too_small_limit_is_rejected"]
+
+[grader]
+command = ["{python}", "-m", "pytest", "-q", "grader"]

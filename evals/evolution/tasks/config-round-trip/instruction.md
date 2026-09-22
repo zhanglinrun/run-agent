@@ -1,0 +1,1 @@
+Make `codec.dumps()` and `codec.loads()` a lossless JSON round trip for configuration objects, including nested lists, booleans, numbers, `None`, and Unicode. `dumps()` must produce deterministic compact JSON with sorted keys and literal Unicode; `loads()` must reject a non-object top level with `ValueError`. Do not modify tests.

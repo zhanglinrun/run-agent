@@ -1,4 +1,4 @@
-"""Interactive, print, Gateway and Eval persist JSONL rather than SQLite."""
+"""Interactive, print and Eval paths persist JSONL rather than SQLite."""
 
 import asyncio
 import json
@@ -11,8 +11,6 @@ from prompt_toolkit.output import DummyOutput
 from rich.console import Console
 from tests.redesign.test_coding_application import ReplyProvider, options
 from tests.redesign.test_evaluation_sqlite import EvaluatedProvider, settings
-from tests.redesign.test_gateway_runner import FakeAdapter
-from tests.redesign.test_gateway_runner import config as gateway_config
 
 from run_agent_coding.application import CodingApplication
 from run_agent_coding.events import AgentSettledEvent
@@ -20,7 +18,6 @@ from run_agent_coding.terminal import Terminal
 from run_agent_evals.coding import CodingTaskExecutor
 from run_agent_evals.models import FrozenTask
 from run_agent_evals.runner import EvaluationRunner
-from run_agent_gateway.run import GatewayRunner
 
 
 async def drive_interactive_and_print(opts) -> None:
@@ -51,20 +48,6 @@ async def drive_interactive_and_print(opts) -> None:
         assert events[-1].status == "succeeded"
 
 
-async def drive_gateway(opts) -> None:
-    adapter = FakeAdapter()
-    gateway = GatewayRunner(
-        gateway_config(), opts, adapter, provider_factory=lambda: ReplyProvider()
-    )
-    await gateway.start()
-    try:
-        await adapter.deliver("gateway-1")
-        await adapter.wait_idle()
-        assert adapter.sent[-1][1] == "reply: gateway-1"
-    finally:
-        await gateway.stop()
-
-
 async def drive_eval(tmp_path: Path, monkeypatch) -> dict:
     monkeypatch.setattr(
         "run_agent_coding.session.create_model_provider", lambda *a, **k: EvaluatedProvider()
@@ -80,10 +63,9 @@ async def drive_eval(tmp_path: Path, monkeypatch) -> dict:
     return trial.metadata
 
 
-async def test_all_four_entry_points_write_jsonl_not_sqlite(tmp_path, monkeypatch):
+async def test_interactive_print_and_eval_write_jsonl_not_sqlite(tmp_path, monkeypatch):
     opts = options(tmp_path)
     await drive_interactive_and_print(opts)
-    await drive_gateway(opts)
     metadata = await drive_eval(tmp_path, monkeypatch)
 
     sqlite_files = sorted(path.name for path in tmp_path.rglob("*.sqlite3"))
