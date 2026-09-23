@@ -7,12 +7,6 @@ from run_agent_evals.campaign import (
     rebuild_campaign,
 )
 from run_agent_evals.coding import CodingTaskExecutor
-from run_agent_evals.context_bench import (
-    ContextBenchmarkConfig,
-    ContextBenchmarkReport,
-    rebuild_context_benchmark,
-    run_context_benchmark,
-)
 from run_agent_evals.evolution import (
     EvolutionEvaluationService,
     EvolutionSuite,
@@ -39,8 +33,6 @@ from run_agent_evals.task_loading import load_tasks
 __all__ = [
     "CampaignConfig",
     "CampaignReport",
-    "ContextBenchmarkConfig",
-    "ContextBenchmarkReport",
     "CodingTaskExecutor",
     "ExecutionResult",
     "EvaluationRunner",
@@ -61,10 +53,8 @@ __all__ = [
     "reduce_trials",
     "rebuild_campaign",
     "rebuild_evolution_report",
-    "rebuild_context_benchmark",
     "rebuild_runtime_benchmark",
     "run_verifier",
-    "run_context_benchmark",
     "run_runtime_benchmarks",
     "workspace_digest",
 ]

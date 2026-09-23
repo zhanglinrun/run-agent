@@ -1,15 +1,15 @@
 """The durable context snapshot is exactly the Provider view that was sent.
 
 `技术点三` requires `_record_context_snapshot` to observe the final Provider view
-plus the pipeline report: an auditor must be able to compare what the model saw
-with what the host claims it sent. These tests read the snapshot back through the
-session's own storage handle and compare it with the offline provider's recorded
-request, including the free-layer report of the virtualized view.
+plus the guard's measurements: an auditor must be able to compare what the model
+saw with what the host claims it sent. These tests read the snapshot back through
+the session's own storage handle and compare it with the offline provider's
+recorded request. Compaction belongs to an extension, so the core report carries
+measurements only - no layers, artifacts or rewrite flags.
 """
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 
 from run_agent_coding.application import ApplicationOptions, CodingApplication
@@ -25,6 +25,8 @@ from run_agent_core.messages import (
     ToolResultMessage,
 )
 from run_agent_core.provider_events import AssistantDoneEvent
+
+_REPORT_KEYS = {"tokens_before", "tokens_after", "stable_prefix_digest"}
 
 
 class _RecordingProvider:
@@ -97,10 +99,10 @@ async def _agent_snapshot(session) -> dict:
     return await session.storage.get_snapshot(session.current_snapshot_id)
 
 
-async def test_snapshot_is_the_final_provider_view_with_the_pipeline_report(
+async def test_snapshot_is_the_final_provider_view_with_the_guard_report(
     tmp_path: Path,
 ) -> None:
-    """The recorded input is the virtualized view the provider received, not the transcript."""
+    """The recorded input is the view the provider received, plus its measurements."""
     content = "\n".join("y" * 180 for _ in range(220))
     (tmp_path / "big.txt").write_text(content, encoding="utf-8")
     provider = _RecordingProvider("big.txt")
@@ -117,36 +119,25 @@ async def test_snapshot_is_the_final_provider_view_with_the_pipeline_report(
         assert payload["system"] == sent["system"]
         assert payload["messages"] == sent["messages"]
 
-        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
-        assert report["strategy"] == "cheap-first"
-        assert report["layers"] == ["L3"]
-        assert report["needs_l4"] is False
-        assert report["tokens_after"] < report["tokens_before"]
+        assert set(report) == _REPORT_KEYS
+        assert report["tokens_before"] == report["tokens_after"], "the core rewrites nothing"
         assert report["tokens_after"] <= 20_000
-        assert report["artifacts"] == [
-            {
-                "sha256": digest,
-                "path": f".run/context/blobs/{digest}.txt",
-                "chars": len(content),
-                "tool_call_id": "read-big",
-            }
-        ]
+        assert len(report["stable_prefix_digest"]) == 64
 
         observed = [message for message in payload["messages"] if message["role"] == "toolResult"]
         assert len(observed) == 1
-        assert observed[0]["content"][0]["text"].startswith(
-            f'<persisted-tool-result sha256="{digest}"'
-        )
+        assert observed[0]["content"][0]["text"] == content
         raw = [
             message.text
             for message in app.session.messages
             if isinstance(message, ToolResultMessage)
         ]
         assert raw == [content], "the durable transcript keeps the full result"
+        assert not (tmp_path / ".run" / "context").exists(), "the core spills nothing to disk"
 
 
-async def test_a_free_view_snapshot_reports_no_layers(tmp_path: Path) -> None:
-    """A view inside the budget is observed as-is: no layers, no artifacts, no L4."""
+async def test_a_small_view_snapshot_reports_only_measurements(tmp_path: Path) -> None:
+    """A view inside the budget is observed as-is: measurements, nothing else."""
     provider = _RecordingProvider()
 
     async with await CodingApplication.open(_options(tmp_path), provider=provider) as app:
@@ -156,8 +147,6 @@ async def test_a_free_view_snapshot_reports_no_layers(tmp_path: Path) -> None:
         report = payload["generation_controls"]["context_view"]
 
         assert payload["messages"] == provider.requests[-1]["messages"]
-        assert report["layers"] == []
-        assert report["artifacts"] == []
-        assert report["needs_l4"] is False
+        assert set(report) == _REPORT_KEYS
         assert report["tokens_before"] == report["tokens_after"]
         assert len(report["stable_prefix_digest"]) == 64

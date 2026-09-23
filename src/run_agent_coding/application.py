@@ -154,8 +154,6 @@ class CodingApplication:
                     shell_command_prefix=shell.shell_command_prefix,
                     steering_mode=shell.steering_mode,
                     follow_up_mode=shell.follow_up_mode,
-                    auto_compact_enabled=shell.compaction_enabled,
-                    compaction_strategy=shell.compaction_strategy,
                 )
             )
             return cls(session, manager, owns_manager=owns_manager)
@@ -244,8 +242,6 @@ class CodingApplication:
             message = f"Session renamed: {await session.set_session_name(result.session_name)}"
         elif result.reload_requested:
             message = format_reload_summary(await session.reload())
-        elif result.compact_summary is not None:
-            message = await session.compact(result.compact_summary or None)
         elif result.export_requested:
             message = str(
                 await session.export(result.export_destination, format=result.export_format)

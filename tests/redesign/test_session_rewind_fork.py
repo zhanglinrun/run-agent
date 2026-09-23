@@ -74,7 +74,7 @@ _SUMMARY_PREFIX = "Previous conversation summary:"
 
 
 def _user_texts(messages: Sequence[AgentMessage]) -> list[str]:
-    """User turns only: the L4 compaction summary also travels as a user message."""
+    """User turns only: the persisted compaction summary also travels as a user message."""
     return [
         message.text
         for message in messages
@@ -129,7 +129,15 @@ async def test_fork_copies_the_target_path_and_resumes_without_touching_the_sour
         await app.start()
         _ = [event async for event in app.prompt("first task")]
         _ = [event async for event in app.prompt("second task")]
-        await app.command("/compact")
+        # The core has no `/compact` any more: the durable commit channel is what an
+        # extension uses, so the fork test drives it directly.
+        rows = app.session._active_context_rows()
+        await app.session._flush_pending_message_writes(context=app.session._diagnostic_context())
+        await app.session._append_compaction(
+            "## Goal\nforked summary",
+            replace_entry_ids=tuple(entry_id for entry_id, _message in rows),
+            tokens_before=app.session.context_token_estimate,
+        )
         third = [event async for event in app.prompt("third task")]
         target = third[-1].head_id
         entries = (await app.session.storage.read_entries()).entries

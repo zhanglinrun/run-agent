@@ -4,11 +4,7 @@ from time import monotonic
 
 from run_agent_coding.events import (
     AgentSettledEvent,
-    AutoRetryEndEvent,
-    AutoRetryStartEvent,
     CodingSessionEvent,
-    CompactionEndEvent,
-    CompactionStartEvent,
     QueueUpdateEvent,
     SessionAgentEndEvent,
 )
@@ -109,18 +105,6 @@ class TuiEventAdapter:
             }[event.status]
             self._blocks.clear()
             return state.finish_pending()
-        elif isinstance(event, CompactionStartEvent):
-            state.activity = "Compacting context"
-            return [state.add("notice", "Compacting conversation context…")]
-        elif isinstance(event, CompactionEndEvent):
-            state.activity = "Thinking" if state.running else "Ready"
-            if event.error_message:
-                return [state.add("error", event.error_message, is_error=True)]
-        elif isinstance(event, AutoRetryStartEvent):
-            state.activity = f"Retrying ({event.attempt}/{event.max_attempts})"
-            return [state.add("notice", f"{state.activity}: {event.error_message}")]
-        elif isinstance(event, AutoRetryEndEvent):
-            state.activity = "Thinking" if event.success else "Finishing"
         return []
 
     def _finish_message(self, message: AssistantMessage) -> list[ChatItem]:

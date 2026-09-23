@@ -13,6 +13,8 @@ from run_agent_coding.extensions import (
     ContextEvent,
     ExtensionCommandContext,
     InputEvent,
+    SessionBeforeCompactEvent,
+    SessionBeforeCompactResult,
     SessionStartEvent,
     TurnStartEvent,
 )
@@ -29,6 +31,7 @@ from run_agent_extensions.hermes_memory import (
     resolve_stores,
     setup,
 )
+from run_agent_extensions.hermes_memory.manager import MemoryManager
 
 EXTENSION_DIR = (
     Path(__file__).resolve().parents[2] / "src" / "run_agent_extensions" / "hermes_memory"
@@ -521,3 +524,44 @@ async def test_extension_loads_under_the_real_runtime(tmp_path: Path) -> None:
         # The snapshot is frozen for the session: the new entry is on disk, not in the
         # prompt, until the next session load.
         assert "Prefers short answers" not in provider.requests[-1]["system"]
+
+
+async def test_before_compact_returns_the_provider_text_as_gate_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pre-compression insight is returned, and never carried into memory."""
+    monkeypatch.setattr(
+        MemoryManager, "on_pre_compress", lambda self, messages: "memory: pytest -q"
+    )
+    api, context = await started(tmp_path)
+    context.transcript = (UserMessage(content="hi"),)
+
+    result = await fire(
+        api, "session_before_compact", SessionBeforeCompactEvent(reason="threshold"), context
+    )
+
+    assert isinstance(result, SessionBeforeCompactResult)
+    assert result.cancel is False
+    assert result.context == "memory: pytest -q", (
+        "the text travels back to the compaction extension as summarizer material"
+    )
+    # Memory and session history are separate layers: the next request's memory
+    # block is untouched by the compaction that just read the transcript.
+    messages = (UserMessage(content="hi"),)
+    assert await fire(api, "context", ContextEvent(messages=messages), context) is None
+    assert [message.text for message in messages] == ["hi"]
+
+
+async def test_before_compact_returns_an_empty_context_without_a_contribution(
+    tmp_path: Path,
+) -> None:
+    """A provider with nothing to say contributes nothing at all."""
+    api, context = await started(tmp_path)
+    context.transcript = (UserMessage(content="hi"),)
+
+    result = await fire(
+        api, "session_before_compact", SessionBeforeCompactEvent(reason="threshold"), context
+    )
+
+    assert isinstance(result, SessionBeforeCompactResult)
+    assert (result.cancel, result.context) == (False, "")

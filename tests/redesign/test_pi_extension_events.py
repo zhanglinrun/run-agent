@@ -4,7 +4,7 @@ from pathlib import Path
 from tests.redesign.test_coding_application import ReplyProvider, options
 
 from run_agent_coding.application import CodingApplication
-from run_agent_coding.events import CompactionStartEvent, ThinkingLevelSelectEvent
+from run_agent_coding.events import ThinkingLevelSelectEvent
 from run_agent_coding.extensions.api import (
     EXTENSION_EVENT_TYPES,
     HOOK_EVENT_TYPES,
@@ -14,8 +14,6 @@ from run_agent_coding.extensions.api import (
 )
 from run_agent_coding.extensions.runtime import ExtensionRuntime
 from run_agent_coding.resources import RunAgentResourcePaths
-from run_agent_coding.tui.adapter import TuiEventAdapter
-from run_agent_coding.tui.state import TuiState
 from run_agent_core.events import MessageEndEvent
 from run_agent_core.messages import AssistantMessage, TextContent, UserMessage
 from run_agent_core.provider import ModelRequest
@@ -91,7 +89,7 @@ def setup(api):
     )
     assert await runtime.emit_session_before_switch("new")
     assert await runtime.emit_session_before_fork("entry-1")
-    assert await runtime.emit_session_before_compact("manual")
+    assert (await runtime.emit_session_before_compact("manual")).cancelled
     assert await runtime.emit_session_before_tree("entry-1")
 
 
@@ -215,10 +213,8 @@ def setup(api):
     api.on("thinking_level_select", record)
 """,
     )
-    await runtime.emit_event(SessionCompactEvent(reason="overflow", will_retry=True))
-    await runtime.emit_event(
-        SessionCompactFailedEvent(reason="overflow", aborted=True, will_retry=True)
-    )
+    await runtime.emit_event(SessionCompactEvent(reason="overflow"))
+    await runtime.emit_event(SessionCompactFailedEvent(reason="overflow"))
     await runtime.emit_event(ThinkingLevelSelectEvent(level="off", previous_level="low"))
     assert log.read_text(encoding="utf-8").splitlines() == [
         "session_compact",
@@ -250,9 +246,108 @@ def setup(api):
     ]
 
 
-def test_tui_still_projects_internal_compaction_start() -> None:
-    state = TuiState()
-    adapter = TuiEventAdapter(state)
-    changed = adapter.apply(CompactionStartEvent(reason="overflow"))
-    assert state.activity == "Compacting context"
-    assert changed and changed[0].text.startswith("Compacting")
+async def test_unknown_before_compact_reason_is_tolerated(tmp_path):
+    """A non-literal trigger is a diagnostic, never a lost request rewrite."""
+    log = tmp_path / "gate.log"
+    runtime = _runtime(
+        tmp_path,
+        f"""
+from pathlib import Path
+from run_agent_core.provider import ModelRequest
+LOG = Path({str(log)!r})
+def setup(api):
+    def gate(event, context):
+        LOG.write_text(event.reason, encoding="utf-8")
+        return None
+    async def rewrite(event, context):
+        await context.request_session_before_compact(reason="weird")
+        payload = event.payload
+        return ModelRequest(
+            "rewritten", payload.system, payload.messages, payload.tools, payload.session_id
+        )
+    api.on("session_before_compact", gate)
+    api.on("before_provider_request", rewrite)
+""",
+    )
+    request = ModelRequest("orig", "", (UserMessage(content="hi"),), ())
+
+    replaced = await runtime.apply_before_provider_request(request)
+
+    assert replaced.model == "rewritten", "the unknown trigger must not take the rewrite down"
+    assert log.read_text(encoding="utf-8") == "weird", "the hook observes the raw reason"
+    assert any("unknown compaction trigger" in item.message for item in runtime.diagnostics), (
+        "the host records the tolerance instead of raising"
+    )
+
+
+async def test_the_compact_gate_merges_the_handlers_context(tmp_path):
+    """Every non-empty contribution is merged, blank-line separated, in order."""
+    runtime = _runtime(
+        tmp_path,
+        """
+from run_agent_coding.extensions.api import SessionBeforeCompactResult
+
+
+def setup(api):
+    def first(event, context):
+        return SessionBeforeCompactResult(context="memory: the user runs pytest -q")
+
+    def broken(event, context):
+        raise RuntimeError("this provider is broken")
+
+    def blank(event, context):
+        return SessionBeforeCompactResult(context="   \\n  ")
+
+    def fourth(event, context):
+        return SessionBeforeCompactResult(context="memory: prefers short answers")
+
+    api.on("session_before_compact", first)
+    api.on("session_before_compact", broken)
+    api.on("session_before_compact", blank)
+    api.on("session_before_compact", fourth)
+""",
+    )
+
+    decision = await runtime.emit_session_before_compact("manual")
+
+    assert decision.cancelled is False
+    assert decision.context == (
+        "memory: the user runs pytest -q\n\nmemory: prefers short answers"
+    ), "blank contributions are dropped and the rest keep registration order"
+    failures = [item.message for item in runtime.diagnostics]
+    assert any("handler for `session_before_compact` raised" in message for message in failures), (
+        "a raising handler is a runtime diagnostic and never a lost decision"
+    )
+
+
+async def test_the_compact_gate_stops_at_the_first_cancel(tmp_path):
+    """A veto wins and stops the fan-out, exactly as the boolean gate did."""
+    log = tmp_path / "after.log"
+    runtime = _runtime(
+        tmp_path,
+        f"""
+from pathlib import Path
+
+from run_agent_coding.extensions.api import SessionBeforeCompactResult
+
+LOG = Path({str(log)!r})
+
+
+def setup(api):
+    def cancelling(event, context):
+        return SessionBeforeCompactResult(cancel=True, context="memory: too late")
+
+    def after(event, context):
+        LOG.write_text("ran", encoding="utf-8")
+        return SessionBeforeCompactResult(context="memory: never merged")
+
+    api.on("session_before_compact", cancelling)
+    api.on("session_before_compact", after)
+""",
+    )
+
+    decision = await runtime.emit_session_before_compact("auto")
+
+    assert decision.cancelled is True
+    assert decision.context == "memory: too late"
+    assert not log.is_file(), "a cancelled compaction asks no further handler"

@@ -1,12 +1,16 @@
-"""API-round grouping and pairing-safe split points.
+"""API-round grouping, used by the summarizer's prompt-too-long retry.
 
-A 1:1 port of ``src/services/compact/grouping.ts``: a new group starts when a new
-assistant response begins, which is the one split point the provider contract
-blesses (every tool call is resolved before the next assistant turn). The
-reference gates on ``message.id``; this port gates on ``response_id``, and falls
-back to a per-message identity built from the model, timestamp and content when a
-provider reported none — so two streamed chunks that share a response id stay in
-one group while two distinct responses never do.
+A new group starts when a new assistant response begins, which is the one split
+point the provider contract blesses (every tool call is resolved before the next
+assistant turn). The reference gates on ``message.id``; this port gates on
+``response_id``, and falls back to a per-message identity built from the model,
+timestamp and content when a provider reported none — so two streamed chunks
+that share a response id stay in one group while two distinct responses never
+do.
+
+:func:`truncate_head_for_retry` is the only consumer: when the summarizer's own
+request overflows, whole groups are dropped from the oldest end until it fits
+again, and never a partial round.
 """
 
 from __future__ import annotations
@@ -18,12 +22,11 @@ from hashlib import sha256
 
 from run_agent_core.messages import AgentMessage, AssistantMessage, UserMessage
 
-from .micro import estimate_message_tokens
+from .layers import estimate_message_tokens
 
-# From compact.ts: the summarizer's own overflow retry.
+# From the summarizer's own overflow retry.
 MAX_PTL_RETRIES = 3
 PTL_RETRY_MARKER = "[earlier conversation truncated for compaction retry]"
-
 
 def assistant_round_id(message: AgentMessage) -> str | None:
     """Return the API-round identity of an assistant message, if it has one."""
@@ -54,29 +57,6 @@ def group_messages_by_api_round(
     if current:
         groups.append(current)
     return groups
-
-
-def aligned_start_index(messages: Sequence[AgentMessage], index: int) -> int:
-    """Return the largest API-round boundary at or before ``index``.
-
-    Used for every split point: the retained tail starts on a group boundary, so
-    a tool call and all of its results always land on the same side.
-    """
-    if index <= 0:
-        return 0
-    if index >= len(messages):
-        return len(messages)
-    consumed = 0
-    for group in group_messages_by_api_round(messages):
-        if consumed + len(group) > index:
-            return consumed
-        consumed += len(group)
-    return consumed
-
-
-def group_count(messages: Sequence[AgentMessage]) -> int:
-    """Return the number of API rounds in ``messages``."""
-    return len(group_messages_by_api_round(messages))
 
 
 def truncate_head_for_retry(
@@ -125,9 +105,7 @@ def truncate_head_for_retry(
 __all__ = [
     "MAX_PTL_RETRIES",
     "PTL_RETRY_MARKER",
-    "aligned_start_index",
     "assistant_round_id",
-    "group_count",
     "group_messages_by_api_round",
     "truncate_head_for_retry",
 ]

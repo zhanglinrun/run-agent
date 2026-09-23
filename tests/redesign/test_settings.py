@@ -1,4 +1,9 @@
-"""Settings files in Pi's shape: a user file, a project file merged over it."""
+"""Settings files in Pi's shape: a user file, a project file merged over it.
+
+Compaction is not a setting any more: the built-in `compaction` extension owns it.
+A legacy `compaction` key (or its `enabled`/`strategy` members) must be ignored
+rather than rejected, so an existing `settings.json` keeps loading.
+"""
 
 import json
 
@@ -39,8 +44,6 @@ def test_project_settings_override_queue_modes_but_not_user_only_keys(tmp_path):
         default_project_trust="never",
         steering_mode="all",
         follow_up_mode="all",
-        compaction_enabled=False,
-        compaction_strategy="summary-only",
     )
 
 
@@ -48,17 +51,17 @@ def test_settings_round_trip_and_defaults():
     assert settings_from_json({}) == Settings()
     full = Settings(
         steering_mode="all",
-        compaction_enabled=False,
-        compaction_strategy="summary-only",
         shell_command_prefix="x",
     )
     assert settings_from_json(full.to_json()) == full
 
 
-def test_invalid_compaction_strategy_is_rejected():
-    import pytest
-
-    from run_agent_coding.settings import SettingsError
-
-    with pytest.raises(SettingsError, match="compaction.strategy"):
-        settings_from_json({"compaction": {"strategy": "magic"}})
+def test_a_legacy_compaction_key_is_ignored():
+    """A retired key never fails a load, whatever it holds."""
+    assert settings_from_json({"compaction": {"enabled": False}}) == Settings()
+    assert settings_from_json({"compaction": {"strategy": "magic"}}) == Settings()
+    assert settings_from_json({"compaction": {"enabled": True, "strategy": "four-layer"}}) == (
+        Settings()
+    )
+    assert settings_from_json({"compaction": "four-layer"}) == Settings()
+    assert "compaction" not in Settings().to_json()

@@ -56,7 +56,7 @@ snapshot section and accepts no write: a project-scoped call is refused with
 | `context` | Injects the fenced recall block as ONE request-local user message (see below). |
 | `turn_start` | `MemoryManager.on_turn_start(turn_index, prompt)` per turn. |
 | `agent_settled` | `sync_all(user, assistant, transcript)` and `queue_prefetch_all` for the next turn. |
-| `session_before_compact` | `on_pre_compress(transcript)`; the contribution is carried into the next request's memory block (see the differences below). |
+| `session_before_compact` | Returns `SessionBeforeCompactResult(context=on_pre_compress(transcript))`: the compaction extension fences that text into its summary prompt as material, and nothing is remembered for the next request. Fired by the `compaction` extension right before it commits a compaction, so a session with no compaction extension (or one whose compaction is cancelled) never fires it. |
 | `session_before_switch` (`/new`, `/resume`) | `commit_session_boundary_async` + bounded `flush_pending`. |
 | `session_shutdown` | `commit_session_boundary_async` (end-of-session extraction) + `flush_pending` + `shutdown_all`. |
 
@@ -64,6 +64,11 @@ Frozen snapshot: the prompt block is captured at `session_start` and never moves
 the session runs. A write lands on disk immediately and is visible to tool responses,
 but the next session (or `/reload`) is the first time the model sees it. That is what
 keeps the provider prefix cache valid, and it is hermes' own rule, not an adaptation.
+
+Memory and session history are separate layers, exactly as in hermes: the files above
+are never compacted and never become a summary (the compaction package does not read
+them at all), and the only thing a compaction may take from memory is the provider text
+returned by `on_pre_compress` through the `session_before_compact` gate.
 
 ### Recall injection (difference from hermes)
 
@@ -172,7 +177,7 @@ Hooks hermes calls that Run Agent has no place for:
 | `on_turn_start(turn, message, **kwargs)` | Wired to the `turn_start` observation event; the event carries `turn_index` only, so the message text comes from the last `input` hook. |
 | `on_session_switch(new_id, reset=..., rewound=...)` | Wired to `session_start` (refresh/rebind) and `session_before_switch` (end before switch). `rewound` is never produced: Run Agent has no `/undo` path that fires this extension. On `/new` the new id does not exist yet when the switch hook runs, so the new identity arrives via the next `session_start` → `initialize(session_id)`. |
 | `on_session_end(messages)` | Wired: `session_before_switch` and `session_shutdown` both run it through the ordered boundary task. |
-| `on_pre_compress(messages) -> str` | Called on `session_before_compact`; Run Agent's compaction hook cannot carry free text into the summarizer prompt, so the contribution is carried into the next request's memory block instead of the summary prompt. |
+| `on_pre_compress(messages) -> str` | Called on `session_before_compact`, which the `compaction` extension emits just before its own commit. The returned text goes back through the gate's result (`SessionBeforeCompactResult(context=...)`) and the compaction extension fences it into the summarizer prompt as material, labelled as reference data rather than an instruction. Nothing is carried into the next request's memory block: memory and session history stay separate layers. |
 | `on_delegation(task, result, ...)` | No caller: this distribution has no subagent delegation surface. The manager hook and the provider default exist so a ported provider still works. |
 | `handle_tool_call` routing for provider tools | Implemented and reachable through `MemoryManager.handle_tool_call`; this extension registers no provider tools of its own (`BuiltinMemoryProvider.get_tool_schemas()` is empty by design — file memory is the built-in `memory` tool). |
 | `on_memory_write` mirroring to external providers | Implemented (`MemoryManager.on_memory_write`, skipping the builtin writer) and called with provenance (`write_origin`, `execution_context`, `session_id`, `tool_name`, `old_text`) after a committed write. With no external provider registered it is a no-op, which is the current state of this package. |

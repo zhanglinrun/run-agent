@@ -38,20 +38,6 @@ class QueueUpdateEvent(WireModel):
 CompactionReason = Literal["manual", "threshold", "overflow"]
 
 
-class CompactionStartEvent(WireModel):
-    type: Literal["compaction_start"] = "compaction_start"
-    reason: CompactionReason
-
-
-class CompactionEndEvent(WireModel):
-    type: Literal["compaction_end"] = "compaction_end"
-    reason: CompactionReason
-    result: object | None = None
-    aborted: bool = False
-    will_retry: bool = Field(False)
-    error_message: str | None = Field(None)
-
-
 class EntryAppendedEvent(WireModel):
     type: Literal["entry_appended"] = "entry_appended"
     entry: SessionEntry
@@ -68,32 +54,13 @@ class ThinkingLevelSelectEvent(WireModel):
     previous_level: str | None = None
 
 
-class AutoRetryStartEvent(WireModel):
-    type: Literal["auto_retry_start"] = "auto_retry_start"
-    attempt: int
-    max_attempts: int
-    delay_ms: int
-    error_message: str
-
-
-class AutoRetryEndEvent(WireModel):
-    type: Literal["auto_retry_end"] = "auto_retry_end"
-    success: bool
-    attempt: int
-    final_error: str | None = Field(None)
-
-
 type SessionOwnEvent = Annotated[
     SessionAgentEndEvent
     | AgentSettledEvent
     | QueueUpdateEvent
-    | CompactionStartEvent
-    | CompactionEndEvent
     | EntryAppendedEvent
     | SessionInfoChangedEvent
-    | ThinkingLevelSelectEvent
-    | AutoRetryStartEvent
-    | AutoRetryEndEvent,
+    | ThinkingLevelSelectEvent,
     Field(discriminator="type"),
 ]
 type CodingSessionEvent = AgentEvent | SessionOwnEvent

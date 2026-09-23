@@ -425,9 +425,16 @@ class SessionBeforeForkResult:
 
 @dataclass(frozen=True, slots=True)
 class SessionBeforeCompactEvent:
-    """Fired before context compaction; `cancel` skips the compaction."""
+    """Fired once a compaction commit is going to be attempted.
 
-    reason: CompactionReason
+    The hook runs after the decision to attempt the commit and always before
+    any summary model call, so a cancelling handler saves that call too.
+    ``reason`` is normally one of the core :data:`CompactionReason` values; a
+    caller that passes an unknown trigger string has it delivered raw (the
+    host records a diagnostic instead of raising).
+    """
+
+    reason: CompactionReason | str
     will_retry: bool = False
     custom_instructions: str | None = None
     type: Literal["session_before_compact"] = field(default="session_before_compact", init=False)
@@ -435,9 +442,32 @@ class SessionBeforeCompactEvent:
 
 @dataclass(frozen=True, slots=True)
 class SessionBeforeCompactResult:
-    """Cancel a pending compaction."""
+    """Cancel a pending compaction, and/or contribute material for its summary.
+
+    ``cancel`` is the boolean veto the hook has always had. ``context`` is
+    optional free text a handler (for example a memory provider) wants the
+    summarizer to see as *material*: the host merges the non-empty text of every
+    handler, blank-line separated, and never treats it as an instruction.
+    """
 
     cancel: bool = False
+    context: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class SessionBeforeCompactDecision:
+    """What the whole `session_before_compact` fan-out decided.
+
+    Returned by ``ExtensionContext.request_session_before_compact`` and by the
+    runtime's ``emit_session_before_compact``. ``cancelled`` is True when a
+    handler returned ``cancel=True`` - the fan-out stops there, exactly as the
+    boolean gate always did - and ``context`` is every handler's non-empty
+    ``SessionBeforeCompactResult.context``, joined with a blank line. A decision
+    is not a permission: it is data for the caller that fired the gate.
+    """
+
+    cancelled: bool = False
+    context: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -445,18 +475,15 @@ class SessionCompactEvent:
     """Fired after context compaction succeeds."""
 
     reason: CompactionReason
-    will_retry: bool = False
     from_extension: bool = False
     type: Literal["session_compact"] = field(default="session_compact", init=False)
 
 
 @dataclass(frozen=True, slots=True)
 class SessionCompactFailedEvent:
-    """Fired after context compaction fails or is aborted."""
+    """Fired after context compaction fails."""
 
     reason: CompactionReason
-    aborted: bool = False
-    will_retry: bool = False
     error_message: str | None = None
     from_extension: bool = False
     type: Literal["session_compact_failed"] = field(default="session_compact_failed", init=False)
@@ -502,6 +529,17 @@ class BeforeProviderRequestEvent:
 # (reported as the core `overflow` reason).
 CompactionTrigger = Literal["auto", "manual", "reactive"]
 
+# The one mapping from an extension's own compaction trigger (the string a
+# `CompactionCommitRequest` carries) onto the reason the core reports on
+# `session_before_compact`, `session_compact` and `session_compact_failed`.
+# `session.py` validates a commit request with the same table, so the gate an
+# extension fires before its commit and the commit itself always agree.
+COMPACTION_TRIGGER_REASONS: Mapping[CompactionTrigger, CompactionReason] = {
+    "auto": "threshold",
+    "manual": "manual",
+    "reactive": "overflow",
+}
+
 
 @dataclass(frozen=True, slots=True)
 class CompactionCommitRequest:
@@ -509,7 +547,7 @@ class CompactionCommitRequest:
 
     Carried by :class:`BeforeProviderRequestResult.compaction` from a
     `before_provider_request` handler over the ``session_compact_request``
-    channel. The extension owns the four-layer decision and the summary text;
+    channel. The extension owns the layered decision and the summary text;
     the core owns the durable commit: it validates the request against the
     active branch, then appends the same ``CompactionEntry`` + ``LeafEntry``
     pair manual and automatic compaction write.
@@ -983,9 +1021,60 @@ class ExtensionContext:
         return self._runtime.ui.has_ui
 
     @property
+    def context_window_tokens(self) -> int:
+        """Return the active model's window, the same value the hard guard uses.
+
+        Read-only metadata: the number comes from the bound session, so an
+        extension never has to re-derive a window of its own and can never
+        disagree with the ``ContextBudgetExceeded`` gate.
+        """
+        self._generation.assert_readable()
+        return self._runtime.session_view.context_window_tokens
+
+    @property
     def ui(self) -> ExtensionUi:
         self._generation.assert_active()
         return self._ui
+
+    async def request_session_before_compact(
+        self,
+        *,
+        reason: CompactionTrigger,
+        custom_instructions: str | None = None,
+    ) -> SessionBeforeCompactDecision:
+        """Ask the loaded extensions whether this compaction may run, and for material.
+
+        The host owns compaction only through the extension that requested it,
+        so the extension that is about to commit fires the
+        ``session_before_compact`` hook itself, once the commit attempt is
+        certain and before any summary model call (a cancel therefore saves
+        that call as well). ``reason`` is that extension's own trigger
+        (``auto``/``manual``/``reactive``) - the same string the pending
+        ``CompactionCommitRequest`` will carry - mapped by the host onto the
+        core reason the commit and the ``session_compact`` event report. An
+        unknown trigger string never raises: the host records a diagnostic and
+        the hook still observes the raw string, the same tolerant contract the
+        commit channel applies to its own trigger. Returns a
+        :class:`SessionBeforeCompactDecision`: ``cancelled`` True when a handler
+        cancelled the compaction, in which case the caller must skip its own
+        compaction and tell the user why through :attr:`ui`, and ``context``
+        carrying what the handlers contributed as summarizer material (empty
+        when nobody contributed). ``will_retry`` is always False: automatic
+        retries do not exist any more.
+        """
+        self._generation.assert_active()
+        mapped = COMPACTION_TRIGGER_REASONS.get(reason)
+        if mapped is None:
+            self._runtime.record_extension_diagnostic(
+                self._source_id,
+                "request_session_before_compact got an unknown compaction trigger "
+                f"{reason!r}; the hook ran with the raw reason and no commit was implied",
+            )
+        return await self._runtime.emit_session_before_compact(
+            mapped if mapped is not None else reason,
+            will_retry=False,
+            custom_instructions=custom_instructions,
+        )
 
 
 class ExtensionAPI:

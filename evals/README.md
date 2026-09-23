@@ -34,18 +34,11 @@
 
 `rebuild` 会校验 manifest、trial matrix、artifact path 和全部内容凭证；证据被修改后拒绝重建。
 
-## Context benchmark
+## Context benchmark（已移除）
 
-```powershell
-.\.venv\Scripts\run.exe bench context
-.\.venv\Scripts\run.exe bench context .run/benchmarks/context/local
-.\.venv\Scripts\run.exe bench context --output-root .run/benchmarks/context/local
-.\.venv\Scripts\run.exe bench context-rebuild .run/benchmarks/context/local
-```
-
-`context` 完全离线运行，不调用模型。固定的 provider-neutral 样本分别包含超长工具结果、一组并行 tool calls 和多轮工具对话；命令用相同输入比较 `summary-only` 与 `cheap-first` 的 before/after token 估算、L1/L2/L3 使用次数、artifact 数、`prepare` P50/P95 时延、工具调用/结果配对有效性及仍需摘要的样本数。未指定目录时，证据写入 `.run/benchmarks/context/<run-id>`；也可使用可选位置参数或 `--output-root` 指定目录。
-
-输出的 `evidence.json` 保存逐样本原始测量和 fixture digest，`inventory.json` 保存证据及内容寻址 blob 的大小与 SHA-256，`report.json` 保存两种策略的归约对比。`context-rebuild` 不重新执行 pipeline，只校验 evidence、inventory、artifact 和 report 的内容凭证并离线重建摘要；任何已冻结内容被修改都会拒绝重建。
+`run bench` 下的 `context` / `context-rebuild` 子命令与 core 侧压缩一同移除（见 `MIGRATION.md`）。
+压缩现在由内置 `compaction` 扩展拥有，core 只保留硬窗口守卫；此前的离线策略对比基准
+（`src/run_agent_evals/context_bench.py`）不再存在。
 
 ## Skill evolution gate
 

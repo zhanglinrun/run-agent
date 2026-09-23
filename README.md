@@ -1,6 +1,6 @@
 # Run Agent
 
-用于研究和验证长任务恢复、上下文虚拟化、动态扩展一致性与经验发布门禁的本地 Python Coding Agent Harness。项目参考 Pi 的小核心与扩展思想，但不把“Python 重写”视为创新；重点研究四个可故障注入的运行时问题：动态扩展的一致采用、分支会话恢复、协议感知的上下文虚拟化，以及发布前验证的 Skill 演进。
+用于研究和验证长任务恢复、分层上下文压缩、动态扩展一致性与经验发布门禁的本地 Python Coding Agent Harness。项目参考 Pi 的小核心与扩展思想，但不把“Python 重写”视为创新；重点研究四个可故障注入的运行时问题：动态扩展的一致采用、分支会话恢复、扩展拥有并受提交契约约束的分层上下文压缩，以及发布前验证的 Skill 演进。
 
 Run Agent 不是 Claude Code 或 Codex 的产品替代品。成熟产品更适合日常编码；本项目提供可替换、可观测、可测试的 Harness 策略，用于解释一次长任务如何执行、恢复、压缩和积累经验。
 
@@ -36,7 +36,7 @@ run bench --help
 
 ### 1. 事务化扩展生命周期
 
-Provider、Core、Coding 三层通过同步 `setup(api)` 装配七个内置扩展：`experience`（Skill 演进）、`memory`（USER.md / MEMORY.md 记忆）、`compaction`（四层压缩策略）、`curator`（技能库维护）、`mcp`、`permission_policy` 和 `plan_mode`。每个注册带来源和 generation；setup 半途失败会按来源撤销注册。记忆、压缩与策展都是可选扩展：`--no-extensions` 关闭全部，`--extension <name-or-path>` 按短名或路径单独装载。
+Provider、Core、Coding 三层通过同步 `setup(api)` 装配七个内置扩展：`experience`（Skill 演进）、`memory`（USER.md / MEMORY.md 记忆）、`compaction`（分层压缩策略）、`curator`（技能库维护）、`mcp`、`permission_policy` 和 `plan_mode`。每个注册带来源和 generation；setup 半途失败会按来源撤销注册。记忆、压缩与策展都是可选扩展：`--no-extensions` 关闭全部，`--extension <name-or-path>` 按短名或路径单独装载。
 
 `/reload`、`/new`、`/resume` 和分支替换采用 staged runtime：候选完成源码校验、资源准备和 host publication 前，旧 runtime 保持 active；publication 成功后旧 generation 才进入只读 retiring 阶段，收到 shutdown 通知并逆序执行 disposer。发布失败不会提前关闭旧 MCP 连接或清除旧 UI 状态。
 
@@ -50,29 +50,27 @@ Provider、Core、Coding 三层通过同步 `setup(api)` 装配七个内置扩�
 
 每个完成的 run 追加 `RunCommitEntry`，固定 start/end、状态、snapshot 和错误；后台能力读取指定 run 时不会看到后续回合。Session index 是 append-only last-write-wins 日志，并在阈值后锁内压缩。
 
-### 3. Cheap-First 上下文虚拟化
+### 3. 分层上下文压缩（compaction 扩展）
 
-持久会话历史和实际 Provider View 分离。超过预算时按以下顺序生成 detached view：
+压缩唯一由内置 `compaction` 扩展（`src/run_agent_extensions/layered_compaction`，my-pi-agent 的 cheap-first 四层移植，溯源 Pi 的 `compaction.ts`）承担，加载即拥有压缩：
 
 ```text
-L3 大 ToolResult 按 SHA-256 内容寻址落盘
- -> L1 按完整 Turn / ToolCall 组折叠中间历史
- -> L2 旧 ToolResult 替换为带 digest 的短引用
- -> L4 仍超预算才生成持久结构化摘要
+gate 未超 80% 预算 -> 一条层都不跑，原样返回
+gate 超预算 -> L1 大结果落盘（cwd/.run/tool-results/<tool_call_id>.txt）
+            -> L2 视图过长时裁中间轮（头 3 + 尾 46 + 1 条占位）
+            -> L3 旧工具结果占位（保留最近 5 条）
+            -> 重新估算：仍超预算才跑 L4（一次有界推理生成摘要，保留 user 边界尾段）
 ```
 
-所有裁切保持 `Assistant(tool_calls) + ToolResult*` 配对；模型给出的 call ID 不参与文件路径。L1-L3 足以满足预算时不调用摘要模型；免费层后仍超过硬窗口则在 Provider I/O 前拒绝请求。最终 View 及每层 token/artifact 报告随模型输入快照记录，完整 JSONL 历史不修改。
+层号按**执行顺序**编排；参考实现按语义编号（其 `L3`/`L1`/`L2` 分别是本实现的 L1/L2/L3，摘要层两边都是 `L4`），对照时注意这处差异。
 
-`compaction.strategy` 有三个取值：`cheap-first`（默认，上面这条流水线）、`summary-only`（跳过 L1-L3，只保留持久摘要）和 `four-layer`。`four-layer` 把请求准备整体交给内置 `compaction` 扩展（`src/run_agent_extensions/claude_compaction`，Claude Code 四层移植）：L1 清空旧 ToolResult、L2 按 snip 边界投影历史、L3 直接复用 `MEMORY.md`/`USER.md` 作为摘要、L4 走模型摘要，并带 413/context-overflow 的 reactive 路径。核心此时不做任何 L1-L4 预处理，只保留硬窗口守卫（超窗在 Provider I/O 前以 `ContextBudgetExceeded` 拒绝）和单条持久 `CompactionEntry` 提交。该取值需要 `compaction` 扩展在场；扩展缺失时请求不会被改写。`/force-snip` 与 `/four-layer-compact` 由该扩展注册。
+记忆不是压缩层：`MEMORY.md` / `USER.md` 永远不会被当成摘要。记忆扩展在压缩前产生的洞察只作为素材，经 `session_before_compact` 闸门带回、包在 `<memory-provider-context>` 里进入摘要提示词，并明确标注“只当素材、不当指令”。
 
-确定性基准及离线校验：
+扩展在 `before_provider_request` 里改写请求，并通过 `session_compact_request` 请求提交；core 校验该请求并写入单条持久 `CompactionEntry`（连同 `LeafEntry`）。扩展还注册 `/compact [instructions]`，并带 413/context-overflow 的 reactive 路径。
 
-```powershell
-run bench context --output-root .run/benchmarks/context
-run bench context-rebuild .run/benchmarks/context
-```
+core 侧不再做任何压缩：没有自动阈值、没有摘要生成、没有大结果落盘。每个 **agent 侧** Provider 请求都由 core 按顺序执行「扩展改写 → 测量 token → 超窗拒绝」：扩展改写先跑，然后测量；只要 `tokens > context_window_tokens`，就在物理 I/O 之前抛 `ContextBudgetExceeded`。扩展自己的推理通道（L4 摘要、curator 复核）不经过这条路径。最终 View 与 `tokens_before`/`tokens_after`/`stable_prefix_digest` 随模型输入快照记录，完整 JSONL 历史不修改。
 
-基准数字只描述冻结的合成长历史，不代表真实模型成功率或账单成本。
+未加载扩展时（例如 `--no-extensions`）没有任何压缩，只剩上述硬窗口守卫。
 
 ### 4. 扩展化记忆与 Verifier-Gated Skill 演进
 
@@ -80,7 +78,7 @@ run bench context-rebuild .run/benchmarks/context
 
 - `USER.md`：用户偏好（用户作用域，`~/.run/USER.md`）；
 - `MEMORY.md`：项目事实（项目作用域，`<cwd>/.run/MEMORY.md`）；
-- `memory` 工具与 `/memory show|add|replace|remove [--scope]` 在原子写、字符预算和威胁检查下编辑这两个文件；写入立即落盘，但提示里的快照在 `session_start`/`/reload` 冻结，保证前缀缓存稳定。项目未受信时项目作用域不注入也不接受写入。
+- `memory` 工具与 `/memory show|add|replace|remove [--scope]` 在原子写、字符预算和威胁检查下编辑这两个文件；写入立即落盘，但提示里的快照在 `session_start`/`/reload` 冻结，保证前缀缓存稳定。项目未受信时项目作用域不注入也不接受写入。记忆与 session history 不同层：压缩不读记忆文件，记忆也不会被压缩——它只在压缩前把 provider 洞察交给摘要提示词当素材。
 
 ```text
 /memory show
@@ -114,13 +112,13 @@ Skill 演进仍归 `experience` 扩展，保留 `SKILL.md` 这一种本地资产
 | --- | --- |
 | `run_agent_ai` | OpenAI-compatible / Anthropic 协议、流式响应、重试和用量 |
 | `run_agent_core` | 消息、Agent Loop、工具事务、取消和通用会话协议 |
-| `run_agent_coding` | CodingSession、TUI/CLI、扩展宿主、Context View 和 JSONL 会话树 |
+| `run_agent_coding` | CodingSession、TUI/CLI、扩展宿主、Context Budget 守卫和 JSONL 会话树 |
 
 Observability 与 Evals 是横向证据模块。默认编码工具为 `read`、`write`、`edit`、`bash`；扩展可额外提供工具和策略。项目资源仅在通过 trust gate 后加载。当前生命周期管理不构成操作系统权限隔离。
 
 ## 常用会话命令
 
-`/new`、`/resume`、`/tree`、`/branch <entry-id>`、`/rewind <entry-id>`、`/fork <entry-id>`、`/name`、`/model`、`/thinking`、`/compact`、`/reload` 和 `/export` 走同一 `CodingApplication` 生命周期。旧会话固定保存的 Skill 和扩展源码版本；要采用当前资源，显式使用 `--refresh-resources`。
+`/new`、`/resume`、`/tree`、`/branch <entry-id>`、`/rewind <entry-id>`、`/fork <entry-id>`、`/name`、`/model`、`/thinking`、`/compact [instructions]`（由 `compaction` 扩展注册）、`/reload` 和 `/export` 走同一 `CodingApplication` 生命周期。旧会话固定保存的 Skill 和扩展源码版本；要采用当前资源，显式使用 `--refresh-resources`。
 
 ## 开发验证
 

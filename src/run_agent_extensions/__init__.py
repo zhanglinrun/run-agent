@@ -17,7 +17,7 @@ __all__ = ["BUILTIN_EXTENSIONS", "builtin_extension_names", "resolve_extension_p
 _ROOT = Path(__file__).resolve().parent
 
 BUILTIN_EXTENSIONS: dict[str, Path] = {
-    "compaction": _ROOT / "claude_compaction",
+    "compaction": _ROOT / "layered_compaction",
     "curator": _ROOT / "curator",
     "experience": _ROOT / "experience",
     "mcp": _ROOT / "mcp",

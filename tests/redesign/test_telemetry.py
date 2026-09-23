@@ -238,7 +238,7 @@ async def test_cancelled_stream_closes_upstream_and_commits_partial_usage(tmp_pa
     await sink.aclose()
 
 
-async def test_application_name_compaction_reload_and_limits_remain_instrumented(tmp_path):
+async def test_application_name_reload_and_limits_remain_instrumented(tmp_path):
     class LimitedProvider(ReplyProvider):
         async def discover_model_limits(self, model):
             return RuntimeModelLimits(context_window=100000)
@@ -265,7 +265,7 @@ async def test_application_name_compaction_reload_and_limits_remain_instrumented
             assert events[-1].status == "succeeded"
             runtime = app.session.extension_runtime
             old_sink = runtime._fresh_context(runtime._extensions[0].source_id).telemetry
-            await app.command("/compact")
+            await app.command("/session")
             await app.command("/reload")
             with pytest.raises(ExtensionError):
                 old_sink.emit("trace", {"late": True})
@@ -276,7 +276,7 @@ async def test_application_name_compaction_reload_and_limits_remain_instrumented
             assert app.session.trace_recorder is not None
             assert app.session.trace_recorder.span_count > 0
         rows = await ledger.read_all()
-        assert sum(row["type"] == "provider_call" for row in rows) == 4
+        assert sum(row["type"] == "provider_call" for row in rows) == 3
         assert ledger.complete
     finally:
         ledger.close()

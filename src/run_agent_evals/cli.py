@@ -6,7 +6,6 @@ import argparse
 import asyncio
 import json
 import os
-from collections.abc import Callable
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,18 +13,10 @@ from typing import cast
 
 from dotenv import load_dotenv
 
-from run_agent_coding.context_view import ContextStrategy
 from run_agent_coding.paths import RunAgentPaths
 from run_agent_coding.thinking import normalize_thinking_level
 from run_agent_evals.campaign import CampaignConfig, EvaluationCampaign, rebuild_campaign
 from run_agent_evals.coding import CodingTaskExecutor
-from run_agent_evals.context_bench import (
-    CompactionStrategyExecutor,
-    rebuild_context_benchmark,
-    rebuild_task_context_benchmark,
-    run_context_benchmark,
-    run_task_context_benchmark,
-)
 from run_agent_evals.evolution import (
     EVOLUTION_ABLATIONS,
     EVOLUTION_ARMS,
@@ -41,7 +32,6 @@ from run_agent_evals.evolution import (
     rebuild_evolution_report,
     write_evolution_comparison,
 )
-from run_agent_evals.runner import TaskExecutor
 from run_agent_evals.runtime_bench import (
     RuntimeBenchmarkConfig,
     rebuild_runtime_benchmark,
@@ -97,63 +87,6 @@ def _rebuild(args: argparse.Namespace) -> int:
     report = rebuild_campaign(args.output_root)
     print(json.dumps(asdict(report.summary), ensure_ascii=False, indent=2))
     print(f"Evidence verified: {report.root}")
-    return 0
-
-
-def _context(args: argparse.Namespace) -> int:
-    if args.output_root is not None and args.output_root_flag is not None:
-        raise ValueError("context output root may be supplied only once")
-    root = args.output_root_flag or args.output_root
-    if root is None:
-        root = (
-            Path(".run") / "benchmarks" / "context" / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-        )
-    report = run_context_benchmark(root)
-    print(json.dumps(report.summary, ensure_ascii=False, indent=2))
-    if args.tasks is not None:
-        task_report = asyncio.run(
-            run_task_context_benchmark(
-                root,
-                load_tasks(args.tasks),
-                executor_factory=_context_task_executors(args, root),
-            )
-        )
-        print(json.dumps(task_report.summary, ensure_ascii=False, indent=2))
-    print(f"Evidence: {report.root}")
-    return 0
-
-
-def _context_task_executors(
-    args: argparse.Namespace, root: Path
-) -> Callable[[ContextStrategy], TaskExecutor]:
-    """Build one real coding executor per compaction strategy for the task benchmark."""
-    state_root = args.state_root or root / "runtime"
-    thinking = normalize_thinking_level(args.thinking) if args.thinking else None
-
-    def factory(strategy: ContextStrategy) -> TaskExecutor:
-        executor = CodingTaskExecutor(
-            state_root / strategy,
-            provider_name=args.provider,
-            model=args.model,
-            thinking_level_override=thinking,
-        )
-        return CompactionStrategyExecutor(executor, strategy)
-
-    return factory
-
-
-def _context_rebuild(args: argparse.Namespace) -> int:
-    root = Path(args.output_root).resolve()
-    reports = []
-    if (root / "evidence.json").is_file():
-        reports.append(rebuild_context_benchmark(root))
-    if (root / "tasks-evidence.json").is_file():
-        reports.append(rebuild_task_context_benchmark(root))
-    if not reports:
-        raise ValueError(f"No context benchmark evidence under {root}")
-    for report in reports:
-        print(json.dumps(report.summary, ensure_ascii=False, indent=2))
-    print(f"Evidence verified: {root}")
     return 0
 
 
@@ -520,30 +453,6 @@ def _parser() -> argparse.ArgumentParser:
         help="Verify a frozen runtime benchmark and rebuild its summary.",
     )
     runtime_rebuild.add_argument("output_root", type=Path)
-    context = commands.add_parser(
-        "context",
-        help="Compare summary-only and cheap-first context preparation offline.",
-    )
-    context.add_argument("output_root", nargs="?", type=Path)
-    context.add_argument("--output-root", dest="output_root_flag", type=Path)
-    context.add_argument(
-        "--tasks",
-        type=Path,
-        help="JSONL task manifest; also run the cheap-first/summary-only coding comparison.",
-    )
-    context.add_argument(
-        "--state-root",
-        type=Path,
-        help="Session/telemetry root for task trials (default: <output-root>/runtime).",
-    )
-    context.add_argument("--provider")
-    context.add_argument("--model")
-    context.add_argument("--thinking")
-    context_rebuild = commands.add_parser(
-        "context-rebuild",
-        help="Verify context benchmark evidence and rebuild its report offline.",
-    )
-    context_rebuild.add_argument("output_root", type=Path)
     evolve = commands.add_parser(
         "evolve",
         help="Evaluate and publish one pending Skill candidate through paired hidden graders.",
@@ -619,10 +528,6 @@ def main(argv: list[str] | None = None) -> int:
             return asyncio.run(_runtime(args))
         if args.command == "runtime-rebuild":
             return _runtime_rebuild(args)
-        if args.command == "context":
-            return _context(args)
-        if args.command == "context-rebuild":
-            return _context_rebuild(args)
         if args.command == "evolve":
             return asyncio.run(_evolve(args))
         return _evolve_rebuild(args)

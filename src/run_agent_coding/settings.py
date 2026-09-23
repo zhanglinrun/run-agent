@@ -9,13 +9,9 @@ able to run a shell prefix or relax trust on the person opening it:
 Provider, model and thinking level are not settings; they come from the
 environment (see ``provider_config``).
 
-``compaction.strategy`` chooses how the Provider view is bounded. It is
-project-configurable, because it only picks a preparation policy: ``cheap-first``
-(the default) applies the core's free L3/L1/L2 layers and compacts when they are
-not enough, ``summary-only`` applies no layer, and ``four-layer`` hands the
-decision to a selected extension's ``before_provider_request`` rewrite plus its
-``session_compact_request`` commit. The core keeps the hard window guard in all
-three cases.
+Compaction is not a setting either: the built-in ``compaction`` extension owns
+it, and the core keeps only the hard context-window guard. A legacy
+``compaction`` key in an existing file is ignored rather than rejected.
 """
 
 from __future__ import annotations
@@ -29,7 +25,6 @@ from run_agent_coding.paths import RunAgentPaths
 from run_agent_coding.project_trust import TrustDefault
 
 QueueMode = Literal["one_at_a_time", "all"]
-CompactionStrategy = Literal["cheap-first", "summary-only", "four-layer"]
 
 _USER_ONLY_KEYS = frozenset({"shellCommandPrefix", "shell_command_prefix", "defaultProjectTrust"})
 
@@ -46,9 +41,6 @@ class Settings:
     default_project_trust: TrustDefault = "ask"
     steering_mode: QueueMode = "one_at_a_time"
     follow_up_mode: QueueMode = "one_at_a_time"
-    compaction_enabled: bool = True
-    # `cheap-first` | `summary-only` | `four-layer`; see the module docstring.
-    compaction_strategy: CompactionStrategy = "cheap-first"
 
     def to_json(self) -> dict[str, Any]:
         """Serialize the non-default settings to the on-disk shape."""
@@ -61,11 +53,6 @@ class Settings:
             result["steeringMode"] = _mode_to_json(self.steering_mode)
         if self.follow_up_mode != "one_at_a_time":
             result["followUpMode"] = _mode_to_json(self.follow_up_mode)
-        if not self.compaction_enabled or self.compaction_strategy != "cheap-first":
-            result["compaction"] = {
-                "enabled": self.compaction_enabled,
-                "strategy": self.compaction_strategy,
-            }
         return result
 
 
@@ -104,23 +91,14 @@ def settings_from_json(data: dict[str, Any]) -> Settings:
             raise SettingsError("shellCommandPrefix must be a string")
         prefix = raw_prefix.strip() or None
 
-    compaction = data.get("compaction", {})
-    if not isinstance(compaction, dict):
-        raise SettingsError("compaction must be an object")
-    enabled = compaction.get("enabled", True)
-    if not isinstance(enabled, bool):
-        raise SettingsError("compaction.enabled must be true or false")
-    strategy = compaction.get("strategy", "cheap-first")
-    if strategy not in {"cheap-first", "summary-only", "four-layer"}:
-        raise SettingsError("compaction.strategy must be cheap-first, summary-only, or four-layer")
-
+    # A legacy ``compaction`` key (and its ``enabled``/``strategy`` members) is never
+    # read: the built-in extension owns compaction, so an old value is ignored
+    # wherever it appears and whatever it holds.
     return Settings(
         shell_command_prefix=prefix,
         default_project_trust=raw_default,
         steering_mode=_mode_from_json(data.get("steeringMode"), "steeringMode"),
         follow_up_mode=_mode_from_json(data.get("followUpMode"), "followUpMode"),
-        compaction_enabled=enabled,
-        compaction_strategy=strategy,
     )
 
 

@@ -103,7 +103,7 @@ def test_documented_builtin_extensions_and_commands_match_the_registry() -> None
     for extension in builtin_extension_names():
         for name, text in docs.items():
             assert f"`{extension}`" in text, f"{name} does not document the built-in {extension!r}"
-    for command in ("/memory", "/force-snip", "/four-layer-compact", "/curator"):
+    for command in ("/memory", "/compact", "/curator"):
         assert command in docs["cli.md"], f"cli.md does not document {command}"
 
 

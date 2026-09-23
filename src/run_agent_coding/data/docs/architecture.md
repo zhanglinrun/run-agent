@@ -6,7 +6,7 @@ Run Agent has three runtime layers: Provider, Core and Coding. Observability and
 | --- | --- |
 | `run_agent_ai` | OpenAI-compatible and Anthropic transports, retries, streaming and usage |
 | `run_agent_core` | Provider-neutral messages, AgentHarness/loop, tool transactions and generic session contracts |
-| `run_agent_coding` | CodingSession, CLI/TUI, resources, extension host, Context View and JSONL session tree |
+| `run_agent_coding` | CodingSession, CLI/TUI, resources, extension host, Context Budget guard and JSONL session tree |
 
 `run_agent_entry.py` routes `run` and `run bench`. `CodingApplication` owns startup/shutdown and every interactive, print or benchmark session uses the same CodingSession lifecycle.
 
@@ -20,18 +20,17 @@ Workspace `index.jsonl` and the user catalog are append-only last-write-wins met
 
 ## Provider context
 
-The durable transcript is not the Provider request. The loop first applies extension context transforms and provider-safe tool-history repair. Coding then applies `ContextViewPipeline` as the final request builder:
+The durable transcript is not the Provider request. The loop first applies extension context transforms and provider-safe tool-history repair. Coding then runs three steps over the frozen view:
 
-1. large ToolResults become SHA-256 addressed local artifacts;
-2. completed middle turns are folded without splitting Assistant/ToolResult groups;
-3. old retained ToolResults become digest-bearing previews;
-4. persistent LLM compaction is used only when the cheap layers cannot satisfy the reserve target.
+1. the extension's `before_provider_request` rewrite (compaction lives here, not in the core);
+2. `ContextBudgetGuard.freeze` measures the rewritten request (`tokens_before`/`tokens_after` and the stable prefix digest) without rewriting anything;
+3. a request still above the model window is refused with `ContextBudgetExceeded` before physical Provider I/O.
 
-`compaction.strategy=four-layer` replaces steps 1-4 with an extension-owned path: the core performs no L1-L4 preparation of its own, the `compaction` built-in (`run_agent_extensions/claude_compaction`) decides and rewrites the request in `before_provider_request`, and requests the durable commit over `session_compact_request` (validated by the core, which still writes the single `CompactionEntry`). Steps 1-3 are skipped and the hard window guard is unchanged: a request still above the model window is refused with `ContextBudgetExceeded` before physical Provider I/O. The other two strategies stay entirely in the core; without the extension present, a `four-layer` session leaves the request unprepared beyond that guard.
+Compaction is owned by the `compaction` built-in (`run_agent_extensions/layered_compaction`), which loads by default, decides and rewrites the request in `before_provider_request` (a gate at 80% of the budget, then L1 persist / L2 mid-view snip / L3 old-result placeholder, then an L4 summary only while the view is still over the gate), and requests the durable commit over `session_compact_request` (validated by the core, which still writes the single `CompactionEntry`). Without that extension - for instance under `--no-extensions` - there is no compaction at all and only the hard window guard remains.
 
 The memory layer is extension-owned and prompt-only. The `memory` built-in (`run_agent_extensions/hermes_memory`) renders `USER.md` / `MEMORY.md` into a frozen `before_agent_start` section and a request-local `<memory-context>` fence from the `context` hook, and it never rewrites a durable message or the session JSONL. The core has no memory store of its own.
 
-The final detached request and layer report are frozen in the model-input snapshot before physical Provider I/O. A request still above the hard model window is refused. Context blobs are derived caches and can be rebuilt from JSONL history.
+The final detached request and its measurements are frozen in the model-input snapshot before physical Provider I/O. The core writes no context artifacts: nothing derived is spilled to disk, so the JSONL history is the only transcript.
 
 ## Extension lifecycle
 
@@ -51,4 +50,4 @@ Extension tasks are in memory and do not survive a process crash. Candidate and 
 
 AgentHarness owns transcript state, steering/follow-up queues, listeners and cancellation. Tool batches run in parallel only when every call declares parallel execution; mixing any sequential tool serializes the batch and results are returned in source order. This is a correctness policy, not an original scheduling algorithm.
 
-Settings merge `~/.run/settings.json` with trusted project settings. `shellCommandPrefix` and `defaultProjectTrust` are user-only. Projects may set queue modes, `compaction.enabled` and `compaction.strategy` (`cheap-first`, `summary-only` or `four-layer`, the last only when the `compaction` extension is loaded); provider, model and thinking remain environment-based.
+Settings merge `~/.run/settings.json` with trusted project settings. `shellCommandPrefix` and `defaultProjectTrust` are user-only. Projects may set queue modes; provider, model and thinking remain environment-based. A legacy `compaction` key is ignored, because the `compaction` extension owns compression.

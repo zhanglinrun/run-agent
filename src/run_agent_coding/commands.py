@@ -53,8 +53,6 @@ class CommandSession(Protocol):
     @property
     def context_token_estimate(self) -> int: ...
 
-    @property
-    def auto_compact_token_threshold(self) -> int | None: ...
 
     @property
     def context_window_tokens(self) -> int: ...
@@ -94,7 +92,6 @@ class CommandResult:
     clear_requested: bool = False
     reload_requested: bool = False
     new_session_requested: bool = False
-    compact_summary: str | None = None
     export_requested: bool = False
     export_destination: Path | None = None
     export_format: str | None = None
@@ -212,14 +209,6 @@ def create_default_command_registry() -> CommandRegistry:
             description="Start a new session.",
             handler=_new_command,
             search_terms=("clear", "reset"),
-        )
-    )
-    registry.register(
-        SlashCommand(
-            name="compact",
-            usage="/compact [instructions]",
-            description="Summarize and compact active context.",
-            handler=_compact_command,
         )
     )
     registry.register(
@@ -430,11 +419,6 @@ def _new_command(context: CommandContext) -> CommandResult:
     return CommandResult(handled=True, new_session_requested=True)
 
 
-def _compact_command(context: CommandContext) -> CommandResult:
-    return CommandResult(
-        handled=True,
-        compact_summary=context.args.strip(),
-    )
 
 
 def _export_command(context: CommandContext) -> CommandResult:
@@ -486,8 +470,6 @@ def _status_command(context: CommandContext) -> CommandResult:
             )
     lines.extend(_thinking_status_lines(session))
     lines.append(f"Resource diagnostics: {len(session.resource_diagnostics)}")
-    if session.auto_compact_token_threshold is not None:
-        lines.append(f"Auto compact threshold: {session.auto_compact_token_threshold}")
     if session.session_id is not None:
         lines.append(f"Session: {session.session_id}")
     if session.session_title:

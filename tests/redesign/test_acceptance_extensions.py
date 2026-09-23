@@ -1,7 +1,8 @@
 """Extension lifecycle acceptance.
 
 - A setup that fails halfway must leave no tool, command or prompt guideline.
-- With every extension disabled, skills, compaction and recovery still work.
+- With every extension disabled, skills and recovery still work; compression is
+  gone with the extensions, leaving only the hard window guard.
 - Extension shutdown reports concrete convergence values and resources; the
   task budget half of that is covered in test_task_budget.
 """
@@ -62,10 +63,10 @@ async def test_half_failed_setup_leaves_no_tool_command_or_guideline(tmp_path):
         assert runtime.extension_tools == ()
         assert runtime.prompt_guidelines == ()
         assert runtime.build_command_registry().get("half") is None
-        assert runtime.build_command_registry().get("compact") is not None
+        assert runtime.build_command_registry().get("session") is not None
 
 
-async def test_coding_compaction_skills_and_recovery_survive_without_extensions(tmp_path):
+async def test_coding_skills_and_recovery_survive_without_extensions(tmp_path):
     opts = options(tmp_path)
     assert opts.extensions_enabled is False
     app = await CodingApplication.open(opts, provider=ReplyProvider())
@@ -79,8 +80,6 @@ async def test_coding_compaction_skills_and_recovery_survive_without_extensions(
     session_id = app.session.session_id
 
     assert (await app.command("/skills")).handled
-    compact = await app.command("/compact")
-    assert compact.handled
     assert (await app.command(f"/branch {head}")).handled
     await app.aclose()
 

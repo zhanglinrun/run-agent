@@ -23,17 +23,11 @@ from run_agent_coding.commands import (
     create_default_command_registry,
 )
 from run_agent_coding.context import discover_project_context_with_diagnostics
-from run_agent_coding.context_view import ContextStrategy, ContextViewPipeline
+from run_agent_coding.context_budget import ContextBudgetGuard
 from run_agent_coding.context_window import (
-    DEFAULT_COMPACTION_KEEP_RECENT_TOKENS,
-    DEFAULT_COMPACTION_RESERVE_TOKENS,
     DEFAULT_CONTEXT_WINDOW_TOKENS,
-    SUMMARIZATION_SYSTEM_PROMPT,
     ContextUsageEstimate,
-    auto_compaction_threshold_for_context_window,
-    build_compaction_summary_prompt,
     estimate_context_usage,
-    estimate_message_tokens,
     summarize_messages_for_compaction,
 )
 from run_agent_coding.diagnostics import (
@@ -43,12 +37,8 @@ from run_agent_coding.diagnostics import (
 )
 from run_agent_coding.events import (
     AgentSettledEvent,
-    AutoRetryEndEvent,
-    AutoRetryStartEvent,
     CodingSessionEvent,
-    CompactionEndEvent,
     CompactionReason,
-    CompactionStartEvent,
     QueueUpdateEvent,
     SessionAgentEndEvent,
     SessionInfoChangedEvent,
@@ -60,6 +50,7 @@ from run_agent_coding.extensions.adoption import (
     stage_branch_reuse,
 )
 from run_agent_coding.extensions.api import (
+    COMPACTION_TRIGGER_REASONS,
     CompactionCommitRequest,
     ModelSelectEvent,
     ResourcesDiscoverResult,
@@ -311,22 +302,11 @@ class SessionResources:
     diagnostics: tuple[ResourceDiagnostic, ...]
 
 
-@dataclass(frozen=True, slots=True)
-class CompactionPlan:
-    """Prepared active-context entries for a compaction run."""
-
-    replace_entry_ids: tuple[str, ...]
-    messages_to_summarize: tuple[AgentMessage, ...]
-
-
 # `CompactionCommitRequest.trigger` (extension vocabulary) mapped onto the
-# reasons the core already reports on `session_compact`/`session_compact_failed`.
-# An unknown trigger is a rejected request, not a default.
-_COMPACTION_TRIGGER_REASONS: dict[str, CompactionReason] = {
-    "auto": "threshold",
-    "manual": "manual",
-    "reactive": "overflow",
-}
+# reasons the core already reports. The table lives next to the trigger literal
+# (``extensions.api.COMPACTION_TRIGGER_REASONS``) so this validation and the
+# extension-side `session_before_compact` gate cannot disagree. An unknown
+# trigger is a rejected request, not a default.
 
 
 @dataclass(frozen=True, slots=True)
@@ -335,17 +315,6 @@ class _CompactionCommitPlan:
 
     replace_entry_ids: tuple[str, ...]
     reason: CompactionReason
-
-
-@dataclass(frozen=True, slots=True)
-class ManualCompactionResult:
-    """Structured result from one manual compaction."""
-
-    summary: str
-    first_kept_entry_id: str
-    tokens_before: int
-    estimated_tokens_after: int
-    replaced_entry_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -386,9 +355,6 @@ class CodingSessionConfig:
     dynamic_provider: DynamicProvider | None = None
     owns_initial_provider: bool = False
     provider_transform: Callable[[ModelProvider, str], ModelProvider] | None = None
-    auto_compact_token_threshold: int | None = None
-    auto_compact_enabled: bool = True
-    compaction_strategy: ContextStrategy = "cheap-first"
     thinking_level: ThinkingLevel = DEFAULT_THINKING_LEVEL
     thinking_level_override: ThinkingLevel | None = None
     """One-shot startup override (e.g. ``--thinking``) for the session's level.
@@ -533,8 +499,6 @@ class CodingSession:
         self._provider_settings = config.provider_settings
         self._runtime_provider_config = config.runtime_provider_config
         self._resource_paths = resource_paths_with_cwd(config.resource_paths, config.cwd)
-        self._auto_compact_token_threshold = config.auto_compact_token_threshold
-        self._auto_compact_enabled = config.auto_compact_enabled
         self._thinking_level = _state_thinking_level(
             state,
             default=_default_thinking_level_for_active_model(self),
@@ -649,54 +613,36 @@ class CodingSession:
     async def _record_model_context(
         self, request: ModelRequest, *, purpose: str = "agent"
     ) -> ModelRequest | None:
-        """Freeze the exact bounded Provider view before physical I/O.
+        """Freeze the exact Provider view before physical I/O.
 
-        `before_provider_request` runs first, because under the `four-layer`
-        strategy the extension's rewrite is the only L1-L4 preparation there is.
-        A compaction commit it requests is accepted only after
-        `require_hard_limit` accepted the view, so an unsendable request never
-        leaves a commit behind.
+        `before_provider_request` runs first, because that extension rewrite is
+        the only compaction there is. A compaction commit it requests is accepted
+        only after `require_hard_limit` accepted the view, so an unsendable
+        request never leaves a commit behind.
         """
         bind_provider_http_hooks(self._extension_runtime)
         (
             chained,
             commit_requests,
         ) = await self._extension_runtime.apply_before_provider_request_with_commits(request)
-        pipeline = ContextViewPipeline(
-            cwd=self.cwd,
-            context_window_tokens=self.context_window_tokens,
-            reserve_tokens=DEFAULT_COMPACTION_RESERVE_TOKENS,
-            strategy=self._config.compaction_strategy,
-        )
-        prepared = pipeline.prepare(chained, self.session_id)
-        pipeline.require_hard_limit(prepared)
+        guard = ContextBudgetGuard(context_window_tokens=self.context_window_tokens)
+        view = guard.freeze(chained)
+        guard.require_hard_limit(view)
         if commit_requests:
             await self._queue_compaction_commits(
                 commit_requests, context=self._diagnostic_context()
             )
         report: dict[str, JSONValue] = {
-            "strategy": self._config.compaction_strategy,
-            "tokens_before": prepared.tokens_before,
-            "tokens_after": prepared.tokens_after,
-            "layers": list(prepared.layers),
-            "stable_prefix_digest": prepared.stable_prefix_digest,
-            "needs_l4": prepared.needs_l4,
-            "artifacts": [
-                {
-                    "sha256": item.digest,
-                    "path": item.relative_path,
-                    "chars": item.original_chars,
-                    "tool_call_id": item.tool_call_id,
-                }
-                for item in prepared.artifacts
-            ],
+            "tokens_before": view.tokens_before,
+            "tokens_after": view.tokens_after,
+            "stable_prefix_digest": view.stable_prefix_digest,
         }
         await self._record_context_snapshot(
-            prepared.request,
+            view.request,
             purpose=purpose,
             generation_controls={"context_view": report},
         )
-        return prepared.request
+        return view.request
 
     async def _record_context_snapshot(
         self,
@@ -1817,29 +1763,6 @@ class CodingSession:
         return self._harness.config.system
 
     @property
-    def auto_compact_token_threshold(self) -> int | None:
-        """Return the effective automatic compaction threshold, if any."""
-        if not self._auto_compact_enabled:
-            return None
-        if self._auto_compact_token_threshold is not None:
-            return self._auto_compact_token_threshold
-        if self._runtime_model_limits_key == (self.provider_name, self.model):
-            limits = self._runtime_model_limits
-            if limits is not None:
-                return limits.effective_auto_compact_token_limit
-        return auto_compaction_threshold_for_context_window(self.context_window_tokens)
-
-    def set_auto_compaction_enabled(self, enabled: bool) -> None:
-        """Enable or disable automatic compaction for future turns."""
-        self._auto_compact_enabled = enabled
-        self._config = replace(self._config, auto_compact_enabled=enabled)
-
-    @property
-    def auto_compaction_enabled(self) -> bool:
-        """Return whether automatic compaction is enabled."""
-        return self._auto_compact_enabled
-
-    @property
     def context_window_tokens(self) -> int:
         """Return the active model's discovered or configured context window."""
         if self._runtime_model_limits_key == (self.provider_name, self.model):
@@ -2439,10 +2362,6 @@ class CodingSession:
             provider_model_supports_images(provider, self.model) if provider is not None else None
         )
 
-    def will_auto_retry(self, message: AssistantMessage) -> bool:
-        """Return whether session orchestration will retry this assistant error."""
-        return is_context_overflow_error(message)
-
     def _build_runtime_provider(self) -> tuple[ClosableModelProvider, ProviderConfig]:
         if self._runtime_provider_config is None:
             raise ProviderConfigError("Runtime provider configuration is unavailable")
@@ -2836,8 +2755,6 @@ class CodingSession:
                 session_provider_name=record.provider_name,
                 provider_settings=self._provider_settings,
                 runtime_provider_config=runtime_provider_config,
-                auto_compact_token_threshold=self._auto_compact_token_threshold,
-                auto_compact_enabled=self._auto_compact_enabled,
                 thinking_level=self._thinking_level,
                 shell_command_prefix=self._config.shell_command_prefix,
                 skills_enabled=self._config.skills_enabled,
@@ -3049,8 +2966,6 @@ class CodingSession:
         self._provider_settings = replacement._provider_settings
         self._runtime_provider_config = replacement._runtime_provider_config
         self._resource_paths = replacement._resource_paths
-        self._auto_compact_token_threshold = replacement._auto_compact_token_threshold
-        self._auto_compact_enabled = replacement._auto_compact_enabled
         self._thinking_level = replacement._thinking_level
         self._pending_initial_entries = replacement._pending_initial_entries
         self._pending_message_writes = replacement._pending_message_writes
@@ -3091,70 +3006,6 @@ class CodingSession:
                 "startup",
             )
         )
-
-    async def compact_detailed(self, instructions: str | None = None) -> ManualCompactionResult:
-        """Compact older context while preserving a real recent-entry boundary."""
-        await self._flush_pending_message_writes(context=self._diagnostic_context())
-        if await self._extension_runtime.emit_session_before_compact(
-            "manual", custom_instructions=instructions
-        ):
-            raise ValueError("Compaction cancelled by extension")
-        rows = self._active_context_rows()
-        plan = self._recent_preserving_compaction_plan()
-        if plan is None:
-            raise ValueError("Not enough context to compact while preserving recent entries")
-        first_kept_entry_id = rows[len(plan.replace_entry_ids)][0]
-        tokens_before = self.context_token_estimate
-        try:
-            summary = await self._generate_compaction_summary(
-                plan.messages_to_summarize,
-                custom_instructions=instructions,
-            )
-            compaction = await self._append_compaction(
-                summary,
-                replace_entry_ids=plan.replace_entry_ids,
-                first_kept_entry_id=first_kept_entry_id,
-                tokens_before=tokens_before,
-                compact_reason="manual",
-            )
-        except Exception as exc:
-            await self._notify_compaction_failure(
-                "manual", error_message=str(exc) or type(exc).__name__
-            )
-            raise
-        return ManualCompactionResult(
-            summary=summary,
-            first_kept_entry_id=first_kept_entry_id,
-            tokens_before=tokens_before,
-            estimated_tokens_after=self.context_token_estimate,
-            replaced_entry_count=len(compaction.replaces_entry_ids),
-        )
-
-    async def compact(self, instructions: str | None = None) -> str:
-        """Generate a manual compaction summary and rebuild active context."""
-        await self._flush_pending_message_writes(context=self._diagnostic_context())
-        if await self._extension_runtime.emit_session_before_compact(
-            "manual", custom_instructions=instructions
-        ):
-            raise ValueError("Compaction cancelled by extension")
-        plan = self._manual_compaction_plan()
-        try:
-            summary = await self._generate_compaction_summary(
-                plan.messages_to_summarize,
-                custom_instructions=instructions,
-            )
-            compaction = await self._append_compaction(
-                summary,
-                replace_entry_ids=plan.replace_entry_ids,
-                tokens_before=self.context_token_estimate,
-                compact_reason="manual",
-            )
-        except Exception as exc:
-            await self._notify_compaction_failure(
-                "manual", error_message=str(exc) or type(exc).__name__
-            )
-            raise
-        return f"Compacted {len(compaction.replaces_entry_ids)} context entries."
 
     async def aclose(self) -> None:
         """Close every owned extension/provider resource exactly once.
@@ -3379,14 +3230,12 @@ class CodingSession:
         events: AsyncIterator[AgentEvent] | None = None
         settled_event: AgentSettledEvent | None = None
         auto_name_attempted = False
-        overflow_message: AssistantMessage | None = None
         try:
             token = await self.storage.begin_run(run_id)
             write_context_token = self._write_context.set(token)
             await self._flush_pending_message_writes(context=context)
             self._refresh_runtime_inputs()
             await self._refresh_runtime_model_limits()
-            await self._try_auto_compact(context=context, phase="auto_compact_before_prompt")
             before_start = await self._extension_runtime.before_agent_start(
                 expanded_content, self._base_system_prompt
             )
@@ -3430,76 +3279,14 @@ class CodingSession:
                         phase="agent_loop",
                         message=event.message,
                     )
-                    if is_context_overflow_error(event.message):
-                        overflow_message = event.message
                 if isinstance(event, AgentEndEvent):
-                    yield SessionAgentEndEvent(
-                        messages=event.messages,
-                        will_retry=overflow_message is not None,
-                    )
+                    yield SessionAgentEndEvent(messages=event.messages, will_retry=False)
                 else:
                     yield event
                 # Let frontends render the confirmed, expanded prompt before
                 # session naming performs its separate provider request.
                 if auto_name_message is not None:
                     await self._try_auto_name_session(auto_name_message, context=context)
-            if overflow_message is not None:
-                session_event_1 = CompactionStartEvent(reason="overflow")
-                yield session_event_1
-                compacted = await self._try_overflow_compact(context=context)
-                compaction_end = CompactionEndEvent(
-                    reason="overflow",
-                    result=None,
-                    aborted=not compacted,
-                    will_retry=compacted,
-                    error_message=None if compacted else "Overflow compaction failed",
-                )
-                yield compaction_end
-                if compacted:
-                    retry_start = AutoRetryStartEvent(
-                        attempt=1,
-                        max_attempts=1,
-                        delay_ms=0,
-                        error_message=overflow_message.error_message or "Context overflow",
-                    )
-                    yield retry_start
-                    events = self._harness.continue_()
-                    self._invalidate_context_usage_cache()
-                    overflow_retry_error: str | None = None
-                    async for retry_event in events:
-                        if isinstance(retry_event, ToolExecutionEndEvent):
-                            self._invalidate_context_usage_cache()
-                        if (
-                            isinstance(retry_event, MessageEndEvent)
-                            and isinstance(retry_event.message, AssistantMessage)
-                            and retry_event.message.stop_reason in {"error", "aborted"}
-                        ):
-                            overflow_retry_error = (
-                                retry_event.message.error_message or "Provider request aborted"
-                            )
-                            if retry_event.message.stop_reason == "error":
-                                self._last_diagnostic_log_path = (
-                                    self._diagnostic_logger.log_assistant_error(
-                                        context=context,
-                                        phase="agent_loop_retry",
-                                        message=retry_event.message,
-                                    )
-                                )
-                        if isinstance(retry_event, AgentEndEvent):
-                            yield SessionAgentEndEvent(
-                                messages=retry_event.messages,
-                                will_retry=False,
-                            )
-                        else:
-                            yield retry_event
-                    session_event_4 = AutoRetryEndEvent(
-                        success=overflow_retry_error is None,
-                        attempt=1,
-                        final_error=overflow_retry_error,
-                    )
-                    yield session_event_4
-            else:
-                await self._try_auto_compact(context=context, phase="auto_compact_after_prompt")
         except BaseException as exc:
             self._run_status = (
                 "cancelled"
@@ -3575,7 +3362,6 @@ class CodingSession:
                     yield SessionAgentEndEvent(messages=event.messages, will_retry=False)
                 else:
                     yield event
-            await self._try_auto_compact(context=context, phase="auto_compact_after_continue")
         except BaseException as exc:
             self._run_status = (
                 "cancelled"
@@ -4011,69 +3797,6 @@ class CodingSession:
             self._pending_initial_entries = ()
             self._prepared_entries.clear()
 
-    async def _try_auto_compact(
-        self,
-        *,
-        context: AgentCallDiagnosticContext,
-        phase: str,
-    ) -> bool:
-        try:
-            return await self._maybe_auto_compact()
-        except Exception as exc:  # automatic compaction must not lose a turn
-            self._last_diagnostic_log_path = self._diagnostic_logger.log_exception(
-                context=context,
-                phase=phase,
-                exc=exc,
-            )
-            return False
-
-    async def _try_overflow_compact(
-        self,
-        *,
-        context: AgentCallDiagnosticContext,
-    ) -> bool:
-        # `four-layer` hands L1-L4 to an extension: the core never summarizes
-        # behind its back, so a provider overflow it did not pre-empt stays
-        # visible (and the extension's next request rewrite is the recovery).
-        if self._config.compaction_strategy == "four-layer":
-            return False
-        if await self._extension_runtime.emit_session_before_compact("overflow", will_retry=True):
-            await self._notify_compaction_failure("overflow", aborted=True, will_retry=True)
-            return False
-        try:
-            plan = self._recent_preserving_compaction_plan()
-            if plan is None:
-                await self._notify_compaction_failure(
-                    "overflow",
-                    aborted=True,
-                    will_retry=True,
-                    error_message="Overflow compaction failed",
-                )
-                return False
-            first_kept_entry_id, tokens_before = self._compaction_boundary(plan)
-            summary = await self._generate_compaction_summary(plan.messages_to_summarize)
-            await self._append_compaction(
-                summary,
-                replace_entry_ids=plan.replace_entry_ids,
-                first_kept_entry_id=first_kept_entry_id,
-                tokens_before=tokens_before,
-                compact_reason="overflow",
-                will_retry=True,
-            )
-            return True
-        except Exception as exc:  # the original overflow remains visible
-            self._last_diagnostic_log_path = self._diagnostic_logger.log_exception(
-                context=context,
-                phase="overflow_compact",
-                exc=exc,
-            )
-            await self._notify_compaction_failure(
-                "overflow",
-                will_retry=True,
-                error_message=str(exc) or type(exc).__name__,
-            )
-            return False
-
     async def _try_auto_name_session(
         self,
         first_message: str,
@@ -4162,101 +3885,6 @@ class CodingSession:
             if self._provider_is_usable(provider)
         )
 
-    async def _maybe_auto_compact(self) -> bool:
-        threshold = self.auto_compact_token_threshold
-        if threshold is None or threshold <= 0:
-            return False
-        if self._config.compaction_strategy == "four-layer":
-            # The extension owns L1-L4: no core preview, no core summarizer.
-            # `require_hard_limit` still refuses an oversized view.
-            return False
-        if self._config.compaction_strategy == "cheap-first":
-            request = ModelRequest(
-                self.model,
-                self._harness.config.system,
-                tuple(self._harness.messages),
-                tuple(self._harness.config.tools),
-                self.session_id,
-            )
-            preview = ContextViewPipeline(
-                cwd=self.cwd,
-                context_window_tokens=self.context_window_tokens,
-                reserve_tokens=DEFAULT_COMPACTION_RESERVE_TOKENS,
-                strategy="cheap-first",
-            ).prepare(request, self.session_id)
-            # L3/L1/L2 are free. Summarize when the free view still overflows, which is
-            # exactly `needs_l4` (window - reserve). A looser caller threshold must not
-            # mask that: this flag is then the only remaining signal to compact here.
-            if not preview.needs_l4 and preview.tokens_after <= threshold:
-                return False
-        plan = self._recent_preserving_compaction_plan()
-        if plan is None:
-            return False
-        first_kept_entry_id, tokens_before = self._compaction_boundary(plan)
-        if await self._extension_runtime.emit_session_before_compact("threshold"):
-            await self._notify_compaction_failure("threshold", aborted=True, will_retry=False)
-            return False
-        try:
-            summary = await self._generate_compaction_summary(plan.messages_to_summarize)
-            await self._append_compaction(
-                summary,
-                replace_entry_ids=plan.replace_entry_ids,
-                first_kept_entry_id=first_kept_entry_id,
-                tokens_before=tokens_before,
-                compact_reason="threshold",
-            )
-        except Exception as exc:
-            await self._notify_compaction_failure(
-                "threshold", error_message=str(exc) or type(exc).__name__
-            )
-            raise
-        return True
-
-    async def _generate_compaction_summary(
-        self,
-        messages: tuple[AgentMessage, ...],
-        *,
-        custom_instructions: str | None = None,
-    ) -> str:
-        prompt = build_compaction_summary_prompt(
-            messages,
-            custom_instructions=custom_instructions,
-        )
-        text_parts: list[str] = []
-        final_text: str | None = None
-        summary_messages: list[AgentMessage] = [UserMessage(content=prompt)]
-        compacted = await self._record_model_context(
-            ModelRequest(
-                self.model, SUMMARIZATION_SYSTEM_PROMPT, summary_messages, (), self.session_id
-            ),
-            purpose="compaction",
-        )
-        summary_model = self.model
-        summary_system = SUMMARIZATION_SYSTEM_PROMPT
-        if isinstance(compacted, ModelRequest):
-            summary_model = compacted.model
-            summary_system = compacted.system
-            summary_messages = list(compacted.messages)
-        async for event in self._harness.config.provider.stream_response(
-            model=summary_model,
-            system=summary_system,
-            messages=summary_messages,
-            tools=[],
-        ):
-            if isinstance(event, TextDeltaEvent):
-                text_parts.append(event.delta)
-            elif isinstance(event, AssistantDoneEvent):
-                final_text = event.message.text
-            elif isinstance(event, AssistantErrorEvent):
-                raise RuntimeError(
-                    f"Compaction summarization failed: {event.error.error_message or event.reason}"
-                )
-
-        summary = (final_text if final_text is not None else "".join(text_parts)).strip()
-        if not summary:
-            raise RuntimeError("Compaction summarization returned an empty summary")
-        return summary
-
     async def _summarize_branch_messages(
         self,
         messages: tuple[AgentMessage, ...],
@@ -4277,47 +3905,6 @@ class CodingSession:
         except Exception:
             summary = None
         return summary or summarize_messages_for_compaction(messages)
-
-    def _manual_compaction_plan(self) -> CompactionPlan:
-        rows = self._active_context_rows()
-        if not rows:
-            raise ValueError("No active context messages to compact")
-        return CompactionPlan(
-            replace_entry_ids=tuple(entry_id for entry_id, _message in rows),
-            messages_to_summarize=tuple(message for _entry_id, message in rows),
-        )
-
-    def _recent_preserving_compaction_plan(self) -> CompactionPlan | None:
-        rows = self._active_context_rows()
-        if len(rows) < 2:
-            return None
-
-        first_kept_index = _first_recent_context_index(
-            rows,
-            keep_recent_tokens=DEFAULT_COMPACTION_KEEP_RECENT_TOKENS,
-        )
-        if first_kept_index <= 0:
-            return None
-
-        replaced = rows[:first_kept_index]
-        if not replaced:
-            return None
-        return CompactionPlan(
-            replace_entry_ids=tuple(entry_id for entry_id, _message in replaced),
-            messages_to_summarize=tuple(message for _entry_id, message in replaced),
-        )
-
-    def _compaction_boundary(self, plan: CompactionPlan) -> tuple[str | None, int]:
-        """Return the retained boundary and the pre-summary token estimate.
-
-        ``first_kept_entry_id`` names the durable entry a compaction stops before,
-        so a reader can tell exactly which entries the summary covers. ``None``
-        means the plan replaces every active entry, so there is no boundary left.
-        """
-        rows = self._active_context_rows()
-        index = len(plan.replace_entry_ids)
-        first_kept_entry_id = rows[index][0] if index < len(rows) else None
-        return first_kept_entry_id, self.context_token_estimate
 
     def _active_context_rows(self) -> tuple[tuple[str, AgentMessage], ...]:
         return tuple(zip(self._state.context_entry_ids, self._state.messages, strict=True))
@@ -4368,8 +3955,10 @@ class CodingSession:
         is as atomic as any other compaction. An invalid request is ignored with
         a diagnostic and never half-committed; a commit that fails (for example a
         CAS conflict) is diagnosed and reported on `session_compact_failed`
-        instead of failing the run that requested it. The extension already
-        decided, so no `session_before_compact` gate runs for it.
+        instead of failing the run that requested it. The extension that built
+        the request already fired `session_before_compact` for it (through
+        ``ExtensionContext.request_session_before_compact``); the core never
+        re-runs that gate, it only validates and commits.
         """
         for request in requests:
             plan = self._validate_compaction_commit(request)
@@ -4415,7 +4004,7 @@ class CodingSession:
         exactly the replaced prefix. This makes an out-of-branch or head boundary
         unrepresentable, and keeps a rejected request from costing a single write.
         """
-        reason = _COMPACTION_TRIGGER_REASONS.get(request.trigger)
+        reason = COMPACTION_TRIGGER_REASONS.get(request.trigger)
         if reason is None:
             return f"unknown compaction trigger: {request.trigger!r}"
         if not request.summary.strip():
@@ -4449,7 +4038,6 @@ class CodingSession:
         first_kept_entry_id: str | None = None,
         tokens_before: int | None = None,
         compact_reason: CompactionReason = "manual",
-        will_retry: bool = False,
         from_extension: bool = False,
     ) -> CompactionEntry:
         if not replace_entry_ids:
@@ -4471,7 +4059,6 @@ class CodingSession:
         await self._extension_runtime.emit_event(
             SessionCompactEvent(
                 reason=compact_reason,
-                will_retry=will_retry,
                 from_extension=from_extension,
             )
         )
@@ -4481,89 +4068,16 @@ class CodingSession:
         self,
         reason: CompactionReason,
         *,
-        aborted: bool = False,
-        will_retry: bool = False,
         error_message: str | None = None,
         from_extension: bool = False,
     ) -> None:
         await self._extension_runtime.emit_event(
             SessionCompactFailedEvent(
                 reason=reason,
-                aborted=aborted,
-                will_retry=will_retry,
                 error_message=error_message,
                 from_extension=from_extension,
             )
         )
-
-
-def _first_recent_context_index(
-    rows: tuple[tuple[str, AgentMessage], ...],
-    *,
-    keep_recent_tokens: int,
-) -> int:
-    if keep_recent_tokens <= 0:
-        return len(rows)
-
-    accumulated_tokens = 0
-    candidate_index: int | None = None
-    for index in range(len(rows) - 1, -1, -1):
-        _entry_id, message = rows[index]
-        accumulated_tokens += estimate_message_tokens(message)
-        if accumulated_tokens >= keep_recent_tokens:
-            candidate_index = index
-            break
-
-    if candidate_index is None:
-        return 0
-
-    candidate_message = rows[candidate_index][1]
-    if candidate_message.role == "user":
-        if candidate_index > 0:
-            return candidate_index
-        next_user_index = _next_user_message_index(rows, start=1)
-        return next_user_index if next_user_index is not None else 0
-
-    next_user_index = _next_user_message_index(rows, start=candidate_index + 1)
-    if next_user_index is not None:
-        return next_user_index
-
-    for index in range(candidate_index, len(rows)):
-        if rows[index][1].role != "toolResult":
-            return index
-    return len(rows)
-
-
-def _next_user_message_index(
-    rows: tuple[tuple[str, AgentMessage], ...],
-    *,
-    start: int,
-) -> int | None:
-    for index in range(start, len(rows)):
-        if rows[index][1].role == "user":
-            return index
-    return None
-
-
-def is_context_overflow_error(message: AssistantMessage) -> bool:
-    """Return True when an assistant error looks like a context overflow."""
-    text = message.error_message or ""
-    normalized = text.lower()
-    markers = (
-        "context length",
-        "context window",
-        "context limit",
-        "maximum context",
-        "max context",
-        "input is too long",
-        "input length",
-        "prompt is too long",
-        "too many tokens",
-        "token limit",
-        "exceeds the limit",
-        "exceeded the limit",
-    )
-    return any(marker in normalized for marker in markers)
 
 
 def _entries_for_fork(

@@ -24,6 +24,11 @@ Lifecycle, mapped onto this project's real hooks:
     rewritten, and the same bytes are replayed for every request of the turn.
 ``turn_start`` / ``agent_settled``
     Per-turn tick, then ``sync_all`` plus ``queue_prefetch_all`` for the next turn.
+``session_before_compact``
+    Return ``on_pre_compress(messages)`` as the gate's context: the compaction
+    extension fences that text into the summarizer prompt as material, and
+    nothing is kept for the next request (memory and session history stay
+    separate layers).
 ``session_before_switch`` / ``session_shutdown``
     ``commit_session_boundary_async`` + bounded ``flush_pending`` so
     ``on_session_end`` lands before any provider is rebound or torn down.
@@ -51,6 +56,7 @@ from run_agent_coding.extensions import (
     ExtensionHandler,
     InputEvent,
     SessionBeforeCompactEvent,
+    SessionBeforeCompactResult,
     SessionBeforeSwitchEvent,
     SessionShutdownEvent,
     SessionStartEvent,
@@ -242,7 +248,6 @@ class _MemorySession:
     manager: MemoryManager | None = None
     prompt_block: str = ""
     recall_text: str = ""
-    carry_text: str = ""
     prompt: str = ""
     session_id: str = ""
     transcript: tuple[AgentMessage, ...] = field(default_factory=tuple)
@@ -250,13 +255,14 @@ class _MemorySession:
     def request_block(self) -> str:
         """The fenced memory block for the current request, or ``""``.
 
-        Prefetch recall and any pre-compression carry are combined here, at request
-        time, so both are fenced exactly once.
+        Only the turn's prefetch recall lives here. Pre-compression insights do
+        not: they are returned from `session_before_compact`, so they reach the
+        summarizer prompt as material (see ``on_before_compact``), which is
+        exactly where hermes puts them.
         """
-        parts = [text for text in (self.carry_text, self.recall_text) if text.strip()]
-        if not parts:
+        if not self.recall_text.strip():
             return ""
-        return build_memory_context_block("\n\n".join(parts))
+        return build_memory_context_block(self.recall_text)
 
 
 def setup(api: ExtensionAPI) -> None:
@@ -291,7 +297,6 @@ def setup(api: ExtensionAPI) -> None:
         state.session_id = context.session_id or ""
         state.prompt_block = provider.system_prompt_block()
         state.recall_text = ""
-        state.carry_text = ""
         state.prompt = ""
         state.transcript = ()
 
@@ -313,7 +318,6 @@ def setup(api: ExtensionAPI) -> None:
             return
         state.prompt = event.text
         state.recall_text = ""
-        state.carry_text = ""
         manager = state.manager
         provider = state.provider
         if manager is None or provider is None:
@@ -360,19 +364,27 @@ def setup(api: ExtensionAPI) -> None:
         if user and not is_trivial_prompt(user):
             manager.queue_prefetch_all(user, session_id=event.session_id)
 
-    async def on_before_compact(event: object, context: ExtensionContext) -> None:
+    async def on_before_compact(
+        event: object, context: ExtensionContext
+    ) -> SessionBeforeCompactResult | None:
+        """Hand the pre-compression insight to the summarizer prompt as material.
+
+        hermes calls ``on_pre_compress(messages)`` and feeds the result into the
+        compressor's prompt. Here the text travels back through the host's
+        `session_before_compact` gate to the compaction extension, which fences
+        it under ``<memory-provider-context>`` and labels it as material rather
+        than an instruction. Nothing is remembered for the next request: memory
+        and session history are separate layers, so compaction never leaks into
+        the memory block the model sees.
+        """
         if not isinstance(event, SessionBeforeCompactEvent):
-            return
+            return None
         manager = state.manager
         if manager is None:
-            return
+            return None
         messages = context.transcript
         state.transcript = messages
-        # hermes hands this text to the compressor's prompt. Run Agent's compaction
-        # hook cannot carry free text, so the contribution is instead carried into
-        # the next request's memory block — the provider insight still survives the
-        # messages it was extracted from.
-        state.carry_text = manager.on_pre_compress(messages)
+        return SessionBeforeCompactResult(context=manager.on_pre_compress(messages))
 
     async def on_before_switch(event: object, context: ExtensionContext) -> None:
         if not isinstance(event, SessionBeforeSwitchEvent):

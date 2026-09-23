@@ -48,6 +48,7 @@ from run_agent_coding.extensions.api import (
     RegisteredExtension,
     ResourcesDiscoverEvent,
     ResourcesDiscoverResult,
+    SessionBeforeCompactDecision,
     SessionBeforeCompactEvent,
     SessionBeforeCompactResult,
     SessionBeforeForkEvent,
@@ -158,6 +159,9 @@ class BoundSession(Protocol):
 
     @property
     def is_running(self) -> bool: ...
+
+    @property
+    def context_window_tokens(self) -> int: ...
 
     @property
     def messages(self) -> tuple[AgentMessage, ...]: ...
@@ -1212,18 +1216,52 @@ class ExtensionRuntime:
 
     async def emit_session_before_compact(
         self,
-        reason: CompactionReason,
+        reason: CompactionReason | str,
         *,
         will_retry: bool = False,
         custom_instructions: str | None = None,
-    ) -> bool:
-        """Return True when an extension cancels the pending compaction."""
+    ) -> SessionBeforeCompactDecision:
+        """Return the gate's decision: a cancel flag plus the handlers' context.
+
+        Fired by the extension that owns compaction once its commit attempt is
+        certain and before any summary model call, through
+        ``ExtensionContext.request_session_before_compact``; ``reason`` is the
+        reason the commit will report, or the caller's raw trigger string when
+        it is not one of the extension triggers. ``will_retry`` stays False
+        because no automatic retry exists any more.
+
+        The fan-out has the same discipline as every other gate: an unknown
+        result is a diagnostic, a raising handler is isolated, and the first
+        ``cancel=True`` wins and stops the fan-out (a cancelled compaction
+        summarizes nothing, so later handlers have nothing to contribute to).
+        Every non-empty ``context`` is merged with a blank line, in registration
+        order, and handed back for the caller to use as summary material.
+        """
         event = SessionBeforeCompactEvent(
             reason=reason,
             will_retry=will_retry,
             custom_instructions=custom_instructions,
         )
-        return await self._first_cancel("session_before_compact", event, SessionBeforeCompactResult)
+        contexts: list[str] = []
+        for owner, handler in self._handlers_for("session_before_compact"):
+            try:
+                result = await _resolve(handler(event, self._fresh_context(owner.source_id)))
+            except Exception as exc:
+                self._record_runtime_failure(owner.name, "session_before_compact", exc)
+                continue
+            if result is None:
+                continue
+            if not isinstance(result, SessionBeforeCompactResult):
+                self._record_bad_result(owner.name, "session_before_compact", result)
+                continue
+            text = result.context.strip()
+            if text:
+                contexts.append(text)
+            if result.cancel:
+                return SessionBeforeCompactDecision(
+                    cancelled=True, context="\n\n".join(contexts)
+                )
+        return SessionBeforeCompactDecision(context="\n\n".join(contexts))
 
     async def emit_session_before_tree(
         self,
@@ -1661,6 +1699,12 @@ class ExtensionRuntime:
                 message=f"UI component `{context}` failed: {exc!r}",
                 severity="error",
             )
+        )
+
+    def record_extension_diagnostic(self, extension: str, message: str) -> None:
+        """Record a host-observed extension problem in session diagnostics."""
+        self._runtime_diagnostics.append(
+            ResourceDiagnostic(kind="extension", name=extension, message=message)
         )
 
     def _record_runtime_failure(self, extension: str, event: str, exc: Exception) -> None:

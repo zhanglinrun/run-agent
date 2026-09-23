@@ -61,7 +61,7 @@ async def test_default_extensions_and_explicit_paths(tmp_path, enabled, explicit
             assert "evolution evaluation:" in (await app.command("/evolve status")).message
             assert (await app.command("/nosuchcommand status")).handled is False
         if enabled:
-            for command in ("/memory show", "/force-snip", "/four-layer-compact"):
+            for command in ("/memory show", "/compact"):
                 assert (await app.command(command)).handled is True
         elif explicit:
             assert (await app.command("/memory show")).handled is False
