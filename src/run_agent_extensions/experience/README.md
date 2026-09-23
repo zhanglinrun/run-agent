@@ -4,7 +4,10 @@ The built-in Experience extension provides verifier-gated Skill evolution. Memor
 the separate built-in `memory` extension
 ([`run_agent_extensions/hermes_memory`](../hermes_memory/README.md)), which owns
 `USER.md` / `MEMORY.md`, the `memory` tool and the `/memory` command. It does not run a
-background review, cadence trigger, curator, or automatic maintenance loop.
+background review, a cadence trigger, or an automatic maintenance loop; that maintenance
+loop is the separate built-in `curator` extension
+([`run_agent_extensions/curator`](../curator/README.md)), which only archives library
+entries and never deletes Skill content.
 
 Existing sessions preserve their recorded extension snapshot. Use
 `run --session <id> --refresh-resources` to adopt the current extension implementation while
@@ -96,10 +99,11 @@ candidate published only when both the installed digest and formal ledger entry 
 | `/evolve rollback <ledger-id> [--scope ...]` | Restore the before-state after a safety capture. |
 
 `/memory` is not part of this extension any more; it is registered by the `memory` built-in.
-There is no review or curator command surface and no automatic stale/archive/consolidate pass.
-Old `.usage.json`, `.archive/`, `.ledger.jsonl`, and ledger blobs are not deleted. The old
-usage sidecar is read only for pinned compatibility; consultation counters are no longer
-updated.
+There is no review command surface and no automatic stale/archive/consolidate pass here: the
+`curator` built-in owns the maintenance loop (archive only, never delete) and the `/curator`
+command surface. Old `.usage.json`, `.archive/`, `.ledger.jsonl`, and ledger blobs are not
+deleted. The old usage sidecar is read only for pinned compatibility; consultation counters
+are no longer updated.
 
 ## Configuration
 
@@ -112,7 +116,8 @@ Supported environment variables are:
 
 The old `EXPERIENCE_MEMORY_*` / `EXPERIENCE_USER_*` variables were replaced by
 `HERMES_MEMORY_*` and are no longer read here. Review cadence, review inference, curator
-interval, archive, consolidation, and backup environment variables are removed.
+interval, archive, consolidation, and backup environment variables are not read here; the
+maintenance-loop knobs now belong to the `curator` extension (`CURATOR_*`).
 
 ## Boundaries
 

@@ -11,7 +11,7 @@
 
 ## 2. 旧 sidecar 与旧 ledger：保留、可查、可 rollback
 
-- `.usage.json`、`.archive/`、`.ledger.jsonl` 及 ledger 的 `.blobs/` 不会被删除或改写（`src/run_agent_extensions/experience/skill_usage.py`）。旧 `.usage.json` 现在只读：`pinned` 仍是发布/采纳的 policy 输入（`skill_usage.py:55-56`、`skill_manager.py:189-190`），consultation 计数不再更新。
+- `.usage.json`、`.archive/`、`.ledger.jsonl` 及 ledger 的 `.blobs/` 不会被删除或改写（`src/run_agent_extensions/experience/skill_usage.py`）。旧 `.usage.json` 现在只读：`pinned` 仍是发布/采纳的 policy 输入（`skill_usage.py:55-56`、`skill_manager.py:189-190`），consultation 计数不再更新。内置 `curator` 扩展使用自己的用量日志 `<extension_state_dir>/curator/usage.jsonl`（用户级 state 目录），只把 lookback 窗口内的新 consultation 当作活动证据：旧 `.usage.json` 里的历史 consultation 计数不会恢复。
 - 旧 ledger 条目照常加载和展示：读取只解析文件，不经过新条目的 actor 白名单（`skill_ledger.py:31-33`），所以 `/evolve ledger` 能看到退役控制环写下的历史条目；`/evolve rollback <ledger-id>` 仍能在 Skills 根内恢复 before-state，并在改动前追加一条 pre-rollback safety 记录（`skill_ledger.py:202-271`）。
 
 ## 3. ownership 与 provenance
@@ -43,7 +43,7 @@
 
 ## 7. 已删除的命令面与环境变量
 
-- `run gateway`、`/review`、`/curator`，以及 `FEISHU_*`、`GATEWAY_*`、`EXPERIENCE_REVIEW_*`、`EXPERIENCE_CURATOR_*` 和旧 nudge 配置都不再被读取或提供。当前 Skill 演进命令面是 `/evolve status|candidates|show|adopt|publish|reject|ledger|rollback`。
+- `run gateway`、`/review`，以及 `FEISHU_*`、`GATEWAY_*`、`EXPERIENCE_REVIEW_*`、`EXPERIENCE_CURATOR_*` 和旧 nudge 配置都不再被读取或提供。`/curator` 作为内置 `curator` 扩展回归——它是维护型扩展，命令面为 `/curator status|run [--dry-run]|pause|resume|restore <snapshot-id|archived-skill>|report|review|learn <description>|journey list|show <id>|delete <id>`；它只读新的 `CURATOR_*` 环境变量，`EXPERIENCE_CURATOR_*` 不会被读取。当前 Skill 演进命令面是 `/evolve status|candidates|show|adopt|publish|reject|ledger|rollback`。
 
 ## 8. 升级前检查
 

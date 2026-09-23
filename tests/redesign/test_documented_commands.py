@@ -13,11 +13,14 @@ import importlib.util
 import re
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from tests.redesign.test_coding_application import ReplyProvider, options
 
+from run_agent_coding.application import CodingApplication
 from run_agent_extensions.experience.commands_evolution import (
     EVOLVE_USAGE,
     register_evolution_commands,
@@ -100,7 +103,7 @@ def test_documented_builtin_extensions_and_commands_match_the_registry() -> None
     for extension in builtin_extension_names():
         for name, text in docs.items():
             assert f"`{extension}`" in text, f"{name} does not document the built-in {extension!r}"
-    for command in ("/memory", "/force-snip", "/four-layer-compact"):
+    for command in ("/memory", "/force-snip", "/four-layer-compact", "/curator"):
         assert command in docs["cli.md"], f"cli.md does not document {command}"
 
 
@@ -218,3 +221,55 @@ async def test_every_documented_evolve_subcommand_is_registered_and_handled() ->
     for action, arguments in invocations.items():
         result = await handler(arguments, context)
         assert result != EVOLVE_USAGE, f"/evolve {action} is documented but not handled"
+
+
+CURATOR_INVOCATIONS = {
+    "status": "status",
+    "run": "run --dry-run",
+    "pause": "pause",
+    "resume": "resume",
+    "restore": "restore example-skill",
+    "report": "report",
+    "review": "review",
+    "learn": "learn deploy the app --name deploy",
+    "journey": "journey list",
+}
+CURATOR_JOURNEY_ACTIONS = {"list", "show", "delete"}
+
+
+def curator_doc() -> str:
+    """The CLI document that carries the ``/curator`` command surface."""
+    return read(REPO / "src" / "run_agent_coding" / "data" / "docs" / "cli.md")
+
+
+def documented_curator_actions() -> set[str]:
+    """Every ``/curator <action>`` the shipped CLI document advertises."""
+    return set(re.findall(r"/curator ([a-z][a-z-]*)", curator_doc()))
+
+
+def documented_curator_journey_actions() -> set[str]:
+    """Every ``/curator journey <action>`` the CLI document advertises."""
+    return set(re.findall(r"/curator journey ([a-z][a-z-]*)", curator_doc()))
+
+
+@pytest.mark.anyio
+async def test_every_documented_curator_subcommand_is_registered_and_handled(tmp_path) -> None:
+    """``/curator`` recognizes every action cli.md advertises, and only those."""
+    from run_agent_extensions.curator.extension import CURATOR_USAGE
+
+    assert documented_curator_actions() == set(CURATOR_INVOCATIONS)
+    assert documented_curator_journey_actions() == CURATOR_JOURNEY_ACTIONS
+
+    app = await CodingApplication.open(
+        replace(options(tmp_path), extensions_enabled=True), provider=ReplyProvider()
+    )
+    try:
+        await app.start()
+        for action, arguments in CURATOR_INVOCATIONS.items():
+            result = await app.command(f"/curator {arguments}")
+            assert result.handled is True, f"/curator {action} is documented but not registered"
+            assert (result.message or "") != CURATOR_USAGE, (
+                f"/curator {action} is documented but falls through to the usage text"
+            )
+    finally:
+        await app.aclose()

@@ -36,7 +36,7 @@ run bench --help
 
 ### 1. 事务化扩展生命周期
 
-Provider、Core、Coding 三层通过同步 `setup(api)` 装配六个内置扩展：`experience`（Skill 演进）、`memory`（USER.md / MEMORY.md 记忆）、`compaction`（四层压缩策略）、`mcp`、`permission_policy` 和 `plan_mode`。每个注册带来源和 generation；setup 半途失败会按来源撤销注册。记忆与压缩都是可选扩展：`--no-extensions` 关闭全部，`--extension <name-or-path>` 按短名或路径单独装载。
+Provider、Core、Coding 三层通过同步 `setup(api)` 装配七个内置扩展：`experience`（Skill 演进）、`memory`（USER.md / MEMORY.md 记忆）、`compaction`（四层压缩策略）、`curator`（技能库维护）、`mcp`、`permission_policy` 和 `plan_mode`。每个注册带来源和 generation；setup 半途失败会按来源撤销注册。记忆、压缩与策展都是可选扩展：`--no-extensions` 关闭全部，`--extension <name-or-path>` 按短名或路径单独装载。
 
 `/reload`、`/new`、`/resume` 和分支替换采用 staged runtime：候选完成源码校验、资源准备和 host publication 前，旧 runtime 保持 active；publication 成功后旧 generation 才进入只读 retiring 阶段，收到 shutdown 通知并逆序执行 disposer。发布失败不会提前关闭旧 MCP 连接或清除旧 UI 状态。
 
@@ -103,6 +103,8 @@ Skill 演进仍归 `experience` 扩展，保留 `SKILL.md` 这一种本地资产
 /evolve ledger [skill]
 /evolve rollback <ledger-id>
 ```
+
+技能库维护归内置 `curator` 扩展（`src/run_agent_extensions/curator`，hermes 技能策展移植）：它不在正常会话里改内容，只按周期门控运行——`session_start` 先给首次会话只记录 `last_run_at`，之后按 `CURATOR_INTERVAL_HOURS`（默认 168 小时）才维护一次：闲置技能标记 `stale`（默认 30 天），无保护且 `created_by: evolution` 的闲置技能整目录归档到 `<skills-root>/.archive/`（默认 90 天；只移动不删除，user/project 资产默认拒绝自动归档），改动前对每个技能根做整库快照（`CURATOR_BACKUP_KEEP` 默认保留 5 份）。`/curator restore <snapshot-id|archived-skill>` 整库回滚或恢复单个归档，`/curator journey list|show|delete` 提供技能与记忆的统一视图。有界 LLM 复核只发送一次元数据请求且只产候选：consolidation 走 `SkillEvolution.propose` 生成 cold candidate，技能内容仍只能过 `/evolve` 的 verifier 与发布门禁。归档、恢复、暂停等破坏性动作需要 UI 确认，非交互时被拒绝。
 
 受控演进任务位于 `evals/evolution/`。最终报告严格区分 train、selection 和 test；test 不参与发布决策，结果不外推到任务族之外。
 

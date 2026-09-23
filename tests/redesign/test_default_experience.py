@@ -1,16 +1,32 @@
-"""Host defaults: experience, memory and compaction load without changing snapshots."""
+"""Host defaults: the seven built-ins load and stay quiet outside their own cadence."""
 
 import json
 from dataclasses import replace
 
 import pytest
 from tests.redesign.test_coding_application import RecordingProvider, ReplyProvider, options
+from tests.redesign.test_curator_state import write_skill
 from typer.testing import CliRunner
 
 from run_agent_coding import cli
 from run_agent_coding.application import CodingApplication
+from run_agent_coding.paths import RunAgentPaths
 from run_agent_core.messages import ToolCall, UserMessage
 from run_agent_extensions import BUILTIN_EXTENSIONS
+from run_agent_extensions.curator.state import CuratorStateStore
+
+
+def test_the_default_builtin_set_is_the_seven_shipped_extensions() -> None:
+    """The default set is exactly the extensions the docs describe, curator included."""
+    assert set(BUILTIN_EXTENSIONS) == {
+        "compaction",
+        "curator",
+        "experience",
+        "mcp",
+        "memory",
+        "permission_policy",
+        "plan_mode",
+    }
 
 
 @pytest.mark.parametrize(
@@ -140,7 +156,7 @@ async def test_default_plan_and_experience_permissions(tmp_path, monkeypatch):
         assert not await blocked("skill_manage", {"action": "propose"})
 
 
-@pytest.mark.parametrize("name", ["compaction", "experience", "memory"])
+@pytest.mark.parametrize("name", ["compaction", "curator", "experience", "memory"])
 def test_cli_resolves_the_builtin_short_names(tmp_path, monkeypatch, name):
     seen = {}
 
@@ -214,3 +230,61 @@ async def test_default_run_serves_memory_from_the_memory_extension(tmp_path):
             and "MEMORY (your personal notes)" not in json.dumps(entry, ensure_ascii=False)
             for entry in message_entries
         )
+
+
+async def test_the_default_session_defers_curator_maintenance_without_writes(tmp_path):
+    """A loaded curator stays out of the way until its interval has elapsed.
+
+    The first default session (fake provider, one turn) only seeds the cadence clock;
+    the second one, still inside the interval, must not add a single file to the Skill
+    library or the curator state directory and must not call the model for a review.
+    """
+    paths = RunAgentPaths(home=tmp_path / "state", agents_home=tmp_path / "agents")
+    store = CuratorStateStore(paths.extension_state_dir)
+    write_skill(paths.user_skills_dir, "old-one", age_days=400)
+
+    def fingerprint() -> set[str]:
+        return {
+            str(path.relative_to(tmp_path))
+            for root in (paths.user_skills_dir, paths.extension_state_dir)
+            for path in root.rglob("*")
+        }
+
+    def reviews(provider: RecordingProvider) -> list[str]:
+        return [
+            request["system"]
+            for request in provider.requests
+            if "review a Skill library for hygiene" in request["system"]
+        ]
+
+    provider = RecordingProvider()
+    async with await CodingApplication.open(
+        replace(options(tmp_path), extensions_enabled=True), provider=provider
+    ) as app:
+        await app.start()
+        sources = {item["source_id"] for item in app.session.extension_runtime.source_manifest()}
+        assert f"extension:{(BUILTIN_EXTENSIONS['curator'] / 'extension.py').as_uri()}" in sources
+        events = [event async for event in app.prompt("hello")]
+        assert events[-1].status == "succeeded"
+
+    # First sight seeds only the cadence clock: no library, report, backup or usage write.
+    assert reviews(provider) == []
+    assert store.load().last_run_at is not None
+    assert (paths.user_skills_dir / "old-one" / "SKILL.md").is_file()
+    assert not (paths.user_skills_dir / ".archive").exists()
+    assert store.usage() == ()
+    assert store.report_ids() == ()
+    assert not list(store.backups_dir.glob("*"))
+
+    before = fingerprint()
+    provider = RecordingProvider()
+    async with await CodingApplication.open(
+        replace(options(tmp_path), extensions_enabled=True), provider=provider
+    ) as app:
+        await app.start()
+        events = [event async for event in app.prompt("hello")]
+        assert events[-1].status == "succeeded"
+    assert reviews(provider) == []
+    assert store.load().last_review_run_id is not None, "agent_settled only recorded the run"
+    assert store.load().run_count == 0
+    assert fingerprint() == before
